@@ -16,13 +16,22 @@
  * limitations under the License.
  */
 
-import 'package:playground/modules/sdk/models/sdk.dart';
-import 'package:playground/pages/playground/states/playground_state.dart';
+import PrecommitJobBuilder
 
-String getAnalyticsExampleName(PlaygroundState state) {
-  final customCodeName = 'Custom code, sdk ${state.sdk.displayName}';
-  if (state.isExampleChanged) {
-    return customCodeName;
+PrecommitJobBuilder builder = new PrecommitJobBuilder(
+    scope: this,
+    nameBase: 'Java_GCP_IO_Direct',
+    gradleTask: ':sdks:java:io:google-cloud-platform:postCommit',
+    gradleSwitches: [
+      '-PdisableSpotlessCheck=true'
+    ], // spotless checked in separate pre-commit
+    timeoutMins: 120,
+    triggerPathPatterns: [
+      '^sdks/java/io/google-cloud-platform/.*$',
+    ]
+    )
+builder.build {
+  publishers {
+    archiveJunit('**/build/test-results/**/*.xml')
   }
-  return state.selectedExample?.path ?? customCodeName;
 }
