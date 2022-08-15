@@ -18,11 +18,12 @@
 package org.apache.beam.sdk.io.gcp.pubsublite.internal;
 
 import static org.apache.beam.sdk.io.gcp.pubsublite.internal.ApiServices.asCloseable;
-import static org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Preconditions.checkArgument;
-import static org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Preconditions.checkState;
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkState;
 
 import com.google.api.core.ApiService.State;
 import com.google.cloud.pubsublite.Offset;
+import com.google.cloud.pubsublite.internal.ExtractStatus;
 import com.google.cloud.pubsublite.proto.SequencedMessage;
 import com.google.protobuf.util.Timestamps;
 import java.io.IOException;
@@ -35,7 +36,6 @@ import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.joda.time.Instant;
 
 public class UnboundedReaderImpl extends UnboundedReader<SequencedMessage> {
-
   private final UnboundedSource<SequencedMessage, CheckpointMarkImpl> source;
   private final MemoryBufferedSubscriber subscriber;
   private final TopicBacklogReader backlogReader;
@@ -82,7 +82,7 @@ public class UnboundedReaderImpl extends UnboundedReader<SequencedMessage> {
         AutoCloseable c2 = committer;
         AutoCloseable c3 = asCloseable(subscriber)) {
     } catch (Exception e) {
-      throw new IOException(e);
+      throw new IOException("Failed when closing reader.", e);
     }
   }
 
@@ -99,7 +99,12 @@ public class UnboundedReaderImpl extends UnboundedReader<SequencedMessage> {
   @Override
   public boolean advance() throws IOException {
     if (!subscriber.state().equals(State.RUNNING)) {
-      throw new IOException("Subscriber failed: ", subscriber.failureCause());
+      Throwable t = subscriber.failureCause();
+      if ("DUPLICATE_SUBSCRIBER_CONNECTIONS".equals(
+          ExtractStatus.getErrorInfoReason(ExtractStatus.toCanonical(t)))) {
+        throw new IOException("Partition reassigned to a different worker- this is expected.", t);
+      }
+      throw new IOException("Subscriber failed when trying to advance.", t);
     }
     if (advanced) {
       subscriber.pop();
@@ -123,6 +128,9 @@ public class UnboundedReaderImpl extends UnboundedReader<SequencedMessage> {
 
   @Override
   public CheckpointMarkImpl getCheckpointMark() {
+    // By checkpointing, the runtime indicates it has finished processing all data it has already
+    // pulled. This means we can ask Pub/Sub Lite to refill our in-memory buffer without causing
+    // unbounded memory usage.
     subscriber.rebuffer();
     return new CheckpointMarkImpl(fetchOffset, committer);
   }
