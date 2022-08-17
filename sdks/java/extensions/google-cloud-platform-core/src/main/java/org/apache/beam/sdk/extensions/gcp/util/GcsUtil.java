@@ -57,6 +57,7 @@ import java.nio.channels.WritableByteChannel;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.FileAlreadyExistsException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -605,6 +606,14 @@ public class GcsUtil {
     return new GoogleCloudStorageImpl(options, storage, credentials);
   }
 
+  /**
+   * Checks whether the GCS bucket exists. Similar to {@link #bucketAccessible(GcsPath)}, but throws
+   * exception if the bucket is inaccessible due to permissions or does not exist.
+   */
+  public void verifyBucketAccessible(GcsPath path) throws IOException {
+    verifyBucketAccessible(path, createBackOff(), Sleeper.DEFAULT);
+  }
+
   /** Returns whether the GCS bucket exists and is accessible. */
   public boolean bucketAccessible(GcsPath path) throws IOException {
     return bucketAccessible(path, createBackOff(), Sleeper.DEFAULT);
@@ -638,6 +647,16 @@ public class GcsUtil {
     } catch (AccessDeniedException | FileNotFoundException e) {
       return false;
     }
+  }
+
+  /**
+   * Checks whether the GCS bucket exists. Similar to {@link #bucketAccessible(GcsPath, BackOff,
+   * Sleeper)}, but throws exception if the bucket is inaccessible due to permissions or does not
+   * exist.
+   */
+  @VisibleForTesting
+  void verifyBucketAccessible(GcsPath path, BackOff backoff, Sleeper sleeper) throws IOException {
+    getBucket(path, backoff, sleeper);
   }
 
   @VisibleForTesting
@@ -895,7 +914,34 @@ public class GcsUtil {
           readyToEnqueue = false;
           lastError = null;
         } else {
-          throw new FileNotFoundException(from.toString());
+          throw new FileNotFoundException(e.getMessage());
+        }
+      } else if (e.getCode() == 403
+          && e.getErrors().size() == 1
+          && e.getErrors().get(0).getReason().equals("retentionPolicyNotMet")) {
+        List<StorageObjectOrIOException> srcAndDestObjects = getObjects(Arrays.asList(from, to));
+        String srcHash = srcAndDestObjects.get(0).storageObject().getMd5Hash();
+        String destHash = srcAndDestObjects.get(1).storageObject().getMd5Hash();
+        if (srcHash != null && srcHash.equals(destHash)) {
+          // Source and destination are identical. Treat this as a successful rewrite
+          LOG.warn(
+              "Caught retentionPolicyNotMet error while rewriting to a bucket with retention "
+                  + "policy. Skipping because destination {} and source {} are considered identical "
+                  + "because their MD5 Hashes are equal.",
+              getFrom(),
+              getTo());
+
+          if (deleteSource) {
+            readyToEnqueue = true;
+            performDelete = true;
+          } else {
+            readyToEnqueue = false;
+          }
+          lastError = null;
+        } else {
+          // User is attempting to write to a file that hasn't met its retention policy yet.
+          // Not a transient error so likely will not be fixed by a retry
+          throw new IOException(e.getMessage());
         }
       } else {
         lastError = e;
