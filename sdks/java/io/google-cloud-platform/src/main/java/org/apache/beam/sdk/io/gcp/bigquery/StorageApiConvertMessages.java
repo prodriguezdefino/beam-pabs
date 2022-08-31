@@ -138,12 +138,12 @@ public class StorageApiConvertMessages<DestinationT, ElementT>
       try {
         StorageApiWritePayload payload = messageConverter.toMessage(element.getValue());
         // check on single size element, if bigger than 10MB send to failed tag
-        if(payload.getPayload().length >= 10 * 1024 * 1024) {
+        if (payload.getPayload().length >= 10 * 1024 * 1024) {
           TableRow tableRow = messageConverter.toTableRow(element.getValue());
-          o.get(failedWritesTag).output(
+          o.get(failedWritesTag)
+              .output(
                   new BigQueryStorageApiInsertError(
-                          tableRow, 
-                          "StorageWrite payload is bigger than BigQuery size limit (10MB)."));
+                      tableRow, "StorageWrite payload is bigger than BigQuery size limit (10MB)."));
         } else {
           o.get(successfulWritesTag).output(KV.of(element.getKey(), payload));
         }
