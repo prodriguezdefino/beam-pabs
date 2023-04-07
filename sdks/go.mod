@@ -30,7 +30,7 @@ require (
 	cloud.google.com/go/pubsub v1.28.0
 	cloud.google.com/go/spanner v1.44.0
 	cloud.google.com/go/storage v1.29.0
-	github.com/aws/aws-sdk-go-v2 v1.17.6
+	github.com/aws/aws-sdk-go-v2 v1.17.8
 	github.com/aws/aws-sdk-go-v2/config v1.18.16
 	github.com/aws/aws-sdk-go-v2/credentials v1.13.16
 	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.11.55
@@ -52,7 +52,6 @@ require (
 	github.com/xitongsys/parquet-go v1.6.2
 	github.com/xitongsys/parquet-go-source v0.0.0-20220315005136-aec0fe3e777c
 	go.mongodb.org/mongo-driver v1.11.2
-	golang.org/x/exp v0.0.0-20230206171751-46f607a40771
 	golang.org/x/net v0.8.0
 	golang.org/x/oauth2 v0.6.0
 	golang.org/x/sync v0.1.0
@@ -66,6 +65,8 @@ require (
 	gopkg.in/yaml.v2 v2.4.0
 	gopkg.in/yaml.v3 v3.0.1
 )
+
+require golang.org/x/exp v0.0.0-20230321023759-10a507213a29
 
 require (
 	cloud.google.com/go v0.110.0 // indirect
