@@ -52,11 +52,11 @@ require (
 	github.com/xitongsys/parquet-go v1.6.2
 	github.com/xitongsys/parquet-go-source v0.0.0-20220315005136-aec0fe3e777c
 	go.mongodb.org/mongo-driver v1.11.4
-	golang.org/x/net v0.9.0
-	golang.org/x/oauth2 v0.7.0
+	golang.org/x/net v0.11.0
+	golang.org/x/oauth2 v0.9.0
 	golang.org/x/sync v0.1.0
-	golang.org/x/sys v0.7.0
-	golang.org/x/text v0.9.0
+	golang.org/x/sys v0.9.0
+	golang.org/x/text v0.10.0
 	google.golang.org/api v0.119.0
 	google.golang.org/genproto v0.0.0-20230410155749-daa745c078e1
 	google.golang.org/grpc v1.54.0
@@ -152,7 +152,7 @@ require (
 	github.com/youmark/pkcs8 v0.0.0-20181117223130-1be2e3e5546d // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
 	go.opencensus.io v0.24.0 // indirect
-	golang.org/x/crypto v0.1.0 // indirect
+	golang.org/x/crypto v0.10.0 // indirect
 	golang.org/x/mod v0.8.0 // indirect
 	golang.org/x/tools v0.6.0 // indirect
 	golang.org/x/xerrors v0.0.0-20220907171357-04be3eba64a2 // indirect
