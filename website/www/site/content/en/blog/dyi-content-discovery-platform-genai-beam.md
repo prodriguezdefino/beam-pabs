@@ -6,7 +6,7 @@ categories:
   - blog
 authors:
   - prodriguezdefino
-  - nams113
+  - Namita Sharma
 ---
 <!--
 Licensed under the Apache License, Version 2.0 (the "License");
