@@ -62,7 +62,7 @@ require (
 	google.golang.org/api v0.171.0
 	google.golang.org/genproto v0.0.0-20240308144416-29370a3891b7
 	google.golang.org/grpc v1.62.1
-	google.golang.org/protobuf v1.33.0
+	google.golang.org/protobuf v1.34.1
 	gopkg.in/retry.v1 v1.0.3
 	gopkg.in/yaml.v2 v2.4.0
 	gopkg.in/yaml.v3 v3.0.1
