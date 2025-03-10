@@ -21,6 +21,7 @@
 module github.com/apache/beam/sdks/v2
 
 go 1.22.10
+toolchain go1.23.7
 
 require (
 	cloud.google.com/go/bigquery v1.66.2
@@ -44,8 +45,8 @@ require (
 	github.com/johannesboyne/gofakes3 v0.0.0-20250106100439-5c39aecd6999
 	github.com/lib/pq v1.10.9
 	github.com/linkedin/goavro/v2 v2.13.1
-	github.com/nats-io/nats-server/v2 v2.10.25
-	github.com/nats-io/nats.go v1.39.0
+	github.com/nats-io/nats-server/v2 v2.10.26
+	github.com/nats-io/nats.go v1.39.1
 	github.com/proullon/ramsql v0.1.4
 	github.com/spf13/cobra v1.9.1
 	github.com/testcontainers/testcontainers-go v0.35.0
@@ -100,7 +101,7 @@ require (
 	github.com/moby/sys/user v0.3.0 // indirect
 	github.com/moby/sys/userns v0.1.0 // indirect
 	github.com/nats-io/jwt/v2 v2.7.3 // indirect
-	github.com/nats-io/nkeys v0.4.9 // indirect
+	github.com/nats-io/nkeys v0.4.10 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/planetscale/vtprotobuf v0.6.1-0.20240319094008-0393e58bdf10 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
@@ -170,7 +171,7 @@ require (
 	github.com/gorilla/handlers v1.5.2 // indirect
 	github.com/gorilla/mux v1.8.1 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
-	github.com/klauspost/compress v1.17.11 // indirect
+	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
 	github.com/magiconair/properties v1.8.9 // indirect
 	github.com/moby/patternmatcher v0.6.0 // indirect
@@ -192,7 +193,7 @@ require (
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
 	go.opencensus.io v0.24.0 // indirect
-	golang.org/x/crypto v0.33.0 // indirect
+	golang.org/x/crypto v0.34.0 // indirect
 	golang.org/x/mod v0.22.0 // indirect
 	golang.org/x/tools v0.29.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
