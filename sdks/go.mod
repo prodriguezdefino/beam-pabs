@@ -20,9 +20,7 @@
 // directory.
 module github.com/apache/beam/sdks/v2
 
-go 1.23.0
-
-toolchain go1.24.1
+go 1.25.0
 
 require (
 	cloud.google.com/go/bigquery v1.67.0
@@ -56,7 +54,7 @@ require (
 	github.com/xitongsys/parquet-go-source v0.0.0-20241021075129-b732d2ac9c9b
 	go.mongodb.org/mongo-driver v1.17.3
 	golang.org/x/net v0.39.0
-	golang.org/x/oauth2 v0.29.0
+	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sync v0.13.0
 	golang.org/x/sys v0.32.0
 	golang.org/x/text v0.24.0
