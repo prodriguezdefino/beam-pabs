@@ -322,7 +322,7 @@ jobs:
         with:
           python-version: '3.9'
       - name: Install node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '16'
       # TODO(https://github.com/apache/beam/issues/32726) switch to Java11
