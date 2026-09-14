@@ -92,7 +92,7 @@ jobs:
         with:
           node-version: '16'
       - name: Install Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: 3.9
       - name: Setup Beam Python
@@ -147,7 +147,7 @@ jobs:
         with:
           node-version: '16'
       - name: Install python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: 3.9
       - name: Setup Beam Python
