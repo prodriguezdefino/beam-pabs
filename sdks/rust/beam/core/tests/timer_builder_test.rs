@@ -22,7 +22,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use beam::coders::{DefaultCoder, PaneInfo, TimerRecord, WindowedHeader};
+use beam::coders::{DefaultCoder, PaneInfo, TimerAction, TimerRecord, WindowedHeader};
 use beam::internals::{HandlerContext, IntoParDoFn, TimerCollector};
 use beam::prelude::*;
 
@@ -90,11 +90,18 @@ fn an_event_time_timer_after_fires_after_the_element_timestamp_and_holds_at_the_
     let [(family, record)] = timers.as_slice() else {
         panic!("expected one timer, got {}", timers.len());
     };
-    let fire = (Instant::from_millis(ELEMENT_MILLIS) + OFFSET).as_millis();
+    let fire = Instant::from_millis(ELEMENT_MILLIS) + OFFSET;
     assert_eq!(family, "event");
-    assert!(!record.clear);
-    assert_eq!(record.fire_timestamp, fire);
-    assert_eq!(record.hold_timestamp, fire);
+    let TimerAction::Set {
+        fire_timestamp,
+        hold_timestamp,
+        ..
+    } = record.action
+    else {
+        panic!("expected a set timer, got {:?}", record.action);
+    };
+    assert_eq!(fire_timestamp, fire);
+    assert_eq!(hold_timestamp, fire);
     assert_eq!(record.user_key, "k".to_string().encode().unwrap());
 }
 
@@ -107,11 +114,18 @@ fn a_processing_time_timer_after_fires_after_the_clock_and_holds_at_the_element_
         panic!("expected one timer, got {}", timers.len());
     };
     assert_eq!(family, "processing");
-    assert!(!record.clear);
-    let fire = record.fire_timestamp;
+    let TimerAction::Set {
+        fire_timestamp,
+        hold_timestamp,
+        ..
+    } = record.action
+    else {
+        panic!("expected a set timer, got {:?}", record.action);
+    };
+    let fire = fire_timestamp;
     assert!(
-        (before + OFFSET).as_millis() <= fire && fire <= (after + OFFSET).as_millis(),
-        "fire {fire} must be the wall clock plus the offset"
+        (before + OFFSET) <= fire && fire <= (after + OFFSET),
+        "fire {fire:?} must be the wall clock plus the offset"
     );
-    assert_eq!(record.hold_timestamp, ELEMENT_MILLIS);
+    assert_eq!(hold_timestamp, Instant::from_millis(ELEMENT_MILLIS));
 }

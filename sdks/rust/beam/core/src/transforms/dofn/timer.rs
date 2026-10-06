@@ -20,11 +20,12 @@
 //! Event-time and processing-time timers for stateful DoFns on keyed elements.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use model::pipeline as proto;
 
-use crate::coders::{PaneInfo, TimerRecord};
+use crate::Instant;
+use crate::coders::{PaneInfo, TimerAction, TimerRecord};
 
 /// Time domain governing when a timer is triggered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -84,21 +85,21 @@ pub enum TimerMutation {
     Set {
         family: String,
         tag: String,
-        user_key: Vec<u8>,
-        windows: Vec<u8>,
-        fire_timestamp: i64,
-        hold_timestamp: i64,
+        user_key: Option<Vec<u8>>,
+        windows: Option<Vec<u8>>,
+        fire_timestamp: Instant,
+        hold_timestamp: Instant,
     },
     Clear {
         family: String,
         tag: String,
-        user_key: Vec<u8>,
-        windows: Vec<u8>,
+        user_key: Option<Vec<u8>>,
+        windows: Option<Vec<u8>>,
     },
 }
 
 impl TimerMutation {
-    fn into_family_record(self) -> (String, TimerRecord) {
+    fn into_record(self, default_key: &[u8], default_window: &[u8]) -> (String, TimerRecord) {
         match self {
             Self::Set {
                 family,
@@ -110,13 +111,14 @@ impl TimerMutation {
             } => (
                 family,
                 TimerRecord {
-                    user_key,
+                    user_key: user_key.unwrap_or_else(|| default_key.to_vec()),
                     dynamic_tag: tag,
-                    windows: vec![windows],
-                    clear: false,
-                    fire_timestamp,
-                    hold_timestamp,
-                    pane: PaneInfo::NO_FIRING,
+                    windows: vec![windows.unwrap_or_else(|| default_window.to_vec())],
+                    action: TimerAction::Set {
+                        fire_timestamp,
+                        hold_timestamp,
+                        pane: PaneInfo::NO_FIRING,
+                    },
                 },
             ),
             Self::Clear {
@@ -127,13 +129,10 @@ impl TimerMutation {
             } => (
                 family,
                 TimerRecord {
-                    user_key,
+                    user_key: user_key.unwrap_or_else(|| default_key.to_vec()),
                     dynamic_tag: tag,
-                    windows: vec![windows],
-                    clear: true,
-                    fire_timestamp: 0,
-                    hold_timestamp: 0,
-                    pane: PaneInfo::NO_FIRING,
+                    windows: vec![windows.unwrap_or_else(|| default_window.to_vec())],
+                    action: TimerAction::Clear,
                 },
             ),
         }
@@ -141,16 +140,14 @@ impl TimerMutation {
 }
 
 /// Thread-safe collector for timer mutations generated during element processing.
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Debug)]
 pub struct TimerCollector {
-    mutations: Arc<Mutex<Vec<TimerMutation>>>,
+    mutations: Mutex<Vec<TimerMutation>>,
 }
 
 impl TimerCollector {
     pub fn new() -> Self {
-        Self {
-            mutations: Arc::new(Mutex::new(Vec::new())),
-        }
+        Self::default()
     }
 
     /// Records a timer set operation.
@@ -158,17 +155,10 @@ impl TimerCollector {
         &self,
         family: impl Into<String>,
         tag: impl Into<String>,
-        fire_timestamp: i64,
-        hold_timestamp: i64,
+        fire_timestamp: Instant,
+        hold_timestamp: Instant,
     ) {
-        self.set_with_context(
-            family,
-            tag,
-            Vec::new(),
-            Vec::new(),
-            fire_timestamp,
-            hold_timestamp,
-        );
+        self.set_with_context(family, tag, None, None, fire_timestamp, hold_timestamp);
     }
 
     /// Records a timer set operation with explicit user key and window.
@@ -176,26 +166,28 @@ impl TimerCollector {
         &self,
         family: impl Into<String>,
         tag: impl Into<String>,
-        user_key: Vec<u8>,
-        windows: Vec<u8>,
-        fire_timestamp: i64,
-        hold_timestamp: i64,
+        user_key: Option<Vec<u8>>,
+        windows: Option<Vec<u8>>,
+        fire_timestamp: Instant,
+        hold_timestamp: Instant,
     ) {
-        if let Ok(mut guard) = self.mutations.lock() {
-            guard.push(TimerMutation::Set {
-                family: family.into(),
-                tag: tag.into(),
-                user_key,
-                windows,
-                fire_timestamp,
-                hold_timestamp,
-            });
-        }
+        let mut guard = self
+            .mutations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.push(TimerMutation::Set {
+            family: family.into(),
+            tag: tag.into(),
+            user_key,
+            windows,
+            fire_timestamp,
+            hold_timestamp,
+        });
     }
 
     /// Records a timer clear operation.
     pub fn clear(&self, family: impl Into<String>, tag: impl Into<String>) {
-        self.clear_with_context(family, tag, Vec::new(), Vec::new());
+        self.clear_with_context(family, tag, None, None);
     }
 
     /// Records a timer clear operation with explicit user key and window.
@@ -203,50 +195,46 @@ impl TimerCollector {
         &self,
         family: impl Into<String>,
         tag: impl Into<String>,
-        user_key: Vec<u8>,
-        windows: Vec<u8>,
+        user_key: Option<Vec<u8>>,
+        windows: Option<Vec<u8>>,
     ) {
-        if let Ok(mut guard) = self.mutations.lock() {
-            guard.push(TimerMutation::Clear {
-                family: family.into(),
-                tag: tag.into(),
-                user_key,
-                windows,
-            });
-        }
+        let mut guard = self
+            .mutations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.push(TimerMutation::Clear {
+            family: family.into(),
+            tag: tag.into(),
+            user_key,
+            windows,
+        });
     }
 
     /// Drains all collected timer mutations grouped by family name.
     pub fn drain_family_records(&self) -> HashMap<String, Vec<TimerRecord>> {
-        self.mutations
+        let mut guard = self
+            .mutations
             .lock()
-            .map(|mut guard| {
-                guard.drain(..).fold(
-                    HashMap::<String, Vec<TimerRecord>>::new(),
-                    |mut map, mutation| {
-                        let (family, record) = mutation.into_family_record();
-                        map.entry(family).or_default().push(record);
-                        map
-                    },
-                )
-            })
-            .unwrap_or_default()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.drain(..).fold(
+            HashMap::<String, Vec<TimerRecord>>::new(),
+            |mut map, mutation| {
+                let (family, record) = mutation.into_record(&[], &[]);
+                map.entry(family).or_default().push(record);
+                map
+            },
+        )
     }
 
-    /// Drains all timer mutations. An empty user key becomes `key`; an empty window, `window`.
+    /// Drains all timer mutations. An unset user key becomes `key`; an unset window, `window`.
     pub fn drain_records(&self, key: &[u8], window: &[u8]) -> Vec<TimerRecord> {
-        self.drain_family_records()
-            .into_values()
-            .flatten()
-            .map(|mut rec| {
-                if rec.user_key.is_empty() && !key.is_empty() {
-                    rec.user_key = key.to_vec();
-                }
-                if (rec.windows.is_empty() || rec.windows[0].is_empty()) && !window.is_empty() {
-                    rec.windows = vec![window.to_vec()];
-                }
-                rec
-            })
+        let mut guard = self
+            .mutations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard
+            .drain(..)
+            .map(|mutation| mutation.into_record(key, window).1)
             .collect()
     }
 }

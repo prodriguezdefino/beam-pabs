@@ -19,18 +19,21 @@
 
 //! Walks and skips encoded values of the Beam standard coders, driven by coder protos.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
+use std::sync::Arc;
 
 use model::pipeline::Coder as ProtoCoder;
+
+use crate::schema::Schema;
 
 use super::pane::PaneInfo;
 use super::standard::{VarIntCoder, read_array, read_be_i32};
 
 use super::{
-    URN_BOOL, URN_BYTES, URN_DOUBLE, URN_GLOBAL_WINDOW, URN_INTERVAL_WINDOW, URN_ITERABLE, URN_KV,
-    URN_LENGTH_PREFIX, URN_NULLABLE, URN_PARAM_WINDOWED_VALUE, URN_ROW, URN_STATE_BACKED_ITERABLE,
-    URN_STRING_UTF8, URN_TIMER, URN_VARINT, URN_WINDOWED_VALUE,
+    RowCoder, URN_BOOL, URN_BYTES, URN_DOUBLE, URN_GLOBAL_WINDOW, URN_INTERVAL_WINDOW,
+    URN_ITERABLE, URN_KV, URN_LENGTH_PREFIX, URN_NULLABLE, URN_PARAM_WINDOWED_VALUE, URN_ROW,
+    URN_STATE_BACKED_ITERABLE, URN_STRING_UTF8, URN_TIMER, URN_VARINT, URN_WINDOWED_VALUE,
 };
 
 /// Returns the URN of a coder, or `""` (an unknown URN) if it has no spec.
@@ -197,6 +200,32 @@ pub fn skip_coder_value(
     skip_value(cursor, coder_id, coders, nested, 0)
 }
 
+/// Returns `true` if [`skip_coder_value`] finds the end of a nested value of `coder_id`
+/// exactly. It is `false` for a coder that skips to the end of the slice: an unknown URN, a
+/// missing coder, or a Row coder without a schema.
+pub fn skips_exactly(coder_id: &str, coders: &HashMap<String, ProtoCoder>) -> bool {
+    skips_exactly_at(coder_id, coders, 0)
+}
+
+fn skips_exactly_at(coder_id: &str, coders: &HashMap<String, ProtoCoder>, depth: usize) -> bool {
+    let Some(coder) = coders.get(coder_id).filter(|_| depth <= MAX_SKIP_DEPTH) else {
+        return false;
+    };
+    let components = || {
+        coder
+            .component_coder_ids
+            .iter()
+            .all(|id| skips_exactly_at(id, coders, depth + 1))
+    };
+    match coder_urn(coder) {
+        URN_VARINT | URN_DOUBLE | URN_BOOL | URN_STRING_UTF8 | URN_BYTES | URN_LENGTH_PREFIX
+        | URN_GLOBAL_WINDOW | URN_INTERVAL_WINDOW => true,
+        URN_KV | URN_ITERABLE | URN_STATE_BACKED_ITERABLE | URN_NULLABLE => components(),
+        URN_ROW => coder.spec.as_ref().is_some_and(|s| !s.payload.is_empty()),
+        _ => false,
+    }
+}
+
 fn skip_value(
     cursor: &mut Cursor<&[u8]>,
     coder_id: &str,
@@ -322,12 +351,10 @@ fn skip_value(
                 skip_to_end(cursor);
                 return Ok(());
             }
-            let schema = crate::schema::Schema::from_proto_bytes(schema_bytes)
+            // A caller on a hot path parses the schema once and calls `RowCoder::skip_row`.
+            let schema = Schema::from_proto_bytes(schema_bytes)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-            let schema_arc = std::sync::Arc::new(schema);
-            super::RowCoder::decode_row(&schema_arc, cursor)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-            Ok(())
+            RowCoder::skip_row(&schema, cursor)
         }
         _ => {
             skip_to_end(cursor);
@@ -388,37 +415,259 @@ pub fn key_slice<'e>(
     element.get(..key_len)
 }
 
-/// Returns the Row [`Schema`](crate::schema::Schema) of a Row coder, also inside a length
-/// prefix, windowed value or nullable coder. Returns `None` if there is no valid Row schema.
+/// Returns the Row [`Schema`] of the rows in an element of `coder_id`.
+///
+/// Looks through length prefix, windowed value, nullable, iterable and key-value coders. The
+/// harness gives this one schema to every row in the element. Returns `None` if the coder has
+/// no Row coder with a valid schema, or Row coders with different schemas.
 pub fn extract_row_schema(
     coder_id: &str,
     coders: &HashMap<String, ProtoCoder>,
-) -> Option<std::sync::Arc<crate::schema::Schema>> {
-    let mut current_id = coder_id;
-    let mut visited = std::collections::HashSet::new();
-    loop {
-        if !visited.insert(current_id) {
+) -> Option<Arc<Schema>> {
+    let mut payloads = Vec::new();
+    collect_row_payloads(coder_id, coders, &mut HashSet::new(), &mut payloads);
+    match payloads.as_slice() {
+        [payload] => Schema::from_proto_bytes(payload).ok().map(Arc::new),
+        _ => None,
+    }
+}
+
+/// Adds the distinct schema payloads of the Row coders under `coder_id` to `payloads`. Visits
+/// each coder once, so a cyclic coder graph ends.
+fn collect_row_payloads<'a>(
+    coder_id: &'a str,
+    coders: &'a HashMap<String, ProtoCoder>,
+    visited: &mut HashSet<&'a str>,
+    payloads: &mut Vec<&'a [u8]>,
+) {
+    if !visited.insert(coder_id) {
+        return;
+    }
+    let Some(coder) = coders.get(coder_id) else {
+        return;
+    };
+    match coder_urn(coder) {
+        URN_ROW => {
+            let payload = coder
+                .spec
+                .as_ref()
+                .map_or(&[][..], |s| s.payload.as_slice());
+            // A Row coder with no payload has no schema to give.
+            if !payload.is_empty() && !payloads.contains(&payload) {
+                payloads.push(payload);
+            }
+        }
+        URN_WINDOWED_VALUE
+        | URN_PARAM_WINDOWED_VALUE
+        | URN_LENGTH_PREFIX
+        | URN_NULLABLE
+        | URN_ITERABLE
+        | URN_STATE_BACKED_ITERABLE
+        | URN_KV => coder
+            .component_coder_ids
+            .iter()
+            .for_each(|id| collect_row_payloads(id, coders, visited, payloads)),
+        _ => {}
+    }
+}
+
+/// A coder compiled for skipping encoded values.
+///
+/// [`skip_coder_value`] looks up the coder and compares its URN for every value. A plan does
+/// that once, so a hot path builds the plan once per coder and calls [`skip`](Self::skip) for
+/// each value. Both find the same end of each value and fail on the same input.
+#[derive(Clone, Debug)]
+pub struct SkipPlan(Arc<SkipNode>);
+
+#[derive(Debug)]
+enum SkipNode {
+    VarInt,
+    Double,
+    Bool,
+    /// A string or bytes value: length-prefixed when nested, else the rest of the input.
+    Bytes,
+    LengthPrefix,
+    GlobalWindow,
+    IntervalWindow,
+    Kv(Arc<SkipNode>, Arc<SkipNode>),
+    Iterable(Arc<SkipNode>),
+    /// A nullable value. `None` when the coder has no component: a present value is empty.
+    Nullable(Option<Arc<SkipNode>>),
+    WindowedValue {
+        window: Arc<SkipNode>,
+        value: Arc<SkipNode>,
+    },
+    Timer {
+        key: Arc<SkipNode>,
+        window: Arc<SkipNode>,
+    },
+    Row(Arc<Schema>),
+    /// An unknown URN, a missing coder or a Row coder without a schema: the value takes the
+    /// rest of the input.
+    ToEnd,
+    /// A coder that [`skip_coder_value`] rejects when it reaches it. The plan fails at the
+    /// same value, not when it is built.
+    Invalid(Arc<str>),
+}
+
+impl SkipPlan {
+    /// Compiles `coder_id`. A coder that occurs more than once at the same depth shares one
+    /// plan, so a cycle unrolls to the depth limit with at most one node per coder and depth.
+    pub fn new(coder_id: &str, coders: &HashMap<String, ProtoCoder>) -> Self {
+        let mut built = HashMap::new();
+        Self(compile(coder_id, coders, 0, &mut built))
+    }
+
+    /// Moves `cursor` past one value. `nested` has the meaning of [`skip_coder_value`].
+    pub fn skip(&self, cursor: &mut Cursor<&[u8]>, nested: bool) -> Result<(), std::io::Error> {
+        skip_node(&self.0, cursor, nested)
+    }
+
+    /// Borrows the leading key out of an encoded KV `element`, with this plan as the key
+    /// coder. The same as [`key_slice`].
+    pub fn key_slice<'e>(&self, element: &'e [u8]) -> Option<&'e [u8]> {
+        if element.is_empty() {
             return None;
         }
-        let coder = coders.get(current_id)?;
-        let urn = coder_urn(coder);
-        match urn {
-            URN_ROW => {
-                let payload = coder
-                    .spec
-                    .as_ref()
-                    .map(|s| s.payload.as_slice())
-                    .unwrap_or(&[]);
-                if payload.is_empty() {
-                    return None;
-                }
-                let schema = crate::schema::Schema::from_proto_bytes(payload).ok()?;
-                return Some(std::sync::Arc::new(schema));
-            }
-            URN_WINDOWED_VALUE | URN_PARAM_WINDOWED_VALUE | URN_LENGTH_PREFIX | URN_NULLABLE => {
-                current_id = coder.component_coder_ids.first()?.as_str();
-            }
-            _ => return None,
+        let mut cursor = Cursor::new(element);
+        self.skip(&mut cursor, true).ok()?;
+        element.get(..usize::try_from(cursor.position()).ok()?)
+    }
+}
+
+fn invalid_data(message: &str) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, message.to_string())
+}
+
+/// Compiles one coder at `depth`. `built` holds the nodes compiled so far, by coder ID and
+/// depth. The depth is part of the key because the depth limit makes the same coder end at a
+/// different level of a cycle.
+fn compile<'a>(
+    coder_id: &'a str,
+    coders: &'a HashMap<String, ProtoCoder>,
+    depth: usize,
+    built: &mut HashMap<(&'a str, usize), Arc<SkipNode>>,
+) -> Arc<SkipNode> {
+    if depth > MAX_SKIP_DEPTH {
+        return Arc::new(SkipNode::Invalid(Arc::from(format!(
+            "coder '{coder_id}' nests deeper than {MAX_SKIP_DEPTH} levels"
+        ))));
+    }
+    if let Some(node) = built.get(&(coder_id, depth)) {
+        return Arc::clone(node);
+    }
+    let Some(coder) = coders.get(coder_id) else {
+        return Arc::new(SkipNode::ToEnd);
+    };
+    let component = |index: usize, built: &mut HashMap<(&'a str, usize), Arc<SkipNode>>| {
+        compile(component_coder_id(coder, index), coders, depth + 1, built)
+    };
+    let node = match coder_urn(coder) {
+        URN_VARINT => SkipNode::VarInt,
+        URN_DOUBLE => SkipNode::Double,
+        URN_BOOL => SkipNode::Bool,
+        URN_STRING_UTF8 | URN_BYTES => SkipNode::Bytes,
+        URN_LENGTH_PREFIX => SkipNode::LengthPrefix,
+        URN_KV if coder.component_coder_ids.len() < 2 => SkipNode::Invalid(Arc::from(format!(
+            "KV coder '{coder_id}' has fewer than 2 components"
+        ))),
+        URN_KV => SkipNode::Kv(component(0, built), component(1, built)),
+        URN_ITERABLE | URN_STATE_BACKED_ITERABLE => SkipNode::Iterable(component(0, built)),
+        URN_NULLABLE => {
+            SkipNode::Nullable((!coder.component_coder_ids.is_empty()).then(|| component(0, built)))
         }
+        URN_GLOBAL_WINDOW => SkipNode::GlobalWindow,
+        URN_INTERVAL_WINDOW => SkipNode::IntervalWindow,
+        URN_WINDOWED_VALUE => SkipNode::WindowedValue {
+            window: component(1, built),
+            value: component(0, built),
+        },
+        // A param windowed value has only the inner element on the wire.
+        URN_PARAM_WINDOWED_VALUE => {
+            let inner = component(0, built);
+            built.insert((coder_id, depth), Arc::clone(&inner));
+            return inner;
+        }
+        URN_TIMER => SkipNode::Timer {
+            key: component(0, built),
+            window: component(1, built),
+        },
+        URN_ROW => {
+            let schema_bytes = coder
+                .spec
+                .as_ref()
+                .map_or(&[][..], |s| s.payload.as_slice());
+            if schema_bytes.is_empty() {
+                SkipNode::ToEnd
+            } else {
+                match Schema::from_proto_bytes(schema_bytes) {
+                    Ok(schema) => SkipNode::Row(Arc::new(schema)),
+                    Err(e) => SkipNode::Invalid(Arc::from(e.to_string())),
+                }
+            }
+        }
+        _ => SkipNode::ToEnd,
+    };
+    let node = Arc::new(node);
+    built.insert((coder_id, depth), Arc::clone(&node));
+    node
+}
+
+fn skip_node(
+    node: &SkipNode,
+    cursor: &mut Cursor<&[u8]>,
+    nested: bool,
+) -> Result<(), std::io::Error> {
+    match node {
+        SkipNode::VarInt => VarIntCoder::decode_varint(cursor).map(|_| ()),
+        SkipNode::Double => read_array::<8>(cursor).map(|_| ()),
+        SkipNode::Bool => read_array::<1>(cursor).map(|_| ()),
+        SkipNode::Bytes if nested => skip_length_prefixed(cursor),
+        SkipNode::Bytes | SkipNode::ToEnd => {
+            skip_to_end(cursor);
+            Ok(())
+        }
+        SkipNode::LengthPrefix => skip_length_prefixed(cursor),
+        SkipNode::Kv(key, value) => {
+            skip_node(key, cursor, true)?;
+            skip_node(value, cursor, nested)
+        }
+        SkipNode::Iterable(element) => {
+            skip_iterable_elements(cursor, |cursor| skip_node(element, cursor, true))
+        }
+        SkipNode::Nullable(inner) => {
+            let [tag] = read_array(cursor)?;
+            match inner.as_deref().filter(|_| tag != 0) {
+                Some(inner) => skip_node(inner, cursor, nested),
+                None => Ok(()),
+            }
+        }
+        SkipNode::GlobalWindow => Ok(()),
+        SkipNode::IntervalWindow => {
+            read_array::<8>(cursor)?;
+            VarIntCoder::decode_varint(cursor).map(|_| ())
+        }
+        SkipNode::WindowedValue { window, value } => {
+            read_array::<8>(cursor)?; // timestamp
+            let win_count = read_window_count(cursor)?;
+            (0..win_count).try_for_each(|_| skip_node(window, cursor, true))?;
+            skip_pane_info(cursor)?;
+            skip_node(value, cursor, nested)
+        }
+        SkipNode::Timer { key, window } => {
+            skip_node(key, cursor, true)?;
+            skip_length_prefixed(cursor)?;
+            let win_count = read_window_count(cursor)?;
+            (0..win_count).try_for_each(|_| skip_node(window, cursor, true))?;
+            let [clear] = read_array::<1>(cursor)?;
+            if clear == 0 {
+                read_array::<8>(cursor)?;
+                read_array::<8>(cursor)?;
+                skip_pane_info(cursor)?;
+            }
+            Ok(())
+        }
+        SkipNode::Row(schema) => RowCoder::skip_row(schema, cursor),
+        SkipNode::Invalid(message) => Err(invalid_data(message)),
     }
 }

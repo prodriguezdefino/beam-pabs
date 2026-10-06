@@ -23,11 +23,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use beam::coders::{
-    DefaultCoder, TimerCoder, TimerRecord, URN_GLOBAL_WINDOW, URN_STRING_UTF8, URN_TIMER,
+    DefaultCoder, TimerAction, TimerCoder, TimerRecord, URN_GLOBAL_WINDOW, URN_STRING_UTF8,
+    URN_TIMER,
 };
 use beam::internals::{TimerCollector, TimerFamilySpec};
 use beam::pipeline::Pipeline;
-use beam::pipeline::constants::URN_REQUIREMENT_STATEFUL;
+use beam::pipeline::URN_REQUIREMENT_STATEFUL;
 use beam::prelude::*;
 use beam::transforms::{Create, ParDo};
 use model::pipeline::time_domain::Enum as TimeDomainProto;
@@ -59,8 +60,12 @@ fn test_timer_coder_roundtrip_set_and_clear() {
 
     // Timer set record roundtrip.
     let user_key = "user_42".to_string().encode().unwrap();
-    let set_record =
-        TimerRecord::new_set(user_key.clone(), "tag_alpha", 1_700_000_000, 1_699_999_990);
+    let set_record = TimerRecord::new_set(
+        user_key.clone(),
+        "tag_alpha",
+        Instant::from_millis(1_700_000_000),
+        Instant::from_millis(1_699_999_990),
+    );
     let mut buf = Vec::new();
     TimerCoder::encode(&set_record, &mut buf).unwrap();
 
@@ -80,6 +85,21 @@ fn test_timer_coder_roundtrip_set_and_clear() {
         TimerCoder::decode(&mut clear_cursor, "key_coder", "window_coder", &coders).unwrap();
     assert_eq!(decoded_clear, clear_record);
     assert_eq!(clear_cursor.position() as usize, clear_buf.len());
+
+    // The clear byte is the last byte of a clear record. Only 0 and 1 are valid (C3-F18).
+    let mut bad_buf = clear_buf.clone();
+    *bad_buf.last_mut().unwrap() = 0x02;
+    let err = TimerCoder::decode(
+        &mut Cursor::new(bad_buf.as_slice()),
+        "key_coder",
+        "window_coder",
+        &coders,
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("Invalid timer clear byte: 2"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -133,7 +153,12 @@ fn a_timer_pane_with_the_metadata_flag_is_read_past_its_metadata() {
         ("key_coder".to_string(), coder(URN_STRING_UTF8)),
         ("window_coder".to_string(), coder(URN_GLOBAL_WINDOW)),
     ]);
-    let record = TimerRecord::new_set("k".to_string().encode().unwrap(), "t", 10, 5);
+    let record = TimerRecord::new_set(
+        "k".to_string().encode().unwrap(),
+        "t",
+        Instant::from_millis(10),
+        Instant::from_millis(5),
+    );
     let mut buf = Vec::new();
     TimerCoder::encode(&record, &mut buf).unwrap();
     // The pane is the last byte and has no indices. Flag metadata and append a blob.
@@ -184,7 +209,7 @@ impl StatefulDoFn for InactivityFn {
 }
 
 #[test]
-fn timers_are_set_for_the_key_of_the_element_without_a_state_reader() {
+fn timers_are_set_for_the_key_of_the_element_without_a_state_backend() {
     use beam::internals::{HandlerContext, IntoParDoFn};
 
     let collector = Arc::new(TimerCollector::new());
@@ -199,42 +224,61 @@ fn timers_are_set_for_the_key_of_the_element_without_a_state_reader() {
     let key = "key1".to_string().encode().expect("encode");
     let drained = collector.drain_records(&key, b"");
     let (set, clear) = match drained.as_slice() {
-        [a, b] if !a.clear => (a, b),
+        [a, b] if a.action != TimerAction::Clear => (a, b),
         [a, b] => (b, a),
         other => panic!("expected one set and one clear, got {}", other.len()),
     };
-    assert_eq!((set.clear, set.dynamic_tag.as_str()), (false, ""));
+    assert!(matches!(set.action, TimerAction::Set { .. }));
+    assert_eq!(set.dynamic_tag, "");
     assert_eq!(
-        (clear.clear, clear.dynamic_tag.as_str()),
-        (true, "session_tag")
+        (clear.action, clear.dynamic_tag.as_str()),
+        (TimerAction::Clear, "session_tag")
     );
     assert!(drained.iter().all(|record| record.user_key == key));
 }
 
-/// Projects the fields `drain_records` fills in, plus the set/clear payload.
+/// Projects the fields `drain_records` fills in, plus the set/clear payload: `(clear, fire,
+/// hold)`, with zero timestamps for a clear.
 fn summary(record: &TimerRecord) -> (&str, &[u8], &[Vec<u8>], bool, i64, i64) {
+    let (clear, fire, hold) = match record.action {
+        TimerAction::Clear => (true, 0, 0),
+        TimerAction::Set {
+            fire_timestamp,
+            hold_timestamp,
+            ..
+        } => (
+            false,
+            fire_timestamp.as_millis(),
+            hold_timestamp.as_millis(),
+        ),
+    };
     (
         record.dynamic_tag.as_str(),
         &record.user_key,
         &record.windows,
-        record.clear,
-        record.fire_timestamp,
-        record.hold_timestamp,
+        clear,
+        fire,
+        hold,
     )
 }
 
 #[test]
 fn drained_timers_take_the_element_key_and_window_only_when_unbound() {
     let collector = Arc::new(TimerCollector::new());
-    collector.set("f", "unbound", 10, 5);
+    collector.set(
+        "f",
+        "unbound",
+        Instant::from_millis(10),
+        Instant::from_millis(5),
+    );
     collector.clear("f", "cleared");
     collector.set_with_context(
         "f",
         "bound",
-        b"own-key".to_vec(),
-        b"own-window".to_vec(),
-        30,
-        20,
+        Some(b"own-key".to_vec()),
+        Some(b"own-window".to_vec()),
+        Instant::from_millis(30),
+        Instant::from_millis(20),
     );
 
     let drained = collector.drain_records(b"key", b"window");

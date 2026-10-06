@@ -25,6 +25,7 @@ use std::sync::Arc;
 use model::pipeline as proto;
 use prost::Message;
 
+use super::reshuffle::Reshuffle;
 use super::{DisplayDataBuilder, ElementSink, HasDisplayData, PTransform, TransformFn};
 use crate::coders::DefaultCoder;
 use crate::internals::ParDoRegistration;
@@ -105,21 +106,33 @@ impl<T: DefaultCoder> PTransform<PBegin> for Create<T> {
             .output("out", out_pcoll.id())
             .register_spec(do_fn);
 
-        let outputs = HashMap::from([("out".to_string(), out_pcoll.id().to_string())]);
+        // One `Process` call emits every element in one bundle. Without the shuffle, all work
+        // that fuses after `Create` runs on one worker.
+        let before_shuffle = pipeline.lock().transform_ids();
+        let output = match self.elements.len() {
+            0 | 1 => out_pcoll,
+            _ => out_pcoll.apply(Reshuffle::new(format!("{name}/Reshuffle"))),
+        };
+        let subtransforms = [impulse_id, process_id]
+            .into_iter()
+            .chain(pipeline.lock().outermost_transforms_since(&before_shuffle))
+            .collect();
+
+        let outputs = HashMap::from([("out".to_string(), output.id().to_string())]);
         let transform_id = pipeline.add_composite_transform(
             &name,
             None,
             Vec::new(),
             HashMap::new(),
             outputs,
-            vec![impulse_id, process_id],
+            subtransforms,
         );
 
         let mut builder = DisplayDataBuilder::with_namespace(name);
         self.populate_display_data(&mut builder);
         pipeline.set_transform_display_data(&transform_id, builder.into_proto());
 
-        out_pcoll
+        output
     }
 }
 

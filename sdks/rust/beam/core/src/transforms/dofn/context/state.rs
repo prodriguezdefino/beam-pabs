@@ -28,6 +28,6 @@ use crate::transforms::dofn::stateful::StateBinding;
 impl<T> ProcessContext<'_, T> {
     /// Returns the binding of state cells to `key` (encoded) and the current window.
     pub(crate) fn state_binding<'b>(&'b self, key: &'b [u8]) -> StateBinding<'b> {
-        StateBinding::new(self.state_reader.map(Arc::clone), self.window_bytes(), key)
+        StateBinding::new(self.state_backend.map(Arc::clone), self.window_bytes(), key)
     }
 }

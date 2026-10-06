@@ -19,16 +19,18 @@
 
 //! Keyed processing with typed user state and timers.
 
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use super::context::{FinishBundleContext, HandlerContext, ProcessContext, StatefulContext};
 use super::pardo::{IntoParDoFn, Stateful, process_each_window, process_value_each_window, sealed};
 use super::state::{
     AnyStateSpec, BagState, BagStateSpec, MapState, MapStateSpec, OrderedListState,
-    OrderedListStateSpec, SetState, SetStateSpec, UserStateReader, ValueState, ValueStateSpec,
+    OrderedListStateSpec, SetState, SetStateSpec, UserStateBackend, UserStateError, ValueState,
+    ValueStateSpec,
 };
 use super::timer::{TimeDomain, TimerFamilySpec};
-use crate::coders::{DefaultCoder, TimerRecord, WindowedHeader};
+use crate::coders::{DefaultCoder, TimerAction, TimerRecord, WindowedHeader};
 use crate::transforms::{
     BundleHandler, DisplayDataBuilder, HandlerInstance, TransformFn, TypedElement,
 };
@@ -171,44 +173,50 @@ pub trait StatefulDoFn: Clone + Send + Sync + 'static {
     }
 }
 
-/// Where state cells read and write: the state reader, the window and the encoded key.
+/// Where state cells read and write: the state backend, the window and the encoded key.
 pub struct StateBinding<'a> {
-    reader: Option<Arc<dyn UserStateReader>>,
-    window: &'a [u8],
-    key: &'a [u8],
+    backend: Option<Arc<dyn UserStateBackend>>,
+    window: Arc<[u8]>,
+    key: Arc<[u8]>,
+    _marker: PhantomData<&'a ()>,
 }
 
 impl<'a> StateBinding<'a> {
-    /// Binds to `window` and `key`. Without a reader, a cell fails to bind; `()` state does
+    /// Binds to `window` and `key`. Without a backend, a cell fails to bind; `()` state does
     /// not need one.
-    pub fn new(reader: Option<Arc<dyn UserStateReader>>, window: &'a [u8], key: &'a [u8]) -> Self {
+    pub fn new(
+        backend: Option<Arc<dyn UserStateBackend>>,
+        window: &'a [u8],
+        key: &'a [u8],
+    ) -> Self {
         Self {
-            reader,
-            window,
-            key,
+            backend,
+            window: Arc::from(window),
+            key: Arc::from(key),
+            _marker: PhantomData,
         }
     }
 
     fn parts(&self, id: &str) -> crate::Result<CellParts> {
-        let reader = self
-            .reader
+        let backend = self
+            .backend
             .as_ref()
-            .ok_or_else(|| format!("No active UserStateReader for state '{id}'"))?;
+            .ok_or_else(|| UserStateError::MissingBackend(id.to_string()))?;
         Ok(CellParts {
-            reader: Arc::clone(reader),
-            id: id.to_string(),
-            window: self.window.to_vec(),
-            key: self.key.to_vec(),
+            backend: Arc::clone(backend),
+            id: Arc::from(id),
+            window: Arc::clone(&self.window),
+            key: Arc::clone(&self.key),
         })
     }
 }
 
-/// What one state cell holds: where it reads, its state id, its window and its key.
+/// What one state cell holds: where it reads and writes, its state id, its window and its key.
 struct CellParts {
-    reader: Arc<dyn UserStateReader>,
-    id: String,
-    window: Vec<u8>,
-    key: Vec<u8>,
+    backend: Arc<dyn UserStateBackend>,
+    id: Arc<str>,
+    window: Arc<[u8]>,
+    key: Arc<[u8]>,
 }
 
 /// A struct of state cells. `#[derive(State)]` implements it; `()` has no cells.
@@ -246,12 +254,12 @@ impl<V: DefaultCoder> StateCell for BagState<V> {
 
     fn bind(id: &str, binding: &StateBinding<'_>) -> crate::Result<Self> {
         let CellParts {
-            reader,
+            backend,
             id,
             window,
             key,
         } = binding.parts(id)?;
-        Ok(BagState::new(reader, id, window, key))
+        Ok(BagState::new(backend, id, window, key))
     }
 }
 
@@ -272,12 +280,12 @@ impl<K: DefaultCoder, V: DefaultCoder> StateCell for MapState<K, V> {
 
     fn bind(id: &str, binding: &StateBinding<'_>) -> crate::Result<Self> {
         let CellParts {
-            reader,
+            backend,
             id,
             window,
             key,
         } = binding.parts(id)?;
-        Ok(MapState::new(reader, id, window, key))
+        Ok(MapState::new(backend, id, window, key))
     }
 }
 
@@ -298,12 +306,12 @@ impl<T: DefaultCoder> StateCell for OrderedListState<T> {
 
     fn bind(id: &str, binding: &StateBinding<'_>) -> crate::Result<Self> {
         let CellParts {
-            reader,
+            backend,
             id,
             window,
             key,
         } = binding.parts(id)?;
-        Ok(OrderedListState::new(reader, id, window, key))
+        Ok(OrderedListState::new(backend, id, window, key))
     }
 }
 
@@ -393,6 +401,7 @@ impl<F: StatefulDoFn> StatefulDoFnHandler<F> {
         (key, value): (F::Key, F::Value),
         ctx: ProcessContext<'_, F::Out>,
     ) -> crate::Result {
+        // Encode the key once to scope user state cells and timers for this element.
         let key_bytes = key.encode()?;
         let mut state = F::State::bind(&ctx.state_binding(&key_bytes))?;
         let mut ctx = StatefulContext::new(ctx, key_bytes);
@@ -427,14 +436,19 @@ impl<F: StatefulDoFn> BundleHandler for StatefulDoFnHandler<F> {
         record: &TimerRecord,
         ctx: &mut HandlerContext<'_>,
     ) -> Result<(), String> {
-        if record.clear {
+        let TimerAction::Set {
+            fire_timestamp,
+            pane,
+            ..
+        } = record.action
+        else {
             return Ok(());
-        }
+        };
         let timer = F::Timer::from_fired(family, &record.dynamic_tag)
             .ok_or_else(|| format!("A timer fired in the undeclared family '{family}'"))?;
         let key = F::Key::decode(&record.user_key)
             .map_err(|e| format!("Failed to decode the key of a fired timer: {e}"))?;
-        let header = WindowedHeader::new(record.fire_timestamp, &record.windows, record.pane);
+        let header = WindowedHeader::new(fire_timestamp.as_millis(), &record.windows, pane);
         let pctx = ctx
             .as_process_context::<F::Out>()
             .with_key_bytes(record.user_key.as_slice())

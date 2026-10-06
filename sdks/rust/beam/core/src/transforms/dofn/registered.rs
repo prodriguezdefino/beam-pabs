@@ -19,11 +19,12 @@
 
 //! The link-time registry of function types that `#[derive(Register)]` fills.
 //!
-//! [`ParDo`](crate::transforms::ParDo) and
-//! [`SplittableParDo`](crate::transforms::sdf::SplittableParDo) find the type of their
-//! function here by [`TypeId`] and write the stable id and the serialized fields into the
-//! function spec. The worker builds the function from that spec. A type with no entry stays
-//! on the rebuild path.
+//! [`ParDo`](crate::transforms::ParDo),
+//! [`SplittableParDo`](crate::transforms::sdf::SplittableParDo) and
+//! [`CombinePerKey`](crate::transforms::CombinePerKey) find the type of their function here
+//! by [`TypeId`] and write the stable id and the serialized fields into the function spec.
+//! The worker builds the function from that spec. A type with no entry stays on the rebuild
+//! path.
 
 use std::any::{Any, TypeId};
 use std::sync::Arc;
@@ -39,6 +40,8 @@ use super::stateful::StatefulDoFn;
 use crate::pipeline::constants::URN_RUST_DOFN_REGISTERED;
 use crate::pipeline::{Pipeline, PipelineError};
 use crate::transforms::TransformFn;
+use crate::transforms::combine::CombineFn;
+use crate::transforms::combine::registered::{CombineStages, Combining, registered_combine};
 
 /// One registered function type. `#[derive(Register)]` submits it; do not submit it by hand.
 pub struct FnRegistration {
@@ -58,13 +61,16 @@ inventory::collect!(FnRegistration);
 pub enum Registered {
     /// The handler of a `DoFn`, `StatefulDoFn` or `SplittableDoFn`.
     Handler(TransformFn),
+    /// The stages of a `CombineFn`. The spec of each stage selects one.
+    Combine(Arc<dyn CombineStages>),
 }
 
 /// Selects how a registered [`SplittableDoFn`] becomes a handler. The compiler infers it.
 pub struct Splittable;
 
 /// A function type that `#[derive(Register)]` registers: a [`DoFn`] (`M` = [`Stateless`]),
-/// a [`StatefulDoFn`] (`M` = [`Stateful`]) or a [`SplittableDoFn`] (`M` = [`Splittable`]).
+/// a [`StatefulDoFn`] (`M` = [`Stateful`]), a [`SplittableDoFn`] (`M` = [`Splittable`]) or
+/// a [`CombineFn`] (`M` = [`Combining`]).
 pub trait RegisteredFn<M>: DeserializeOwned {
     /// Wraps the function in what the worker runs.
     fn into_registered(self) -> Registered;
@@ -85,6 +91,12 @@ impl<F: StatefulDoFn + DeserializeOwned> RegisteredFn<Stateful> for F {
 impl<S: SplittableDoFn + DeserializeOwned> RegisteredFn<Splittable> for S {
     fn into_registered(self) -> Registered {
         Registered::Handler(Arc::new(SplittableDoFnHandler::new(self)))
+    }
+}
+
+impl<CF: CombineFn + DeserializeOwned> RegisteredFn<Combining> for CF {
+    fn into_registered(self) -> Registered {
+        Registered::Combine(registered_combine(self))
     }
 }
 
@@ -169,8 +181,12 @@ pub(crate) fn graph_spec<F: 'static>(
 pub fn registered_handler(payload: &[u8]) -> Result<TransformFn, String> {
     let RegisteredSpec { id, fields } = RegisteredSpec::decode(payload)
         .map_err(|e| format!("Failed to decode the registered DoFn payload: {e}"))?;
-    let Registered::Handler(handler) = build(&id, &fields)?;
-    Ok(handler)
+    match build(&id, &fields)? {
+        Registered::Handler(handler) => Ok(handler),
+        Registered::Combine(_) => Err(format!(
+            "'{id}' is registered as a CombineFn, but the spec runs it as a DoFn"
+        )),
+    }
 }
 
 /// Builds what the worker runs for the registered function `id` from its fields.

@@ -51,7 +51,7 @@ impl<'a, F: StatefulDoFn> StatefulContext<'a, F> {
         window_of(self.inner.header())
     }
 
-    /// Starts setting or clearing `timer` for the current key and window, as Java's `Timer`.
+    /// Starts setting or clearing `timer` for the current key and window.
     ///
     /// ```ignore
     /// ctx.timer(Flush::EndOfWindow).at(ctx.window()?.max_timestamp())?;
@@ -77,7 +77,7 @@ impl<'a, F: StatefulDoFn> StatefulContext<'a, F> {
 ///
 /// The firing time is in the domain of the timer: event time, or processing time. By default
 /// the output watermark is held at the firing time of an event-time timer, and at the
-/// timestamp of the current element for a processing-time timer, as in Java.
+/// timestamp of the current element for a processing-time timer.
 #[must_use = "a timer does nothing until `at`, `after` or `clear` is called"]
 pub struct Timer<'c, 'a, F: StatefulDoFn> {
     ctx: &'c StatefulContext<'a, F>,
@@ -100,13 +100,15 @@ impl<F: StatefulDoFn> Timer<'_, '_, F> {
             TimeDomain::EventTime => time,
             TimeDomain::ProcessingTime => element,
         });
+        // The TimerCollector buffers an owned TimerRecord for each mutation.
+        // The harness drains these records after the callback returns.
         self.ctx.collector()?.set_with_context(
             self.timer.family(),
             self.timer.tag(),
-            self.ctx.key.clone(),
-            self.ctx.inner.window_bytes().to_vec(),
-            time.as_millis(),
-            hold.as_millis(),
+            Some(self.ctx.key.clone()),
+            Some(self.ctx.inner.window_bytes().to_vec()),
+            time,
+            hold,
         );
         Ok(())
     }
@@ -123,11 +125,13 @@ impl<F: StatefulDoFn> Timer<'_, '_, F> {
 
     /// Clears the timer.
     pub fn clear(self) -> crate::Result {
+        // The TimerCollector buffers an owned TimerRecord for each mutation.
+        // The harness drains these records after the callback returns.
         self.ctx.collector()?.clear_with_context(
             self.timer.family(),
             self.timer.tag(),
-            self.ctx.key.clone(),
-            self.ctx.inner.window_bytes().to_vec(),
+            Some(self.ctx.key.clone()),
+            Some(self.ctx.inner.window_bytes().to_vec()),
         );
         Ok(())
     }
