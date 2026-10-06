@@ -152,9 +152,11 @@ impl<T: 'static> POutput for PCollection<T> {
     }
 }
 
-/// [`PCollection`]s of one element type `T`: the input of `Flatten` or the output of
-/// `Partition`.
+/// [`PCollection`]s of one element type `T`: the input of [`Flatten`] or the output of
+/// [`Partition`].
 ///
+/// [`Flatten`]: crate::transforms::Flatten
+/// [`Partition`]: crate::transforms::Partition
 pub struct PCollectionList<T> {
     pipeline: Pipeline,
     collections: Vec<PCollection<T>>,

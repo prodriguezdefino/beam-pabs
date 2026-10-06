@@ -19,8 +19,8 @@
 
 //! Transforms: the operations that build a pipeline's graph.
 //!
-//! A [`PTransform`] expands a [`PInput`] into a [`POutput`]. The byte-level handlers that a
-//! runner executes are in [`crate::internals`].
+//! A [`PTransform`] expands a [`PInput`] into a [`POutput`]; [`ParDo`] lifts a [`DoFn`]
+//! into one. The byte-level handlers that a runner executes are in [`crate::internals`].
 //!
 //! This crate is `apply`-style: `pcoll.apply(Map::new("Name", f))`. Method syntax
 //! (`.map(..)`) comes from extension traits in `apache-beam-fluent`; `beam::prelude`
@@ -28,15 +28,40 @@
 
 use crate::values::{PInput, POutput};
 
+mod create;
 pub mod display_data;
 pub(crate) mod dofn;
+pub mod failure;
+mod filter;
+mod flat_map;
+mod flatten;
+mod group_by_key;
 pub(crate) mod handler;
+mod inspect;
+mod map;
+mod partition;
+mod try_map;
 
+pub use create::Create;
+use dofn::ClosureFn;
 pub use dofn::{
-    BagState, BagStateSpec, MapState, MapStateSpec, OutputBuilder, OutputTag, ProcessContext,
-    SetState, SetStateSpec, TimeDomain, Timer, TimerFamilySpec, ValueState, ValueStateSpec,
+    BagState, BagStateSpec, BatchConverter, BatchedDoFn, BatchedDoFnAdapter, DoFn, MapState,
+    MapStateSpec, OutputBuilder, OutputTag, ParDo, ParDoMulti, ProcessContext, SetState,
+    SetStateSpec, TimeDomain, Timer, TimerFamilySpec, ValueState, ValueStateSpec,
+    VecBatchConverter,
 };
+pub use failure::{ExceptionElement, Failure, FailureCoder, TryParDo, WithFailures};
+pub use filter::Filter;
+pub use flat_map::FlatMap;
+pub use flatten::Flatten;
+pub use group_by_key::GroupByKey;
 pub(crate) use handler::{BundleHandler, ElementSink, HandlerInstance, TransformFn, TypedElement};
+pub use inspect::Inspect;
+pub use map::Map;
+pub use partition::Partition;
+pub use try_map::TryMap;
+
+pub(crate) use display_data::{DisplayDataBuilder, HasDisplayData};
 
 /// A composite or primitive transform converting a [`PInput`] into a [`POutput`].
 pub trait PTransform<Input: PInput> {

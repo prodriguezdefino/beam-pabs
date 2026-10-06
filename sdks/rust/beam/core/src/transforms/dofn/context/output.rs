@@ -26,10 +26,11 @@ use crate::coders::{
     CausedByDrain, DefaultCoder, ElementMetadata, PaneInfo, ValueKind, WindowedHeader,
 };
 use crate::transforms::TypedElement;
+use crate::transforms::failure::{FAILURES_TAG, Failure};
 
 /// An output tag of a multi-output `DoFn`, for [`OutputBuilder::to`]. Build it from a name,
 /// or from an index for the tags `"0"`, `"1"`, ..., as in
-/// `Partition`.
+/// [`Partition`](crate::transforms::Partition).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutputTag<'t>(Cow<'t, str>);
 
@@ -72,6 +73,18 @@ impl<'a, T: DefaultCoder> ProcessContext<'a, T> {
 
     pub fn emit_all<I: IntoIterator<Item = T>>(&mut self, values: I) -> crate::Result {
         values.into_iter().try_for_each(|v| self.emit(v))
+    }
+
+    /// Routes `input` and `error` to the failures output of a
+    /// [`TryParDo`](crate::transforms::TryParDo). The types must match the `Failure<I, E>` of
+    /// the transform; for the default `Failure<I>`, pass the error as a `String`.
+    pub fn emit_failure<I: DefaultCoder, E: DefaultCoder>(
+        &mut self,
+        input: I,
+        error: E,
+    ) -> crate::Result {
+        self.output_to(FAILURES_TAG, Failure { input, error })
+            .emit()
     }
 
     /// Starts an output element whose tag, timestamp, windows, pane or metadata can change.
@@ -137,7 +150,7 @@ impl<'ctx, 'a, T, V> OutputBuilder<'ctx, 'a, T, V> {
     /// the current element. Other overrides apply on top of it.
     ///
     /// Use it to flush buffered elements in
-    /// `finish_bundle`: there the inherited header is
+    /// [`finish_bundle`](crate::transforms::DoFn::finish_bundle): there the inherited header is
     /// the last one that the runner sent, under fusion often the impulse in the global window.
     /// Store the header of each element and pass it here.
     pub fn windowed(mut self, header: &'ctx WindowedHeader) -> Self {

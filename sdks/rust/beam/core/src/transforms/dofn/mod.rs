@@ -22,12 +22,18 @@
 //! This module is crate-private. [`crate::transforms`] exports the user items and
 //! [`crate::internals`] exports the runner plumbing.
 
+mod batch;
+mod closure;
 pub(crate) mod context;
+mod pardo;
 pub(crate) mod side_input;
 pub(crate) mod state;
 pub(crate) mod timer;
 
+pub use batch::{BatchConverter, BatchedDoFn, BatchedDoFnAdapter, VecBatchConverter};
+pub(super) use closure::ClosureFn;
 pub use context::{HandlerContext, OutputBuilder, OutputTag, ProcessContext};
+pub use pardo::{DoFn, DoFnHandler, ParDo, ParDoMulti};
 pub use state::{
     BagState, BagStateSpec, MapState, MapStateSpec, SetState, SetStateSpec, ValueState,
     ValueStateSpec,

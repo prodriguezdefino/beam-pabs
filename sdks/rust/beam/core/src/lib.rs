@@ -20,7 +20,8 @@
 //! Core types, traits, and pipeline model for the Apache Beam Rust SDK.
 //!
 //! - [`values`] — what flows through a pipeline: `PBegin`, `PCollection`, `PDone`.
-//! - [`transforms`] — the [`PTransform`](transforms::PTransform) trait that builds the graph.
+//! - [`transforms`] — the operations that build the graph, from the typed
+//!   [`DoFn`](transforms::DoFn) up to composite [`PTransform`](transforms::PTransform)s.
 //! - [`coders`] — how elements are serialized on the wire.
 //! - [`pipeline`] — the graph itself, and its translation to the Runner API.
 //! - [`options`] and [`runners`] — configuring and dispatching execution.

@@ -101,7 +101,7 @@ fn flags_after_an_undeclared_flag_are_still_parsed() {
     assert_eq!(args.output, "gs://bucket/counts");
 }
 
-/// Uses the exact flag set that the Dataflow Flex Template Go launcher passes. The launcher
+/// Uses the exact flag set that the Dataflow Flex Template launcher passes. The launcher
 /// sorts the flags alphabetically.
 #[test]
 fn flex_template_launcher_command_line_selects_the_requested_runner() {

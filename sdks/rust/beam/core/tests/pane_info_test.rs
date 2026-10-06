@@ -120,9 +120,7 @@ fn only_both_indices_zero_select_the_index_free_encoding() {
 
 #[test]
 fn an_unknown_pane_always_takes_the_first_encoding() {
-    // An UNKNOWN pane always takes the first encoding, and the encoder drops its indices.
-    // The Java, Python and Go SDKs encode it the same way. Encoded indices would give bytes
-    // that no other SDK reads back the same way, so the lossy encoding is the interoperable one.
+    // An UNKNOWN pane always uses the 1-byte header encoding (`0x00`) and drops indices.
     let pane = PaneInfo::new(true, true, Timing::Unknown, 7, 7);
     assert_eq!(encoded(pane, false), [0x0F]);
     assert_eq!(decoded(&[0x0F]), (PaneInfo::NO_FIRING, false));

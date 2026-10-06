@@ -47,6 +47,15 @@ Run builds through Gradle, like the rest of the Beam repository:
 
 For the full task reference, see [docs/development.md](docs/development.md).
 
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [Metrics and telemetry](docs/metrics.md) | Fn API monitoring protocol and supported metrics |
+| [Developing the SDK](docs/development.md) | Gradle tasks, testing, linting |
+
+The API reference is in the rustdoc: `cargo doc --open -p apache-beam`.
+
 ## Contributing
 
-See the [Beam Contribution Guide](https://beam.apache.org/contribute/). Each new file must have the standard Apache 2.0 license header. Before you open a PR, run `./gradlew :sdks:rust:check` to verify compliance.
+See the [Beam Contribution Guide](https://beam.apache.org/contribute/). Each new file must have the standard Apache 2.0 license header; the repository-wide `./gradlew rat` task checks it. Before you open a PR, run `./gradlew :sdks:rust:check` (formatting and clippy).

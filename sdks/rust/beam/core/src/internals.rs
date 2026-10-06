@@ -30,6 +30,7 @@ use crate::pipeline::constants::URN_RUST_DOFN;
 use crate::pipeline::resources::ResourceHints;
 use crate::pipeline::{Pipeline, URN_PAR_DO};
 
+pub use crate::transforms::dofn::DoFnHandler;
 pub use crate::transforms::dofn::context::{
     BundleFinalizerCollector, FinalizationCallback, HandlerContext, ResidualApplication,
     ResidualCollector,
@@ -49,7 +50,7 @@ pub use crate::values::SideInputKind;
 pub(crate) type FastHashMap<K, V> = HashMap<K, V, foldhash::fast::RandomState>;
 
 /// Adds one primitive `ParDo` to a pipeline's graph and registers its handler. Every `ParDo` in
-/// the SDK, including `ParDo`, goes through this builder. Only the
+/// the SDK, including [`ParDo`](crate::transforms::ParDo), goes through this builder. Only the
 /// name, the main input and the handler are required:
 ///
 /// ```

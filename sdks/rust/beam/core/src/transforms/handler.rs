@@ -126,8 +126,8 @@ impl ElementSink for Vec<Vec<u8>> {
 /// [`instantiate`](Self::instantiate). A copy calls `setup` once; per bundle `start_bundle`,
 /// then `process` and `on_timer`, then `finish_bundle`; and `teardown` at the end. A copy runs
 /// one bundle at a time and no two bundles share a copy, so the lifecycle methods take
-/// `&mut self` and need no locks. Pipeline code implements `DoFn`;
-/// `ParDo` adapts it to this trait.
+/// `&mut self` and need no locks. Pipeline code implements [`DoFn`](crate::transforms::DoFn);
+/// [`ParDo`](crate::transforms::ParDo) adapts it to this trait.
 pub trait BundleHandler: Send + Sync {
     /// Called once when the owning bundle processor is created.
     fn setup(&mut self) -> Result<(), String> {

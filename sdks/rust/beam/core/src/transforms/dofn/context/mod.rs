@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! The per-element context handed to a `DoFn`.
+//! The per-element context handed to a [`DoFn`](crate::transforms::DoFn).
 //!
 //! Each sibling module adds one `impl` block of [`ProcessContext`]: `process` (construction,
 //! element facts), `output`, `side_inputs`, `state`, `timers`, `metrics`, `residuals` (SDF
@@ -49,7 +49,7 @@ pub use handler::HandlerContext;
 pub use output::{OutputBuilder, OutputTag};
 pub use residuals::{ResidualApplication, ResidualCollector};
 
-/// Context passed to a `DoFn` per element and timer: output, side
+/// Context passed to a [`DoFn`](crate::transforms::DoFn) per element and timer: output, side
 /// inputs, user state, timers, bundle finalization, and the window, timestamp, pane, metadata
 /// and key of the current element.
 pub struct ProcessContext<'a, T = ()> {

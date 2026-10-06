@@ -63,7 +63,7 @@ impl BundleFinalizerCollector {
 impl<T> ProcessContext<'_, T> {
     /// Registers `callback` to run after the runner commits the outputs of this bundle. It
     /// runs only if the `DoFn` returns `true` from
-    /// `DoFn::requests_finalization`.
+    /// [`DoFn::requests_finalization`](crate::transforms::DoFn::requests_finalization).
     pub fn register_finalizer<F>(&self, callback: F)
     where
         F: FnOnce() -> crate::Result + Send + 'static,
