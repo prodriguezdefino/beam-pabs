@@ -1,0 +1,144 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Local CPU and memory profiles of a Rust pipeline on Prism (`profilePrism`).
+//
+// The task builds the binary in release with line tables, runs it on Prism with the LOOPBACK
+// worker under samply and /usr/bin/time, and writes a summary with
+// scripts/profiling/summary.py. It runs on the host only. See docs/development.md.
+
+def hostOs = System.getProperty('os.name').toLowerCase().contains('mac') ? 'darwin' : 'linux'
+
+tasks.register('profilePrism') {
+  group = 'Application'
+  description = 'Profile a Rust example locally on Prism with samply and/or time (-Pexample=<name> [-Pbin=<bin> -Ppkg=<crate>] [-Pargs="<pipeline flags>"] [-Prows=<n>] [-Pmode=cpu|memory|both] [-Pout=<dir>]). -Pmode=both runs the pipeline two times.'
+
+  dependsOn 'fetchPrism'
+
+  def mode = (project.findProperty('mode') ?: 'both').toString().toLowerCase()
+  def resolve = propsFor(selectedExample)
+  def binArg = project.findProperty('bin') ?: selectedExample
+  def pkgArg = project.findProperty('pkg') ?: project.findProperty('package') ?: selectedExample
+  def rowsArg = project.findProperty('rows')
+  def outArg = project.findProperty('out') ?: "${buildDir}/reports/profile/${selectedExample}-${System.currentTimeMillis()}"
+  def outDir = file(outArg)
+  def cargoTargetDir = System.getenv('CARGO_TARGET_DIR') ?: "${rustDir}/target"
+
+  def samplyBin = file("${System.getProperty('user.home')}/.cargo/bin/samply")
+  def samplyCmd = samplyBin.exists() ? samplyBin.absolutePath : 'samply'
+
+  def extraArgs = (resolve('args') ?: resolve('extraArgs') ?: resolve('exampleArgs') ?: '').toString().tokenize(' ')
+  def features = (resolve('exampleFeatures') ?: '').toString().trim()
+  def featureFlags = features ? ['--features', features] : []
+  def gcpArgs = portableGcpArgs(resolve)
+
+  doFirst {
+    if (mode in ['cpu', 'both']) {
+      try {
+        def res = project.exec {
+          commandLine samplyCmd, '--version'
+          ignoreExitValue = true
+        }
+        if (res.exitValue != 0) {
+          throw new GradleException("samply not found. Run 'cargo install --locked samply' to install it.")
+        }
+      } catch (Exception e) {
+        throw new GradleException("samply not found. Run 'cargo install --locked samply' to install it.", e)
+      }
+    }
+  }
+
+  doLast {
+    outDir.mkdirs()
+    def profileJson = file("${outDir}/profile.json.gz")
+    def timeTxt = file("${outDir}/time.txt")
+    def summaryTxt = file("${outDir}/summary.md")
+
+    println "Building binary ${binArg} in ${pkgArg}..."
+    project.exec {
+      workingDir rustDir
+      environment 'CARGO_PROFILE_RELEASE_DEBUG', 'line-tables-only'
+      environment 'CARGO_PROFILE_RELEASE_STRIP', 'none'
+      if (hostOs == 'darwin') {
+        environment 'CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO', 'unpacked'
+      }
+      def cmd = ['cargo', 'build', '--release', '-p', pkgArg, '--bin', binArg]
+      if (featureFlags) { cmd += featureFlags }
+      commandLine cmd
+    }
+
+    def binPath = file("${cargoTargetDir}/release/${binArg}").absolutePath
+    def runArgs = [
+      '--runner=PrismRunner',
+      '--environment_type=LOOPBACK'
+    ] + gcpArgs + extraArgs
+
+    if (mode in ['cpu', 'both']) {
+      println "Running CPU profile (samply)..."
+      project.exec {
+        workingDir rustDir
+        environment launchEnvironment()
+        def cmd = [samplyCmd, 'record', '--unstable-presymbolicate', '--save-only', '-o', profileJson.absolutePath, binPath] + runArgs
+        commandLine cmd
+      }
+    }
+
+    if (mode in ['memory', 'both']) {
+      println "Running Memory profile (time)..."
+      def timeCmd = hostOs == 'darwin' ? ['/usr/bin/time', '-l'] : ['/usr/bin/time', '-v']
+      new FileOutputStream(file("${outDir}/time.out")).withCloseable { outStream ->
+        new FileOutputStream(timeTxt).withCloseable { errStream ->
+          project.exec {
+            workingDir rustDir
+            environment launchEnvironment()
+            def cmd = timeCmd + [binPath] + runArgs
+            commandLine cmd
+            standardOutput = outStream
+            errorOutput = errStream
+          }
+        }
+      }
+    }
+
+    // The summary always runs: without a CPU profile it reports only the time output.
+    println "Generating summary..."
+    def profileArg = mode in ['cpu', 'both'] ? profileJson.absolutePath : 'none'
+    def pyArgs = ['python3', "${rustDir}/scripts/profiling/summary.py", profileArg]
+    if (timeTxt.exists()) {
+      pyArgs += ["--time-output", timeTxt.absolutePath]
+    }
+    if (rowsArg) {
+      pyArgs += ["--rows", rowsArg.toString()]
+    }
+
+    new FileOutputStream(summaryTxt).withCloseable { outStream ->
+      project.exec {
+        workingDir rustDir
+        commandLine pyArgs
+        standardOutput = outStream
+      }
+    }
+
+    println "Outputs written to: ${outDir}"
+    if (mode in ['cpu', 'both']) {
+      println "To view CPU profile: samply load ${profileJson}"
+    }
+    println "Summary:"
+    println summaryTxt.text
+  }
+}
