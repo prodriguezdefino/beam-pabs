@@ -53,6 +53,9 @@ class BeamRustPlugin implements Plugin<Project> {
     RustContainerTasks containers = RustContainerTasks.register(config)
     project.extensions.add(RustContainerTasks, 'rustContainerSupport', containers)
     prism.registerLaunchTasks(config)
+    RustDataflowTasks dataflow = RustDataflowTasks.register(config)
+    RustValidatesRunnerTasks.register(dataflow)
+    RustXlangTasks.register(containers)
 
     project.tasks.named('build').configure { Task task -> task.dependsOn('buildWorkspace') }
     project.tasks.named('check').configure { Task task ->
