@@ -48,7 +48,7 @@ ProcessBundleResponse / ProcessBundleProgressResponse
 - `beam:metric:data_channel:read_index:v1` (**Implemented**): read progress of the data channel (`sum_int64`).
 - `beam:metric:sampled_byte_size:v1` (**Implemented**): byte size distribution per PCollection.
 - `beam:metric:pardo_execution_time:process_bundle_msecs:v1` (**Implemented**): wall-clock execution time of DoFn processing, in milliseconds.
-- `beam:metric:ptransform_progress:completed:v1` and `beam:metric:ptransform_progress:remaining:v1` (**Implemented**): work completed and work remaining in the current element of a splittable DoFn, reported in `ProcessBundleProgressResponse`.
+- `beam:metric:ptransform_progress:completed:v1` and `beam:metric:ptransform_progress:remaining:v1` (**Implemented**): work completed and work remaining in the current element of a splittable DoFn. `ProcessBundleProgressResponse` reports them.
 
 **User-defined metrics** (**Implemented**). Call these directly in a DoFn.
 
