@@ -47,6 +47,11 @@ Unit and pipeline tests live in each example's `tests/` directory. `minimal_word
 | [`join`](#relational-joins) | `inner_join`, `left_join`, `CoGroupByKey` |
 | [`gaming`](#mobile-gaming-stateful-processing--metrics) | Stateful DoFn, user metrics |
 | [`partition`, `forest`](#partition--flatten) | `Partition`, `Flatten`, recursive construction |
+| [`bigquery_tornadoes`](#bigquery-tornadoes-cross-language) | Java BigQuery read and write |
+| [`bigtable_wordcount`](#bigtable-wordcount-cross-language-bigtable_wordcount) | Java Bigtable read and write |
+| [`kafka_ouroboros`](#kafka-ouroboros-cross-language-streaming-kafka_ouroboros) | Java Kafka read and write, Managed error handling |
+| [`pubsub_ouroboros`](#pubsub-ouroboros-cross-language-streaming-pubsub_ouroboros) | Java Pub/Sub read and write |
+| [`iceberg_wordcount`](#iceberg-wordcount-managed-io-iceberg_wordcount) | Managed I/O Iceberg |
 | [`windowed_wordcount`](#windowed-wordcount-fixed-tumbling-windows) | Event timestamps, fixed windows |
 | [`leaderboard`](#mobile-gaming-leaderboard-triggers-speculative-panes--allowed-lateness) | Triggers, accumulation, allowed lateness |
 | [`sessions`](#user-session-analytics-dynamic-sessionization--window-merging) | Session windows |
@@ -54,6 +59,8 @@ Unit and pipeline tests live in each example's `tests/` directory. `minimal_word
 | [`row_schemas`](#type-driven-row-schemas--logical-types-row_schemas) | `#[derive(BeamRow)]`, logical types |
 | [`state_conformance`](#cross-bundle-state-conformance-state_conformance) | `MapState`, `SetState`, timers |
 | [`fold_state_backed`](#fold-combinators--state-backed-iterables-fold_state_backed) | Folds, state-backed iterables |
+| [`nyc_taxi`](#nyc-taxi--rideshare-analytics-nyc_taxi) | Parquet read and write |
+| [`traffic_routes`](#traffic-routes-avro-analytics-traffic_routes) | CSV read, Avro write |
 
 ## Minimal WordCount
 
@@ -137,6 +144,71 @@ flattens their leaves (`--count`, default `2`; `--depth`, default `3`):
 ./gradlew :sdks:rust:prism -Pexample=forest
 ```
 
+## BigQuery Tornadoes (Cross-Language)
+
+This pipeline mixes native Rust processing with Java cross-language I/O transforms through the Beam Expansion Service:
+
+1. Reads weather station observations with the Java BigQuery Storage Read API (`--input`, default `apache-beam-testing.samples.weather_stations`, or `--input_query`).
+2. Filters for tornado events and extracts the month in Rust.
+3. Computes monthly tornado counts using `CountPerElement`.
+4. Writes aggregated results to the `--output` table with the Java BigQuery Write transform. `--write_method` selects `storage_write_api` (default), `file_loads`, `at_least_once`, or `auto`. Without `--output`, the pipeline only reads and counts.
+
+```bash
+# Run with Portable Prism runner:
+./gradlew :sdks:rust:prism \
+  -Pexample=bigquery_tornadoes \
+  -PextraArgs="--output=<project>:<dataset>.tornadoes"
+```
+
+## Bigtable WordCount (Cross-Language, `bigtable_wordcount`)
+
+This pipeline transfers word counts to and from Cloud Bigtable using the Java `bigtable_write` and `bigtable_read` SchemaTransforms:
+
+- `--mode=write` (default): Counts King Lear words in Rust and writes one row per word (`<column_family>:count`) with `BigtableWrite`.
+- `--mode=read`: Reads the table with `BigtableRead`, decodes each column in Rust, and writes `word: count` lines to `--output`.
+
+`--column_family` defaults to `counts`. The table and its column family must exist first:
+
+```bash
+gcloud bigtable instances tables create <table> --instance=<instance> --column-families=counts
+```
+
+## Kafka Ouroboros (Cross-Language Streaming, `kafka_ouroboros`)
+
+This streaming pipeline reads from and writes to the same Kafka topic:
+
+1. Reads the loop topic unboundedly with the Java `kafka_read` SchemaTransform (`KafkaRead`, earliest offset, expanded through Managed I/O).
+2. Injects `--num_seeds` seed messages (default `1`) to start the cycle.
+3. Modifies each JSON message in Rust.
+4. Writes messages with remaining cycles back to the same topic with `KafkaWrite`. After `--max_cycles` hops (default `5`), messages exit the loop.
+
+Progress appears in `ouroboros` user counters (`seeded`, `evolved`, `ascended`, `malformed`). Both Kafka transforms use Managed error handling (`with_error_handling`, expanded with `to_managed()?.with_all_outputs()` or `with_outputs()`): records that Java cannot decode or serialize increment `kafka_read_errors` or `kafka_write_errors` instead of failing the bundle. The job runs until cancelled.
+
+`--gmk` applies `KafkaRead`/`KafkaWrite::with_google_managed_kafka_auth()` (SASL_SSL and OAUTHBEARER with worker Google credentials). Run workers on a network attached to the cluster (`--network` and `--subnetwork`). Use the `bootstrap-*` host from the private Cloud DNS zone created by Google Cloud Managed Service for Apache Kafka (`gcloud dns record-sets list --zone=gmk-...`).
+
+## Pub/Sub Ouroboros (Cross-Language Streaming, `pubsub_ouroboros`)
+
+This streaming pipeline reads from and writes to Cloud Pub/Sub through the Java Pub/Sub
+SchemaTransforms (`PubsubRead`, `PubsubWrite`, RAW format):
+
+1. Reads `--input_subscription`, or `--input_topic`, or else `--loop_topic`.
+2. Injects one seed message to start the cycle.
+3. Evolves each JSON message in Rust.
+4. Writes messages with remaining cycles to `--loop_topic` (or `--input_topic` if
+   `--loop_topic` is not set). After `--max_cycles` (default `5`), messages exit the loop.
+
+`--expansion_service` defaults to the GCP expansion service of `beam::io::gcp::pubsub`.
+
+## Iceberg WordCount (Managed I/O, `iceberg_wordcount`)
+
+This pipeline transfers word counts to and from an Apache Iceberg table using `apply("Managed Write(ICEBERG)", ManagedWrite::new(managed::ICEBERG))` and `apply("Managed Read(ICEBERG)", ManagedRead::new(managed::ICEBERG))`, which expand `beam:transform:managed:v1`:
+
+- `--mode=write` (default): Counts words in Rust and writes `(word, count)` rows. Iceberg creates the table from the row schema. The write expands with `with_outputs()`. Every committed snapshot (`snapshots` output) is logged and increments `iceberg_wordcount/snapshots_committed`.
+- `--mode=read`: Reads the table back and writes `word: count` lines to `--output`.
+
+`--warehouse` is required. `--table` defaults to `rust_sdk.wordcount` and `--catalog_name` to
+`rust_sdk`. The catalog defaults to a Hadoop catalog (`--catalog_type=hadoop`) at `--warehouse`. To configure another catalog (such as an Iceberg REST catalog), pass `--catalog_type` plus one `--catalog_property=key=value` per catalog property (endpoint, auth manager, `FileIO`, headers...).
+
 ## Windowed WordCount (Fixed Tumbling Windows)
 
 This pipeline demonstrates fixed event-time windowing with custom event timestamps and formatted window boundaries. `--window_size` is in seconds (default `60`); `--base_timestamp` sets the first synthetic event time in milliseconds:
@@ -202,4 +274,40 @@ This pipeline contrasts a combiner-backed fold (`fold_per_key` with combiner lif
 ```bash
 # Portable Prism Runner
 ./gradlew :sdks:rust:prism -Pexample=fold_state_backed
+```
+
+## NYC Taxi & Rideshare Analytics (`nyc_taxi`)
+
+This pipeline demonstrates columnar data processing on Apache Parquet datasets:
+- Splittable Parquet reading with column projection with `beam::io::parquet::parquetio::Read::<NycTripRecord>`.
+- Type-driven schemas derived with `#[derive(BeamRow)]`.
+- Filtering and key extraction mapping TLC license numbers to service providers (Uber, Lyft, Via, Juno) and day of week.
+- Combiner-backed partial aggregation (`combine_per_key`) computing revenue, driver earnings, trip miles, duration, averages, and speeds.
+- Sharded, distributed Parquet writing with `beam::io::parquet::parquetio::Write` with a `ParquetSink` of `DailyServiceSummary` rows.
+
+`--output` is required. `--input` defaults to `gs://apache-beam-samples/nyc_trip/parquet/fhvhv_tripdata_2023-02.parquet`:
+
+```bash
+# Portable Prism Runner (reading from public GCS sample or local file)
+./gradlew :sdks:rust:prism \
+  -Pexample=nyc_taxi \
+  -PextraArgs="--output=/tmp/nyc_taxi_stats"
+```
+
+## Traffic Routes Avro Analytics (`traffic_routes`)
+
+This pipeline demonstrates batch event processing reading CSV telemetry and writing Apache Avro datasets:
+- Splittable CSV ingestion of Caltrans PeMS freeway traffic telemetry with `textio::Read`.
+- Strongly typed records derived with `#[derive(BeamRow)]`.
+- Route corridor classification and traffic metric calculation (flow, occupancy, speed, congestion incidents).
+- Keyed combiner partial aggregation (`combine_per_key`) with functional accumulator logic.
+- Sharded, Deflate-compressed Avro writing with `beam::io::avro::avroio::Write` with an `AvroSink::<RouteTrafficSummary>`.
+
+`--output` is required. `--input` defaults to a public sample under `gs://apache-beam-samples/traffic_sensor/`:
+
+```bash
+# Portable Prism Runner (reading from public GCS sample or local file)
+./gradlew :sdks:rust:prism \
+  -Pexample=traffic_routes \
+  -PextraArgs="--output=/tmp/traffic_stats"
 ```
