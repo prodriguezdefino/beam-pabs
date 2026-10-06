@@ -29,7 +29,8 @@ description = "Apache Beam Rust SDK umbrella crate"
 name = "beam"
 
 [features]
-default = ["io-file", "derive"]
+default = ["fluent", "io-file", "derive"]
+fluent = ["dep:fluent"]
 io-file = ["dep:file"]
 derive = ["core/derive"]
 # The worker harness is a consequence of choosing a portable runner, not an
@@ -42,6 +43,7 @@ testing = ["dep:testing"]
 [dependencies]
 core = { workspace = true }
 model = { workspace = true }
+fluent = { workspace = true, optional = true }
 harness = { workspace = true, optional = true }
 file = { workspace = true, optional = true }
 prism = { workspace = true, optional = true }
