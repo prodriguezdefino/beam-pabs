@@ -16,29 +16,26 @@
 # under the License.
 
 [package]
-name = "apache-beam-io-file"
+name = "apache-beam-test-utils"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "File and filesystem I/O connectors for Apache Beam in Rust"
+description = "Test utilities, mocks, and test doubles for the Apache Beam Rust SDK"
+publish = false
+
+[lib]
+name = "testutils"
+
+[dependencies]
+beam = { package = "apache-beam-core", path = "../core", version = "2.78.0-SNAPSHOT" }
+file = { workspace = true }
+model = { workspace = true }
+prost = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tonic = { workspace = true }
 
 [lints]
 workspace = true
-
-[lib]
-name = "file"
-
-[dependencies]
-beam = { package = "apache-beam-core", path = "../../core", version = "2.78.0-SNAPSHOT", features = ["derive"] }
-model = { workspace = true }
-inventory = { workspace = true }
-globset = { workspace = true }
-tracing = { workspace = true }
-thiserror = { workspace = true }
-sync_wrapper = { workspace = true }
-
-[dev-dependencies]
-file = { package = "apache-beam-io-file", path = "." }
-testutils = { workspace = true }

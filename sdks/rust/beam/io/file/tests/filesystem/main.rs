@@ -21,3 +21,4 @@
 
 mod glob;
 mod local;
+mod registry;

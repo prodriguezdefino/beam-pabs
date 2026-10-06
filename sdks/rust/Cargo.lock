@@ -137,6 +137,7 @@ dependencies = [
  "apache-beam-core",
  "apache-beam-io-file",
  "apache-beam-model",
+ "apache-beam-test-utils",
  "globset",
  "inventory",
  "sync_wrapper",
@@ -153,6 +154,19 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+]
+
+[[package]]
+name = "apache-beam-test-utils"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam-core",
+ "apache-beam-io-file",
+ "apache-beam-model",
+ "prost",
+ "tokio",
+ "tokio-stream",
+ "tonic",
 ]
 
 [[package]]
