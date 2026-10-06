@@ -29,12 +29,14 @@ description = "Apache Beam Rust SDK umbrella crate"
 name = "beam"
 
 [features]
-default = ["derive"]
+default = ["io-file", "derive"]
+io-file = ["dep:beam_io_file"]
 derive = ["beam_core/derive"]
 
 [dependencies]
 beam_core = { workspace = true }
 beam_model = { workspace = true }
+beam_io_file = { workspace = true, optional = true }
 
 [lints]
 workspace = true
