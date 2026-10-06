@@ -356,6 +356,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "apache-beam-ml"
+version = "2.79.0-SNAPSHOT"
+dependencies = [
+ "apache-beam-core",
+ "apache-beam-fluent",
+ "apache-beam-io-gcp",
+ "apache-beam-testing",
+ "arc-swap",
+ "clap",
+ "futures",
+ "once_cell",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
 name = "apache-beam-model"
 version = "2.79.0-SNAPSHOT"
 dependencies = [
