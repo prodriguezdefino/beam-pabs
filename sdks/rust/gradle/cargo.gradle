@@ -61,6 +61,7 @@ clean.dependsOn 'cleanSdk'
 // build (build/libs/<artifact>-<version>.jar). `test` builds the JARs of the crates it runs.
 def testExpansionServiceJars = [
     'apache-beam-external': ':sdks:java:io:google-cloud-platform:expansion-service:shadowJar',
+    'apache-beam-runner-tests': ':sdks:java:io:expansion-service:shadowJar',
 ]
 testExpansionServiceJars.each { pkg, jar ->
   if (!selectedPkg || selectedPkg == pkg) {
