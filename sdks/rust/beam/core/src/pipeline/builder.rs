@@ -32,7 +32,7 @@ use super::graph::PipelineInner;
 use super::{ExpansionMode, Pipeline};
 use crate::coders::CoderRegistry;
 use crate::runners::{PipelineResult, PipelineRunner};
-use crate::transforms::PTransform;
+use crate::transforms::{PTransform, TransformFn};
 use crate::values::{IsBounded, PBegin, PCollection};
 
 impl Default for Pipeline {
@@ -130,6 +130,24 @@ impl Pipeline {
             .get(coder_id)
             .map(|c| c.component_coder_ids.clone())
             .unwrap_or_default()
+    }
+
+    /// Registers a `beam:coder:kv:v1` coder of `key` and `value`.
+    pub(crate) fn register_kv_coder(&self, key: String, value: String) -> String {
+        self.register_coder(crate::coders::URN_KV, vec![key, value])
+    }
+
+    /// Returns the key and value coders of the registered `beam:coder:kv:v1` coder `coder_id`.
+    pub(crate) fn kv_coder_parts(&self, coder_id: &str) -> Option<(String, String)> {
+        let inner = self.lock();
+        let coder = inner.components.coders.get(coder_id)?;
+        match (
+            crate::coders::coder_urn(coder),
+            coder.component_coder_ids.as_slice(),
+        ) {
+            (crate::coders::URN_KV, [key, value]) => Some((key.clone(), value.clone())),
+            _ => None,
+        }
     }
 
     /// Registers a `WindowingStrategy` and returns its id, reusing an identical registered one.
@@ -270,6 +288,20 @@ impl Pipeline {
         Tform: PTransform<PBegin>,
     {
         self.begin().apply(transform)
+    }
+
+    /// Registers the executable handler under `key`, replacing any existing one.
+    ///
+    /// The harness derives `key` from the transform payload. For a `ParDo`, `key` is the
+    /// `do_fn` payload: the unique name that
+    /// [`ParDoRegistration`](crate::internals::ParDoRegistration) sets. Lookup is exact.
+    /// The worker rebuilds the same graph, so a miss is a graph-construction bug.
+    pub fn register_transform_handler(&self, key: impl Into<String>, handler: TransformFn) {
+        self.lock().transform_handlers.insert(key.into(), handler);
+    }
+
+    pub fn transform_handlers(&self) -> HashMap<String, TransformFn> {
+        self.lock().transform_handlers.clone()
     }
 
     /// Replaces the default and Rust environments with a Docker environment that runs

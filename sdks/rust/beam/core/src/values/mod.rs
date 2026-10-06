@@ -31,7 +31,8 @@ pub mod view;
 pub use pcollection::{IsBounded, PCollection, PCollectionList};
 pub use pvalue::{PBegin, PDone, PInput, POutput};
 pub use view::{
-    AnySideInput, PCollectionView, SideInputKind, SideInputWindowing, URN_SIDE_INPUT_ITERABLE,
-    URN_SIDE_INPUT_MULTIMAP, URN_WINDOW_MAPPING_GLOBAL, URN_WINDOW_MAPPING_IDENTITY,
-    URN_WINDOW_MAPPING_WINDOW_FN,
+    AnySideInput, IntoSideInputs, IterView, Iterable, Multimap, MultimapView, PCollectionView,
+    SideInputKind, SideInputScope, SideInputWindowing, SideInputs, SideIter, SideMap, Singleton,
+    SingletonView, URN_SIDE_INPUT_ITERABLE, URN_SIDE_INPUT_MULTIMAP, URN_WINDOW_MAPPING_GLOBAL,
+    URN_WINDOW_MAPPING_IDENTITY, URN_WINDOW_MAPPING_WINDOW_FN, ViewKind,
 };

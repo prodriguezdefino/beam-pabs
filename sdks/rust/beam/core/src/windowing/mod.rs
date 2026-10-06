@@ -20,10 +20,12 @@
 //! Window functions, windowing strategies, triggers and watermark estimators.
 
 pub mod strategy;
+pub mod transform;
 pub mod trigger;
 pub mod window_fn;
 
 pub use crate::coders::{GlobalWindow, IntervalWindow};
 pub use strategy::*;
+pub use transform::*;
 pub use trigger::*;
 pub use window_fn::*;
