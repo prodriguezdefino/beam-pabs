@@ -61,6 +61,10 @@ Unit and pipeline tests live in each example's `tests/` directory. `minimal_word
 | [`fold_state_backed`](#fold-combinators--state-backed-iterables-fold_state_backed) | Folds, state-backed iterables |
 | [`nyc_taxi`](#nyc-taxi--rideshare-analytics-nyc_taxi) | Parquet read and write |
 | [`traffic_routes`](#traffic-routes-avro-analytics-traffic_routes) | CSV read, Avro write |
+| [`remote_llm_inference`](#remote-llm-inference-remote_llm_inference) | `RunInference` with Gemini, dead-letter output |
+| [`cv_onnx_classification`](#image-classification-with-onnx-runtime-cv_onnx_classification) | `RunInference` with ONNX Runtime |
+| [`text_embedding_candle`](#text-embeddings-with-candle-text_embedding_candle) | `RunInference` with Candle |
+| [`columnar_feature_engineering`](#table-row-inference-columnar_feature_engineering) | ONNX RandomForest, port of a Python benchmark |
 
 ## Minimal WordCount
 
@@ -310,4 +314,145 @@ This pipeline demonstrates batch event processing reading CSV telemetry and writ
 ./gradlew :sdks:rust:prism \
   -Pexample=traffic_routes \
   -PextraArgs="--output=/tmp/traffic_stats"
+```
+
+## Machine Learning Inference
+
+These examples use `RunInference` from `beam::ml`.
+
+> [!NOTE]
+> The model and prompt files have no default location. Pass `--input` to
+> `remote_llm_inference`, `--model_path` to `cv_onnx_classification` and
+> `columnar_feature_engineering`, and `--weights_path`, `--config_path` and `--tokenizer_path`
+> to `text_embedding_candle`. Each section tells how to make the files. Put them in your own
+> bucket (`gs://<bucket>/...`) for Dataflow.
+
+### Remote LLM Inference (`remote_llm_inference`)
+
+Sends one prompt per input line to Gemini with `RemoteModelHandler` and `GeminiAdapter`, writes
+`Input: ..., Output: ...` lines to `--output` (default `/tmp/gemini_predictions.txt`), and writes
+failed prompts to `--dlq_output` (default `/tmp/gemini_dlq.txt`) through
+`RunInference::with_exception_handling()`.
+
+- Endpoint: `--endpoint_url`, else Vertex AI in `--cloud_project`/`--cloud_region` (default
+  `us-central1`), else the Gemini Developer API. `--model_name` defaults to `gemini-2.5-flash`.
+- Credentials: `--api_key` or `--bearer_token` take a secret reference (`env:<VAR>`,
+  `file:<PATH>`, or `gcp:projects/<p>/secrets/<s>/versions/<v>`) that workers resolve. Without
+  either, workers use their service account (`RemoteAuth::ApplicationDefault`).
+- Tuning: `--batch_size`, `--max_retries`, `--retry_backoff_secs`, `--max_concurrent_requests`,
+  `--temperature`, `--max_output_tokens`, `--thinking_budget`.
+
+```bash
+./gradlew :sdks:rust:prism -Pexample=remote_llm_inference \
+  -PextraArgs="--input=gs://<bucket>/datasets/llm_prompts_1k.txt --api_key=env:GEMINI_API_KEY"
+```
+
+[`scripts/make_prompts.py`](remote_llm_inference/scripts/make_prompts.py) builds the benchmark
+prompt set from the public Shakespeare corpus, and
+[`python/gemini_baseline.py`](remote_llm_inference/python/gemini_baseline.py) is the Python
+baseline.
+
+### Image Classification with ONNX Runtime (`cv_onnx_classification`)
+
+Reads a manifest of image paths (`--input`, default
+`gs://apache-beam-ml/testing/inputs/openimage_50k_benchmark.txt`), resizes and normalizes each
+image, runs MobileNetV2 with `OnnxModelHandler` in batches of `--min_batch_size` to
+`--max_batch_size` (defaults `10` and `100`), and writes `path,argmax` lines to `--output`
+(default `/tmp/onnx_predictions.txt`). Images that fail go to `--dlq_output` (default
+`<output>_failures`). `--model_path` is required: export the model with
+[`export_model.py`](cv_onnx_classification/export_model.py). `OnnxDeviceOptions` adds
+`--device` (`cpu`, `cuda`, `tensorrt`, `coreml`), `--device_id`, `--allow_cpu_fallback`, and
+`--dylib_path`. GPU providers need the matching crate feature (`-PexampleFeatures=cuda`,
+`tensorrt` or `coreml`):
+
+```bash
+./gradlew :sdks:rust:prism -Pexample=cv_onnx_classification \
+  -PextraArgs="--model_path=/path/to/mobilenet_v2_torchvision.onnx --dylib_path=/path/to/libonnxruntime.dylib"
+```
+
+The [`Dockerfile`](cv_onnx_classification/Dockerfile) builds a self-contained CUDA worker image
+with ONNX Runtime GPU from the repository root (`docker build -f
+sdks/rust/examples/cv_onnx_classification/Dockerfile .`).
+
+### Text Embeddings with Candle (`text_embedding_candle`)
+
+Embeds text lines (`--input`, default `gs://apache-beam-ml/testing/inputs/sentences_50k.txt`)
+with `sentence-transformers/all-MiniLM-L6-v2` through `BertEmbeddingModelHandler`, and writes
+sharded `*.jsonl` files to `--output` (default `/tmp/candle_embeddings`). Model artifacts come from
+`--weights_path`, `--config_path`, and `--tokenizer_path`, which are required. They are the
+`model.safetensors`, `config.json` and `tokenizer.json` files of the model on the Hugging Face Hub.
+`CandleDeviceOptions` adds `--device` (`cpu`, `cuda`, `metal`), `--device_id`, and
+`--allow_cpu_fallback`. GPU devices need the `cuda` or `metal` crate feature:
+
+```bash
+./gradlew :sdks:rust:prism -Pexample=text_embedding_candle \
+  -PextraArgs="--input=/path/to/sentences.txt --output=/tmp/embeddings --weights_path=/path/to/model.safetensors --config_path=/path/to/config.json --tokenizer_path=/path/to/tokenizer.json"
+
+# GPU: add the crate feature and the device flag
+./gradlew :sdks:rust:prism -Pexample=text_embedding_candle -PexampleFeatures=cuda \
+  -PextraArgs="--device=cuda --weights_path=... --config_path=... --tokenizer_path=..."
+```
+
+The [`Dockerfile`](text_embedding_candle/Dockerfile) builds a self-contained CUDA worker image
+from the repository root, like `cv_onnx_classification`.
+
+### Table Row Inference (`columnar_feature_engineering`)
+
+This pipeline runs tabular feature extraction and batch model inference on tabular data.
+
+| Step | Operation |
+|---|---|
+| Read | `apply("ReadLines", textio::Read::new(--input))`, then `reshuffle` |
+| Expand | `FlatMap([line] * --input_expand_factor)` when > 1 |
+| Parse | `serde_json` into `TableRow` |
+| Features | `[f64; 5] as f32`, `FEATURE_COLUMNS` order |
+| Batch | `RunInference` `--min_batch_size`..`--max_batch_size` (1..10000), flushed per bundle |
+| Model | ONNX export of tabular classifier, ONNX Runtime CPU |
+| Output | Serialized lines with prediction and model ID to `<output>.jsonl` |
+
+The pipeline writes results to JSONL files (one file, or `--num_shards` shards).
+
+Inputs:
+
+- Data (`--input`, the default): `gs://apache-beam-ml/testing/inputs/table_rows_100k_benchmark.jsonl`
+  (100k rows of `{"id", "feature1".."feature5"}`). The benchmark uses
+  `--input_expand_factor=100` for 10M rows.
+- Model (`--model_path`, required): the ONNX export of
+  `gs://apache-beam-ml/models/sklearn_table_classifier.pkl`, made by
+  [`export_model.py`](columnar_feature_engineering/export_model.py). The model has 12 trees, a
+  maximum depth of 8, 5 features, and classes `[0, 1]`. It is exported with scikit-learn 1.5.2
+  and skl2onnx at opset 17 / ai.onnx.ml 3, with `zipmap=False`. The graph maps
+  `input: float32[N, 5]` to `label: int64[N]` and `probabilities: float32[N, 2]`.
+
+Export the model, upload it, and regenerate the test fixtures:
+
+```bash
+python3.12 -m venv venv && . venv/bin/activate
+pip install 'scikit-learn==1.5.2' 'numpy>=2,<2.5' skl2onnx onnx onnxruntime
+python sdks/rust/examples/columnar_feature_engineering/export_model.py \
+  --upload=gs://<bucket>/models/table_row_rf.onnx \
+  --fixture_dir sdks/rust/examples/columnar_feature_engineering/tests/fixtures
+```
+
+The binary loads ONNX Runtime dynamically (`ort/load-dynamic`) from `ORT_DYLIB_PATH`, or from
+`--dylib_path` if set. The `onnxruntime` pip wheel provides the library, for example at
+`venv/lib/python3.12/site-packages/onnxruntime/capi/libonnxruntime.*.dylib`.
+
+```bash
+ORT_DYLIB_PATH=/path/to/libonnxruntime.dylib ./gradlew :sdks:rust:prism \
+  -Pexample=columnar_feature_engineering \
+  -PextraArgs="--input=rows.jsonl --model_path=table_row_rf.onnx --output=/tmp/predictions"
+```
+
+Other flags: `--input_expand_factor` (default `1`), `--min_batch_size` / `--max_batch_size`
+(defaults `1` / `10000`), `--intra_op_threads` (default `1`), `--num_shards` (default `0`, a
+single file), and the `OnnxDeviceOptions` flags `--device`, `--device_id`, `--allow_cpu_fallback`.
+
+The ignored test runs the whole pipeline with ONNX Runtime and compares it with the Python output
+for the fixture rows:
+
+```bash
+./gradlew :sdks:rust:test -Ppkg=columnar_feature_engineering
+ORT_DYLIB_PATH=/path/to/libonnxruntime.dylib TABLE_ROW_ONNX_MODEL=/path/to/table_row_rf.onnx \
+  ./gradlew :sdks:rust:test -Ppkg=columnar_feature_engineering -PtestArgs=--ignored
 ```
