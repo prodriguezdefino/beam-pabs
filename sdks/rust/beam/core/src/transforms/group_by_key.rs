@@ -1,0 +1,141 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+//! Distributed grouping of values by key.
+
+use std::collections::HashMap;
+use std::marker::PhantomData;
+
+use super::{DisplayDataBuilder, HasDisplayData, PTransform};
+use crate::coders::{BeamIterable, DefaultCoder};
+use crate::pipeline::URN_GROUP_BY_KEY;
+use crate::values::PCollection;
+use crate::windowing::Trigger;
+use model::pipeline as proto;
+
+/// Collects all values of a key into a single element.
+///
+/// A Beam primitive: the runner does the shuffle, so there is no handler to register.
+/// The values are a [`BeamIterable<V>`]. A group larger than the runner buffers can arrive
+/// as a state-backed iterable (`beam:coder:state_backed_iterable:v1`), read lazily.
+pub struct GroupByKey<K, V> {
+    _marker: PhantomData<(K, V)>,
+}
+
+impl<K, V> Default for GroupByKey<K, V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K, V> GroupByKey<K, V> {
+    /// Creates a group-by-key transform .
+    pub fn new() -> Self {
+        Self {
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<K, V> HasDisplayData for GroupByKey<K, V> {
+    fn populate_display_data(&self, builder: &mut DisplayDataBuilder) {
+        builder.add_text("transform", "GroupByKey");
+    }
+}
+
+impl<K, V> PTransform<PCollection<(K, V)>> for GroupByKey<K, V>
+where
+    K: DefaultCoder,
+    V: DefaultCoder,
+{
+    type Output = PCollection<(K, BeamIterable<V>)>;
+
+    fn expand(&self, input: &PCollection<(K, V)>) -> PCollection<(K, BeamIterable<V>)> {
+        let pipeline = input.pipeline();
+        let name = pipeline.primitive_name("GroupByKey");
+        // The output coder comes from the input coder, so a value keeps its coder and a row
+        // keeps its schema. The Rust types give the coder only when the input has none.
+        let kv_out_coder_id = match pipeline.kv_coder_parts(input.coder_id()) {
+            Some((key, value)) => {
+                let values = pipeline.register_coder(crate::coders::URN_ITERABLE, vec![value]);
+                pipeline.register_kv_coder(key, values)
+            }
+            None => <(K, BeamIterable<V>)>::register_coder(pipeline),
+        };
+
+        let in_ws_id = input.windowing_strategy_id();
+        let out_ws_id = {
+            let mut lock = pipeline.lock();
+            match lock.components.windowing_strategies.get(&in_ws_id) {
+                Some(strategy) => {
+                    let output = output_strategy(strategy);
+                    lock.register_windowing_strategy(output)
+                }
+                None => in_ws_id,
+            }
+        };
+
+        let out_pcoll = pipeline.add_pcollection_with_windowing::<(K, BeamIterable<V>)>(
+            &format!("{name}_out"),
+            &kv_out_coder_id,
+            input.is_bounded(),
+            &out_ws_id,
+        );
+
+        let inputs = HashMap::from([("in".to_string(), input.id().to_string())]);
+        let outputs = HashMap::from([("out".to_string(), out_pcoll.id().to_string())]);
+
+        let mut builder = DisplayDataBuilder::with_namespace(name.clone());
+        self.populate_display_data(&mut builder);
+
+        pipeline.add_transform_with_display_data(
+            &name,
+            URN_GROUP_BY_KEY,
+            Vec::new(),
+            inputs,
+            outputs,
+            builder.into_proto(),
+        );
+
+        out_pcoll
+    }
+}
+
+/// Returns the windowing strategy of the output of a `GroupByKey` on `input`. Merged windows
+/// do not merge again, and the trigger fires once for each upstream pane. A trigger that this
+/// SDK cannot decode stays as it is.
+fn output_strategy(input: &proto::WindowingStrategy) -> proto::WindowingStrategy {
+    let merge_status = match proto::merge_status::Enum::try_from(input.merge_status) {
+        Ok(proto::merge_status::Enum::NeedsMerge) => {
+            proto::merge_status::Enum::AlreadyMerged as i32
+        }
+        _ => input.merge_status,
+    };
+    let trigger = input.trigger.as_ref().map(|trigger| {
+        Trigger::try_from(trigger).map_or_else(
+            |_| trigger.clone(),
+            |t| proto::Trigger::from(&t.continuation()),
+        )
+    });
+    proto::WindowingStrategy {
+        merge_status,
+        trigger,
+        ..input.clone()
+    }
+}

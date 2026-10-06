@@ -17,11 +17,11 @@
  * under the License.
  */
 
-//! The per-element context handed to a `DoFn`.
+//! The per-element context handed to a [`DoFn`](crate::transforms::DoFn).
 //!
 //! Each sibling module adds one `impl` block of [`ProcessContext`]: `process` (construction,
-//! element facts), `output`, `side_inputs`, `metrics`, `residuals` (SDF residual roots)
-//! and `finalizer`. `handler` holds the byte-level [`HandlerContext`]. The
+//! element facts), `output`, `side_inputs`, `state`, `stateful`, `metrics`, `residuals` (SDF
+//! residual roots) and `finalizer`. `handler` holds the byte-level [`HandlerContext`]. The
 //! struct is declared here so every sibling module can reach its private fields.
 
 use std::borrow::Cow;
@@ -41,26 +41,29 @@ mod output;
 mod process;
 mod residuals;
 mod side_inputs;
+mod state;
+mod stateful;
 
-pub use finalizer::{BundleFinalizerCollector, FinalizationCallback};
+pub use finalizer::{
+    BundleFinalizerCollector, DEFAULT_FINALIZER_EXPIRY, FinalizationCallback, Finalizer,
+    PendingFinalizer,
+};
 pub use finish::{FinishBundleContext, FinishOutput};
 pub use handler::HandlerContext;
 pub use output::OutputBuilder;
 pub use residuals::{ResidualApplication, ResidualCollector};
+pub use stateful::{StatefulContext, Timer};
 
-/// Context passed to a `DoFn` per element and timer: output, side
+/// Context passed to a [`DoFn`](crate::transforms::DoFn) per element and timer: output, side
 /// inputs, user state, timers, bundle finalization, and the window, timestamp, pane, metadata
 /// and key of the current element.
 pub struct ProcessContext<'a, T = ()> {
     sink: &'a mut dyn ElementSink,
     reader: Option<&'a dyn SideInputReader>,
-    #[expect(dead_code, reason = "the DoFn handlers of the next commit use it")]
     state_reader: Option<&'a Arc<dyn UserStateReader>>,
-    #[expect(dead_code, reason = "the DoFn handlers of the next commit use it")]
     timer_collector: Option<&'a Arc<TimerCollector>>,
     bundle_finalizer: Option<&'a Arc<BundleFinalizerCollector>>,
     header: &'a WindowedHeader,
-    #[expect(dead_code, reason = "the DoFn handlers of the next commit use it")]
     key_bytes: Option<Cow<'a, [u8]>>,
     _marker: PhantomData<T>,
 }

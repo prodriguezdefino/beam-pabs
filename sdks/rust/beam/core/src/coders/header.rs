@@ -26,6 +26,9 @@ use std::io::Write;
 use super::metadata::ElementMetadata;
 use super::pane::PaneInfo;
 use super::standard::{decode_timestamp, encode_timestamp};
+use super::{Coder, CoderError, Context, GlobalWindow, IntervalWindowCoder};
+use crate::Instant;
+use crate::windowing::BoundedWindow;
 
 /// Longest header kept inline. A global-window header is 13 bytes and a one-interval-window
 /// header is about 26. Only headers with many windows, such as sliding windows, use the heap.
@@ -181,6 +184,11 @@ impl WindowedHeader {
         Self::new(timestamp_millis, Self::GLOBAL_WINDOWS, pane)
     }
 
+    /// Encodes a header for an element in the global window at `timestamp`.
+    pub fn global_at(timestamp: Instant, pane: PaneInfo) -> Self {
+        Self::global(timestamp.as_millis(), pane)
+    }
+
     /// Encodes a header with element metadata for an element in the global window.
     pub fn global_with_metadata(
         timestamp_millis: i64,
@@ -204,6 +212,34 @@ impl WindowedHeader {
         bytes.put(&count.to_be_bytes());
         windows.iter().for_each(|w| bytes.put(w));
         Self::finish_with_pane(bytes, pane, metadata)
+    }
+
+    /// Returns a header with the same timestamp, pane, and metadata as `self`, with `windows`
+    /// in place of its windows.
+    pub fn with_windows(&self, windows: &[BoundedWindow]) -> Self {
+        let raw = self.as_bytes();
+        let mut bytes = HeaderWriter::new();
+        if raw.len() >= 8 {
+            bytes.put(&raw[..8]);
+        } else {
+            bytes.put(&encode_timestamp(0));
+        }
+        let count = i32::try_from(windows.len()).expect("a value has fewer than 2^31 windows");
+        bytes.put(&count.to_be_bytes());
+        windows.iter().for_each(|w| {
+            w.encode(&mut bytes)
+                .expect("encoding a window into HeaderWriter cannot fail");
+        });
+        let pane_start = bytes.len();
+        if self.pane_start >= Self::WINDOWS_START && self.pane_start <= raw.len() {
+            bytes.put(&raw[self.pane_start..]);
+        } else {
+            let _ = PaneInfo::NO_FIRING.encode(false, &mut bytes);
+        }
+        Self {
+            bytes: bytes.finish(),
+            pane_start,
+        }
     }
 
     /// Appends the pane and metadata to a header whose windows are already written.
@@ -250,6 +286,11 @@ impl WindowedHeader {
             .map_or(0, |ts| decode_timestamp(*ts))
     }
 
+    /// Returns the event timestamp as an [`Instant`], or [`Instant::EPOCH`] if there is no header.
+    pub fn timestamp(&self) -> Instant {
+        Instant::from_millis(self.timestamp_millis())
+    }
+
     /// Returns the number of windows in the header, or 0 if there is no header.
     pub fn window_count(&self) -> usize {
         self.as_bytes()
@@ -263,6 +304,24 @@ impl WindowedHeader {
         self.window_count() > 1
     }
 
+    /// Decodes the one window of the header: the global window (zero bytes) or an interval
+    /// window.
+    pub fn single_window(&self) -> Result<BoundedWindow, CoderError> {
+        if self.is_multi_window() {
+            return Err(CoderError::Format(format!(
+                "Expected one window, found {}: the element was not split per window",
+                self.window_count()
+            )));
+        }
+        let bytes = self.window_bytes();
+        if bytes.is_empty() {
+            return Ok(BoundedWindow::Global(GlobalWindow));
+        }
+        IntervalWindowCoder
+            .decode(&mut &bytes[..], Context::Nested)
+            .map(BoundedWindow::Interval)
+    }
+
     /// Returns the encoded windows as opaque bytes, because the window coder is not known.
     pub fn window_bytes(&self) -> &[u8] {
         self.as_bytes()
@@ -272,13 +331,16 @@ impl WindowedHeader {
 
     /// Returns one single-window header per window, or `self` if it has at most one window.
     /// Fails if the windows are not interval windows, the only kind an element can have many of.
-    pub fn explode(&self) -> Result<impl Iterator<Item = Cow<'_, Self>>, String> {
+    pub fn explode(&self) -> Result<impl Iterator<Item = Cow<'_, Self>>, CoderError> {
         self.explode_if(true)
     }
 
     /// Returns one single-window header per window if `explode` is `true`, or `self` unchanged.
     /// Fails if `explode` is `true` and the windows are not interval windows.
-    pub fn explode_if(&self, explode: bool) -> Result<impl Iterator<Item = Cow<'_, Self>>, String> {
+    pub fn explode_if(
+        &self,
+        explode: bool,
+    ) -> Result<impl Iterator<Item = Cow<'_, Self>>, CoderError> {
         let windows = match explode && self.is_multi_window() {
             true => window_slices(self.window_bytes(), self.window_count())?,
             false => Vec::new(),
@@ -342,6 +404,11 @@ impl WindowedHeader {
         bytes.put(windows);
         Self::finish_with_pane(bytes, pane, metadata)
     }
+
+    /// Returns a header with the same windows, pane, and metadata but a new event timestamp.
+    pub fn with_timestamp(&self, timestamp: Instant) -> Self {
+        self.rebuilt(timestamp.as_millis(), self.pane(), &self.metadata())
+    }
 }
 
 /// Returns the next nested-context interval window: an 8-byte end, then a varint span.
@@ -353,11 +420,15 @@ fn next_interval_window<'a>(cursor: &mut &'a [u8]) -> Option<&'a [u8]> {
 }
 
 /// Splits `bytes` into `count` interval windows that use every byte.
-fn window_slices(bytes: &[u8], count: usize) -> Result<Vec<&[u8]>, String> {
+fn window_slices(bytes: &[u8], count: usize) -> Result<Vec<&[u8]>, CoderError> {
     let mut cursor = bytes;
     (0..count)
         .map(|_| next_interval_window(&mut cursor))
         .collect::<Option<Vec<_>>>()
         .filter(|_| cursor.is_empty())
-        .ok_or_else(|| format!("Cannot split {count} windows: they are not interval windows"))
+        .ok_or_else(|| {
+            CoderError::Format(format!(
+                "Cannot split {count} windows: they are not interval windows"
+            ))
+        })
 }

@@ -23,30 +23,14 @@ use beam::Instant;
 use beam::coders::{
     CausedByDrain, DefaultCoder, ElementMetadata, PaneInfo, Timing, ValueKind, WindowedHeader,
 };
-use beam::internals::{ElementSink, Emitter, HandlerContext, OutputDeclarer};
+use beam::internals::{ElementSink, HandlerContext};
 use beam::transforms::Outputs;
-use beam::values::PCollection;
 
 /// Tagged outputs, so the tests can check that the tag survives the header rewrite.
+#[derive(Outputs)]
 enum Tagged {
     Side(i32),
     Late(i32),
-}
-
-impl Outputs for Tagged {
-    type Collections = PCollection<i32>;
-
-    fn declare(outputs: &mut OutputDeclarer<'_>) -> Self::Collections {
-        outputs.declare::<i32>("late");
-        outputs.declare("side")
-    }
-
-    fn emit_to(self, emitter: Emitter<'_>) -> Result<(), String> {
-        match self {
-            Self::Side(v) => emitter.push(Some("side"), v),
-            Self::Late(v) => emitter.push(Some("late"), v),
-        }
-    }
 }
 
 /// Test sink that keeps the header of each pushed element, which `Vec<Vec<u8>>` drops.
