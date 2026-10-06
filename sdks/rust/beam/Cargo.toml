@@ -29,9 +29,10 @@ description = "Apache Beam Rust SDK umbrella crate"
 name = "beam"
 
 [features]
-default = ["fluent", "io-file", "managed", "derive", "external"]
+default = ["fluent", "io-file", "gcs", "managed", "derive", "external"]
 fluent = ["dep:fluent"]
 io-file = ["dep:file"]
+gcs = ["dep:gcp", "io-file"]
 # Columnar formats via arrow-rs. Off by default: they pull in arrow and codec crates.
 arrow = ["dep:arrow_io"]
 parquet = ["dep:parquet_io", "arrow", "io-file"]
@@ -57,6 +58,7 @@ model = { workspace = true }
 fluent = { workspace = true, optional = true }
 harness = { workspace = true, optional = true }
 file = { workspace = true, optional = true }
+gcp = { workspace = true, optional = true }
 arrow_io = { workspace = true, optional = true }
 parquet_io = { workspace = true, optional = true }
 avro_io = { workspace = true, optional = true }

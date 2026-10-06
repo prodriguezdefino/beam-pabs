@@ -44,6 +44,9 @@ pub use crate::metrics::system::{
     sampled_byte_size, start_bundle_msecs, total_msecs, work_completed, work_remaining,
 };
 pub use crate::pipeline::graph::{PipelineInner, next_id};
+pub use crate::runtime::{
+    SendBlockingError, block_on_io, io_runtime, recv_blocking, send_blocking,
+};
 pub use crate::transforms::co_group_by_key::{RawUnionValue, RawUnionValueCoder};
 pub use crate::transforms::combine::combine_internals::Table as CombineTable;
 pub use crate::transforms::combine::registered::{
