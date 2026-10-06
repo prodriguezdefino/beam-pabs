@@ -49,6 +49,7 @@ expansion = ["dep:expansion"]
 # independent choice, so runners enable it rather than the user.
 harness = ["dep:harness"]
 prism = ["dep:prism", "harness"]
+dataflow = ["dep:dataflow", "harness"]
 # `passert` and `TestStream`, as `beam::testing`. Usually enabled for tests only.
 testing = ["dep:testing"]
 
@@ -67,6 +68,7 @@ managed_io = { workspace = true, optional = true }
 external = { workspace = true, optional = true }
 expansion = { workspace = true, optional = true }
 prism = { workspace = true, optional = true }
+dataflow = { workspace = true, optional = true }
 testing = { workspace = true, optional = true }
 
 [lints]

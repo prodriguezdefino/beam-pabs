@@ -62,7 +62,9 @@
 pub mod client;
 pub mod constants;
 pub mod options;
+pub mod runner;
 pub mod staging;
+pub mod test_runner;
 pub mod translate;
 
 pub use client::{
@@ -71,6 +73,8 @@ pub use client::{
 };
 pub use constants::*;
 pub use options::{DataflowJobOptions, DataflowOptions};
+pub use runner::{DataflowRunner, DataflowRunnerError};
+pub use test_runner::TestDataflowRunner;
 pub use translate::{
     DataflowJob, StagedArtifacts, TranslateError, adapt_pipeline_for_dataflow,
     apply_environment_overrides, resolve_sdk_container_image, translate_job,

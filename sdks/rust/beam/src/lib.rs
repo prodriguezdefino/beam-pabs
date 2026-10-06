@@ -108,6 +108,8 @@ pub mod io {
 pub mod runners {
     pub use core::runners::*;
 
+    #[cfg(feature = "dataflow")]
+    pub use dataflow;
     #[cfg(feature = "prism")]
     pub use prism;
 }
@@ -124,6 +126,9 @@ mod link {
 
     #[cfg(feature = "harness")]
     pub use harness as _;
+
+    #[cfg(feature = "dataflow")]
+    pub use dataflow as _;
 
     #[cfg(feature = "prism")]
     pub use prism as _;

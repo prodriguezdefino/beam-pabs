@@ -124,6 +124,7 @@ dependencies = [
  "apache-beam-io-managed",
  "apache-beam-io-parquet",
  "apache-beam-model",
+ "apache-beam-runner-dataflow",
  "apache-beam-runner-prism",
  "apache-beam-testing",
 ]
