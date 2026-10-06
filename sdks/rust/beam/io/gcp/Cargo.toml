@@ -26,22 +26,22 @@ description = "Google Cloud Platform I/O connectors (GCS, BigQuery, Bigtable, Pu
 
 [lib]
 name = "beam_io_gcp"
+test = false
 
 [features]
 # One feature per connector (D8): each enables only its module and its dependencies.
 # `auth`, `options`, `runtime` and `secret_manager` are always built.
-default = ["gcs", "bigquery"]
-gcs = ["dep:google-cloud-storage", "dep:google-cloud-gax", "dep:futures", "dep:bytes"]
-bigquery = []
-bigtable = []
-pubsub = []
+default = ["gcs", "bigquery", "bigtable", "pubsub"]
+gcs = ["dep:beam_io_file", "dep:google-cloud-storage", "dep:google-cloud-gax", "dep:futures", "dep:bytes"]
+bigquery = ["dep:beam_external", "dep:beam_io_managed"]
+bigtable = ["dep:beam_external"]
+pubsub = ["dep:beam_external"]
 
 [dependencies]
 beam = { package = "apache-beam-core", path = "../../core", version = "2.79.0-SNAPSHOT" }
-beam_model = { workspace = true }
-beam_io_file = { workspace = true }
-beam_external = { workspace = true }
-beam_io_managed = { workspace = true }
+beam_io_file = { workspace = true, optional = true }
+beam_external = { workspace = true, optional = true }
+beam_io_managed = { workspace = true, optional = true }
 clap = { workspace = true }
 inventory = { workspace = true }
 google-cloud-storage = { workspace = true, optional = true }
@@ -58,10 +58,28 @@ google-cloud-auth = { workspace = true }
 
 [dev-dependencies]
 beam_io_gcp = { package = "apache-beam-io-gcp", path = "." }
+beam_model = { workspace = true }
 beam_test_utils = { workspace = true }
-prost = { workspace = true }
-tonic = { workspace = true }
-tokio-stream = { workspace = true }
+
+[[test]]
+name = "gcs"
+path = "tests/gcs/main.rs"
+required-features = ["gcs"]
+
+[[test]]
+name = "bigquery"
+path = "tests/bigquery/main.rs"
+required-features = ["bigquery"]
+
+[[test]]
+name = "bigtable"
+path = "tests/bigtable/main.rs"
+required-features = ["bigtable"]
+
+[[test]]
+name = "pubsub"
+path = "tests/pubsub/main.rs"
+required-features = ["pubsub"]
 
 [lints]
 workspace = true
