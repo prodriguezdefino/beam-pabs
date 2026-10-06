@@ -77,6 +77,9 @@ pub use beam_expansion as expansion;
 #[cfg(feature = "testing")]
 pub use beam_testing as testing;
 
+#[cfg(feature = "ml")]
+pub use beam_ml as ml;
+
 pub mod io {
     #[cfg(feature = "io-file")]
     pub use beam_io_file as file;
@@ -147,13 +150,18 @@ mod link {
 
     #[cfg(feature = "expansion")]
     pub use beam_expansion as _;
+
+    #[cfg(feature = "ml")]
+    pub use beam_ml as _;
 }
 
 /// All that an ordinary pipeline needs, in both styles.
 ///
 /// Holds the core prelude (`apply` style: `pcoll.apply(.., Map::new())`), the fluent
 /// extension traits (method style: `pcoll.map(..)`), [`textio`](beam_io_file::textio), and
-/// [`run`](beam_core::runners::run).
+/// [`run`](beam_core::runners::run). Import other connectors and RunInference from their
+/// own modules: `beam::io::parquet::parquetio`, `beam::io::avro::avroio`, `beam::ml`,
+/// and so on.
 pub mod prelude {
     pub use beam_core::prelude::*;
 
