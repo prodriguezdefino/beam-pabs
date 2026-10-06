@@ -23,13 +23,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use model::pipeline as proto;
-use prost::Message;
-
+use super::BoundedWindow;
 use super::strategy::{AccumulationMode, ClosingBehavior, OnTimeBehavior, OutputTime};
 use super::trigger::Trigger;
 use super::window_fn::{MergeStatus, WindowFn, decode_window_fn};
-use crate::coders::WindowedHeader;
+use model::pipeline as proto;
+use prost::Message;
+
 use crate::internals::HandlerContext;
 use crate::pipeline::PipelineError;
 use crate::pipeline::constants::{URN_WINDOW_FN_SESSION_WINDOWS, URN_WINDOW_INTO};
@@ -243,11 +243,15 @@ pub fn window_into_handler_key(window_fn: &proto::FunctionSpec) -> String {
 #[derive(Clone)]
 pub struct WindowIntoHandler {
     window_fn: Arc<dyn WindowFn>,
+    windows: Vec<BoundedWindow>,
 }
 
 impl WindowIntoHandler {
     pub fn new(window_fn: Arc<dyn WindowFn>) -> Self {
-        Self { window_fn }
+        Self {
+            window_fn,
+            windows: Vec::new(),
+        }
     }
 }
 
@@ -257,22 +261,13 @@ impl BundleHandler for WindowIntoHandler {
     }
 
     fn process(&mut self, element: &[u8], ctx: &mut HandlerContext<'_>) -> Result<(), String> {
-        let timestamp = ctx.timestamp();
-        let mut assigned = Vec::new();
-        self.window_fn
-            .assign_windows_into(crate::Instant::from_millis(timestamp), &mut assigned);
-        let new_windows: Vec<Vec<u8>> = assigned
-            .iter()
-            .map(|w| {
-                let mut buf = Vec::new();
-                w.encode(&mut buf)
-                    .expect("encoding a window into a Vec<u8> cannot fail");
-                buf
-            })
-            .collect();
-        let new_header =
-            WindowedHeader::with_metadata(timestamp, &new_windows, ctx.pane(), &ctx.metadata());
+        self.windows.clear();
+        self.window_fn.assign_windows_into(
+            crate::Instant::from_millis(ctx.timestamp()),
+            &mut self.windows,
+        );
+        let new_header = ctx.header.with_windows(&self.windows);
         (0..ctx.header.window_count().max(1))
-            .try_for_each(|_| ctx.sink.push_windowed(&new_header, element.to_vec()))
+            .try_for_each(|_| ctx.sink.push_windowed_bytes(&new_header, element))
     }
 }

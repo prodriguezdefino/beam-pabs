@@ -29,6 +29,7 @@ pub(crate) mod input;
 pub(crate) mod outputs;
 mod pardo;
 pub(crate) mod registered;
+pub mod sdf;
 pub(crate) mod side_input;
 pub(crate) mod state;
 mod stateful;
@@ -44,7 +45,7 @@ pub use input::{DoFnInput, PerWindow, Windowed};
 pub use outputs::{Outputs, WithFinalizer};
 pub use pardo::{DoFn, DoFnHandler, IntoParDoFn, ParDo, Stateful, Stateless};
 pub use registered::{
-    FnRegistration, Registered, RegisteredFn, build_registered, encode_registered,
+    FnRegistration, Registered, RegisteredFn, Splittable, build_registered, encode_registered,
     registered_handler,
 };
 pub use state::{BagState, MapState, OrderedListState, SetState, ValueState};
