@@ -19,10 +19,11 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 use tokio::sync::OnceCell;
 
+use beam::internals::block_on_io;
 use beam::retry::Backoff;
 use beam_model::expansion::expansion_service_client::ExpansionServiceClient;
 use beam_model::expansion::{
@@ -60,7 +61,8 @@ enum Target {
 pub struct ExpansionClient {
     target: Target,
     endpoint: String,
-    channel: Option<Channel>,
+    /// Cached `(endpoint, channel)` shared across clones so repeated calls reuse one connection.
+    connection: Arc<Mutex<Option<(String, Channel)>>>,
     cache_dir: Option<PathBuf>,
 }
 
@@ -88,7 +90,7 @@ impl ExpansionClient {
         Self {
             target,
             endpoint,
-            channel: None,
+            connection: Arc::new(Mutex::new(None)),
             cache_dir: None,
         }
     }
@@ -126,41 +128,53 @@ impl ExpansionClient {
     }
 
     async fn ensure_connected(&mut self) -> Result<Channel, ExpansionError> {
-        if let Some(channel) = &self.channel {
-            return Ok(channel.clone());
-        }
-        if let Target::Auto {
-            ref raw,
-            ref server,
-        } = self.target
-        {
-            let s = server
-                .get_or_try_init(|| async {
-                    JavaExpansionServer::start(raw)
-                        .await
-                        .map_err(|e| ExpansionError::Connection {
-                            endpoint: raw.clone(),
-                            source: Box::new(e),
-                        })
-                })
-                .await?;
-            self.endpoint = normalize_endpoint(s.endpoint().to_string());
+        let cached = self
+            .connection
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some((endpoint, channel)) = cached {
+            self.endpoint = endpoint;
+            return Ok(channel);
         }
 
-        let ep = Endpoint::from_shared(self.endpoint.clone())
+        let endpoint = match &self.target {
+            Target::Endpoint(ep) => ep.clone(),
+            Target::Auto { raw, server } => {
+                let s = server
+                    .get_or_try_init(|| async {
+                        JavaExpansionServer::start(raw).await.map_err(|e| {
+                            ExpansionError::Connection {
+                                endpoint: raw.clone(),
+                                source: Box::new(e),
+                            }
+                        })
+                    })
+                    .await?;
+                normalize_endpoint(s.endpoint().to_string())
+            }
+        };
+        self.endpoint.clone_from(&endpoint);
+
+        let ep = Endpoint::from_shared(endpoint.clone())
             .map_err(|e| ExpansionError::Connection {
-                endpoint: self.endpoint.clone(),
+                endpoint: endpoint.clone(),
                 source: Box::new(e),
             })?
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(60));
 
         let channel = ep.connect().await.map_err(|e| ExpansionError::Connection {
-            endpoint: self.endpoint.clone(),
+            endpoint: endpoint.clone(),
             source: Box::new(e),
         })?;
 
-        Ok(self.channel.insert(channel).clone())
+        let mut slot = self
+            .connection
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        *slot = Some((endpoint, channel.clone()));
+        Ok(channel)
     }
 
     async fn call_with_retry<T, F, Fut>(&mut self, mut op: F) -> Result<T, ExpansionError>
@@ -171,14 +185,22 @@ impl ExpansionClient {
         let mut attempts = 0;
         loop {
             let channel = self.ensure_connected().await?;
-            let grpc_client = ExpansionServiceClient::new(channel);
+            let grpc_client = ExpansionServiceClient::new(channel)
+                .max_decoding_message_size(beam::internals::MAX_MESSAGE_BYTES)
+                .max_encoding_message_size(beam::internals::MAX_MESSAGE_BYTES);
 
             match op(grpc_client).await {
                 Ok(resp) => return Ok(resp.into_inner()),
                 Err(status)
                     if RPC_RETRY.allows_retry(attempts) && is_transient_rpc_error(&status) =>
                 {
-                    self.channel = None;
+                    {
+                        let mut slot = self
+                            .connection
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner);
+                        *slot = None;
+                    }
                     tokio::time::sleep(RPC_RETRY.delay(attempts)).await;
                     attempts += 1;
                 }
@@ -247,50 +269,18 @@ impl ExpansionClient {
         }
     }
 
-    /// Issues an `expand` RPC synchronously by driving the future on a Tokio runtime.
+    /// Issues an `expand` RPC synchronously on the shared async I/O runtime.
     pub fn expand_blocking(
         &self,
         request: ExpansionRequest,
     ) -> Result<ExpansionResponse, ExpansionError> {
         let mut client = self.clone();
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            match handle.runtime_flavor() {
-                tokio::runtime::RuntimeFlavor::MultiThread => {
-                    tokio::task::block_in_place(|| handle.block_on(client.expand(request)))
-                }
-                _ => {
-                    let (tx, rx) = std::sync::mpsc::channel();
-                    std::thread::spawn(move || {
-                        let rt = tokio::runtime::Builder::new_current_thread()
-                            .enable_all()
-                            .build();
-                        match rt {
-                            Ok(rt) => {
-                                let res = rt.block_on(client.expand(request));
-                                let _ = tx.send(res);
-                            }
-                            Err(e) => {
-                                let _ = tx.send(Err(ExpansionError::Connection {
-                                    endpoint: client.endpoint().to_string(),
-                                    source: Box::new(e),
-                                }));
-                            }
-                        }
-                    });
-                    rx.recv()
-                        .map_err(|e| ExpansionError::Rpc(format!("Worker thread failed: {e}")))?
-                }
+        block_on_io(async move { client.expand(request).await }).map_err(|e| {
+            ExpansionError::Connection {
+                endpoint: self.endpoint.clone(),
+                source: Box::new(e),
             }
-        } else {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| ExpansionError::Connection {
-                    endpoint: self.endpoint.clone(),
-                    source: Box::new(e),
-                })?;
-            rt.block_on(client.expand(request))
-        }
+        })?
     }
 
     /// Discovers all schema transform providers available on the expansion service.

@@ -48,6 +48,7 @@ mod impulse;
 mod inspect;
 mod join;
 mod map;
+mod map_async;
 mod partition;
 mod periodic_impulse;
 pub(crate) mod reshuffle;
@@ -89,6 +90,7 @@ pub use join::{
     BroadcastInnerJoin, BroadcastLeftJoin, FullOuterJoin, InnerJoin, LeftJoin, RightJoin,
 };
 pub use map::Map;
+pub use map_async::MapAsync;
 pub use partition::Partition;
 pub use periodic_impulse::PeriodicImpulse;
 pub use reshuffle::Reshuffle;

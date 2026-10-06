@@ -24,6 +24,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
+use beam::internals::block_on_io;
 use beam_model::fn_execution::{
     Elements, elements::Data as ElementData, elements::Timers as ElementTimers,
 };
@@ -324,16 +325,10 @@ impl Outbound {
         Ok(())
     }
 
-    /// Blocks the element path until every pending message is queued. The writer runs on a
-    /// bundle thread, outside the async tasks, so it can block.
+    /// Blocks the element path on [`Self::drain`]. The writer runs on a bundle thread,
+    /// outside the async tasks, so it can block.
     fn block_on_pending(&mut self) -> Result<(), DataError> {
-        let Self {
-            sender, pending, ..
-        } = self;
-        pending
-            .drain(..)
-            .try_for_each(|elements| sender.blocking_send(elements))
-            .map_err(|_| DataError::ChannelClosed)
+        block_on_io(self.drain())?
     }
 
     /// Takes every non-empty sink buffer as a data chunk.

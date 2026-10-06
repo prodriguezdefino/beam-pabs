@@ -24,7 +24,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-use beam_harness::data::{DataManager, FlushLimits, OUTBOUND_FLUSH_BYTES, Outbound};
+use beam_harness::data::{
+    DataManager, FlushLimits, INBOUND_QUEUE_CHUNKS, OUTBOUND_FLUSH_BYTES, Outbound,
+};
 use beam_model::fn_execution::Elements;
 
 use crate::common::within;
@@ -303,6 +305,118 @@ async fn a_full_outbound_queue_holds_64_messages_then_blocks_the_writer() {
     assert_eq!(summarise(&received), expected);
 }
 
+/// A bundle thread is a plain thread that holds only an enter guard of the runtime. On a full
+/// queue with 64 held messages, its next write blocks and does not panic.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_thread_with_only_an_enter_guard_blocks_on_a_full_outbound_queue() {
+    let (tx, mut rx) = mpsc::channel(1);
+    let dm = DataManager::new(tx);
+    let messages = 1 + PENDING_MESSAGES + 1;
+    let written = Arc::new(AtomicUsize::new(0));
+
+    let runtime = tokio::runtime::Handle::current();
+    let writer = std::thread::spawn({
+        let written = Arc::clone(&written);
+        move || {
+            let _runtime = runtime.enter();
+            let mut out = dm.outbound(
+                "",
+                INSTRUCTION,
+                ["sink"],
+                std::iter::empty::<(&str, &str)>(),
+            );
+            for i in 0..messages {
+                write(&mut out, 0, OUTBOUND_FLUSH_BYTES, i as u8);
+                written.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    });
+
+    within("the writer to hold 64 messages", async {
+        while written.load(Ordering::SeqCst) < messages - 1 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(written.load(Ordering::SeqCst), messages - 1);
+    assert!(
+        !writer.is_finished(),
+        "the writer waits in the 66th write; a panic ends the thread"
+    );
+
+    for _ in 0..messages {
+        within("the next message", rx.recv())
+            .await
+            .expect("the writer keeps the channel open");
+    }
+    within("the writer to end", async {
+        while !writer.is_finished() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await;
+    writer.join().expect("the writer does not panic");
+    assert_eq!(written.load(Ordering::SeqCst), messages);
+}
+
+/// While a write waits on a full outbound queue, the inbound limit grows: the stream takes
+/// more chunks for a bundle that does not read than the base limit holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_write_that_waits_on_a_full_outbound_queue_raises_the_inbound_limit() {
+    let (tx, mut rx) = mpsc::channel(1);
+    let dm = DataManager::new(tx);
+    let _unread = dm.register_inbound(INSTRUCTION);
+    let messages = 1 + PENDING_MESSAGES + 1;
+
+    let runtime = tokio::runtime::Handle::current();
+    let writer = std::thread::spawn({
+        let dm = dm.clone();
+        move || {
+            let _runtime = runtime.enter();
+            let mut out = dm.outbound(
+                "",
+                INSTRUCTION,
+                ["sink"],
+                std::iter::empty::<(&str, &str)>(),
+            );
+            for i in 0..messages {
+                write(&mut out, 0, OUTBOUND_FLUSH_BYTES, i as u8);
+            }
+        }
+    });
+
+    // At the base limit, the stream waits before the last of these chunks.
+    within("the input above the base limit", async {
+        for _ in 0..=2 * INBOUND_QUEUE_CHUNKS {
+            dm.handle_inbound_elements(Elements {
+                data: vec![beam_model::fn_execution::elements::Data {
+                    instruction_id: INSTRUCTION.to_string(),
+                    transform_id: "source".to_string(),
+                    data: vec![0],
+                    is_last: false,
+                }],
+                timers: Vec::new(),
+            })
+            .await;
+        }
+    })
+    .await;
+
+    for _ in 0..messages {
+        within("the next message", rx.recv())
+            .await
+            .expect("the writer keeps the channel open");
+    }
+    within("the writer to end", async {
+        while !writer.is_finished() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await;
+    writer.join().expect("the writer does not panic");
+}
+
 #[tokio::test]
 async fn outbound_streams_timers_and_flushes_at_a_megabyte() {
     let (tx, mut rx) = mpsc::channel(100);
@@ -433,4 +547,275 @@ async fn a_smaller_byte_limit_flushes_earlier() {
     assert!(queued(&mut rx).is_empty(), "9 bytes stay buffered");
     write(&mut out, 0, 1, 2);
     assert_eq!(queued(&mut rx).len(), 1, "the 10th byte sends the buffer");
+}
+
+/// Emitting one 64-byte element and calling `flush_output` delivers it before a 50 ms sleep
+/// finishes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn flush_output_sends_before_blocking_wait() {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+
+    use beam::coders::{Coder, Context, DefaultCoder, WindowedValue, WindowedValueCoder};
+    use beam::internals::DoFnHandler;
+    use beam::transforms::{DoFn, ProcessContext};
+    use beam_model::fn_execution::{
+        InstructionRequest, ProcessBundleRequest, RegisterRequest, elements,
+        instruction_request::Request,
+    };
+
+    use crate::common::{DescriptorBuilder, SINK_ID, SOURCE_ID, STAGE_ID, TestBundle};
+
+    #[derive(Clone)]
+    struct FlushThenSleep {
+        flushed_at: Arc<OnceLock<Instant>>,
+        sleep: Duration,
+    }
+
+    impl DoFn for FlushThenSleep {
+        type In = Vec<u8>;
+        type Out = Vec<u8>;
+
+        fn process_element(
+            &mut self,
+            _: Vec<u8>,
+            ctx: &mut ProcessContext<Vec<u8>>,
+        ) -> beam::Result {
+            ctx.emit(vec![7u8; 64])?;
+            let _ = self.flushed_at.set(Instant::now());
+            ctx.flush_output()?;
+            std::thread::sleep(self.sleep);
+            Ok(())
+        }
+    }
+
+    let flushed_at = Arc::new(OnceLock::new());
+    let TestBundle {
+        mut data_out_rx,
+        data_manager,
+        control_client,
+        ..
+    } = TestBundle::builder()
+        .handler(
+            STAGE_ID,
+            Arc::new(DoFnHandler::new(FlushThenSleep {
+                flushed_at: Arc::clone(&flushed_at),
+                sleep: Duration::from_millis(50),
+            })),
+        )
+        .build();
+
+    let descriptor = DescriptorBuilder::new("desc_flush_before_wait")
+        .with_coder("bytes", "beam:coder:bytes:v1", &[])
+        .with_coder("window", "beam:coder:global_window:v1", &[])
+        .with_coder(
+            "w_bytes",
+            "beam:coder:windowed_value:v1",
+            &["bytes", "window"],
+        )
+        .with_source_coder("w_bytes")
+        .stage(STAGE_ID, "pcoll_input", "pcoll_output")
+        .sink_with_coder(SINK_ID, "pcoll_output", "w_bytes")
+        .build();
+
+    let reg = control_client
+        .handle_instruction(InstructionRequest {
+            instruction_id: "reg_flush_before_wait".to_string(),
+            request: Some(Request::Register(RegisterRequest {
+                process_bundle_descriptor: vec![descriptor],
+            })),
+        })
+        .await;
+    assert!(reg.error.is_empty(), "register: {}", reg.error);
+
+    let coder = WindowedValueCoder::new(Vec::<u8>::coder());
+    let mut encoded_in = Vec::new();
+    coder
+        .encode(
+            &WindowedValue::global(Vec::new(), 0),
+            &mut encoded_in,
+            Context::Nested,
+        )
+        .expect("encode input");
+    data_manager
+        .handle_inbound_elements(Elements {
+            data: vec![elements::Data {
+                instruction_id: "inst_flush_before_wait".to_string(),
+                transform_id: SOURCE_ID.to_string(),
+                data: encoded_in,
+                is_last: true,
+            }],
+            timers: Vec::new(),
+        })
+        .await;
+
+    let bundle = tokio::spawn(async move {
+        control_client
+            .handle_instruction(InstructionRequest {
+                instruction_id: "inst_flush_before_wait".to_string(),
+                request: Some(Request::ProcessBundle(ProcessBundleRequest {
+                    process_bundle_descriptor_id: "desc_flush_before_wait".to_string(),
+                    ..Default::default()
+                })),
+            })
+            .await
+    });
+
+    let first = within("the flushed element", data_out_rx.recv())
+        .await
+        .expect("flushed chunk");
+    let received_at = Instant::now();
+    let flushed_at = *flushed_at.get().expect("handler recorded flush time");
+    let elapsed = received_at.saturating_duration_since(flushed_at);
+    assert!(
+        elapsed < Duration::from_millis(20),
+        "flushed element arrived in {elapsed:?}, expected < 20 ms"
+    );
+    assert_eq!(first.data.len(), 1);
+    assert!(!first.data[0].is_last);
+    let mut reader = first.data[0].data.as_slice();
+    let decoded = coder
+        .decode(&mut reader, Context::Nested)
+        .expect("decode output");
+    assert_eq!(decoded.value, vec![7u8; 64]);
+    assert!(reader.is_empty());
+
+    let resp = within("bundle completion", bundle)
+        .await
+        .expect("bundle task");
+    assert!(resp.error.is_empty(), "bundle failed: {}", resp.error);
+
+    let eof = within("outbound EOF", data_out_rx.recv())
+        .await
+        .expect("EOF chunk");
+    assert_eq!(eof.data.len(), 1);
+    assert!(eof.data[0].data.is_empty());
+    assert!(eof.data[0].is_last);
+}
+
+/// Flushing an empty outbound buffer leaves `has_flushed` false, sends no chunks, and keeps
+/// response element embedding available.
+#[tokio::test]
+async fn empty_flush_does_not_mark_flushed_or_send_chunks() {
+    use beam::coders::{Coder, Context, DefaultCoder, WindowedValue, WindowedValueCoder};
+    use beam::internals::DoFnHandler;
+    use beam::pipeline::PROTOCOL_CONTROL_RESPONSE_ELEMENTS_EMBEDDING;
+    use beam::transforms::{DoFn, ProcessContext};
+    use beam_model::fn_execution::{
+        InstructionRequest, ProcessBundleRequest, RegisterRequest, elements,
+        instruction_request::Request, instruction_response::Response,
+    };
+
+    use crate::common::{DescriptorBuilder, SINK_ID, SOURCE_ID, STAGE_ID, TestBundle};
+
+    let (tx, mut rx) = mpsc::channel(16);
+    let dm = DataManager::new(tx);
+    let mut out = dm.outbound("", INSTRUCTION, ["sink"], [("t_id", "f_id")]);
+
+    out.flush().expect("empty flush succeeds");
+    assert!(!out.has_flushed());
+    assert!(queued(&mut rx).is_empty());
+
+    // After a real flush, a second flush on the now-empty buffer sends no empty chunk.
+    write(&mut out, 0, 64, 5);
+    out.flush().expect("non-empty flush succeeds");
+    assert!(out.has_flushed());
+    assert_eq!(
+        summarise(&queued(&mut rx)),
+        [[("sink".to_string(), 64, vec![5], false)]]
+    );
+    out.flush().expect("second empty flush succeeds");
+    assert!(queued(&mut rx).is_empty());
+
+    #[derive(Clone)]
+    struct EmptyFlushThenEmit;
+
+    impl DoFn for EmptyFlushThenEmit {
+        type In = Vec<u8>;
+        type Out = Vec<u8>;
+
+        fn process_element(
+            &mut self,
+            _: Vec<u8>,
+            ctx: &mut ProcessContext<Vec<u8>>,
+        ) -> beam::Result {
+            ctx.flush_output()?;
+            ctx.emit(vec![9u8; 64])
+        }
+    }
+
+    let TestBundle {
+        mut data_out_rx,
+        control_client,
+        ..
+    } = TestBundle::builder()
+        .capabilities(PROTOCOL_CONTROL_RESPONSE_ELEMENTS_EMBEDDING)
+        .handler(STAGE_ID, Arc::new(DoFnHandler::new(EmptyFlushThenEmit)))
+        .build();
+
+    let descriptor = DescriptorBuilder::new("desc_empty_flush")
+        .with_coder("bytes", "beam:coder:bytes:v1", &[])
+        .with_coder("window", "beam:coder:global_window:v1", &[])
+        .with_coder(
+            "w_bytes",
+            "beam:coder:windowed_value:v1",
+            &["bytes", "window"],
+        )
+        .with_source_coder("w_bytes")
+        .stage(STAGE_ID, "pcoll_input", "pcoll_output")
+        .sink_with_coder(SINK_ID, "pcoll_output", "w_bytes")
+        .build();
+
+    let reg = control_client
+        .handle_instruction(InstructionRequest {
+            instruction_id: "reg_empty_flush".to_string(),
+            request: Some(Request::Register(RegisterRequest {
+                process_bundle_descriptor: vec![descriptor],
+            })),
+        })
+        .await;
+    assert!(reg.error.is_empty(), "register: {}", reg.error);
+
+    let coder = WindowedValueCoder::new(Vec::<u8>::coder());
+    let mut encoded_in = Vec::new();
+    coder
+        .encode(
+            &WindowedValue::global(Vec::new(), 0),
+            &mut encoded_in,
+            Context::Nested,
+        )
+        .expect("encode input");
+    let resp = control_client
+        .handle_instruction(InstructionRequest {
+            instruction_id: "inst_empty_flush".to_string(),
+            request: Some(Request::ProcessBundle(ProcessBundleRequest {
+                process_bundle_descriptor_id: "desc_empty_flush".to_string(),
+                elements: Some(Elements {
+                    data: vec![elements::Data {
+                        instruction_id: "inst_empty_flush".to_string(),
+                        transform_id: SOURCE_ID.to_string(),
+                        data: encoded_in,
+                        is_last: true,
+                    }],
+                    timers: Vec::new(),
+                }),
+                ..Default::default()
+            })),
+        })
+        .await;
+    assert!(resp.error.is_empty(), "bundle failed: {}", resp.error);
+    assert!(
+        queued(&mut data_out_rx).is_empty(),
+        "empty flush must not send anything on the data stream"
+    );
+    let pb_resp = match resp.response {
+        Some(Response::ProcessBundle(pb_resp)) => pb_resp,
+        other => panic!("expected ProcessBundle response, got {other:?}"),
+    };
+    let embedded = pb_resp
+        .elements
+        .expect("output stays embedded because empty flush did not set has_flushed");
+    assert_eq!(embedded.data.len(), 2);
+    assert!(!embedded.data[0].is_last);
+    assert!(embedded.data[1].is_last);
 }
