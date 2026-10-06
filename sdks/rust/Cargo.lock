@@ -302,12 +302,9 @@ dependencies = [
  "google-cloud-secretmanager-v1",
  "google-cloud-storage",
  "inventory",
- "prost",
  "rustls",
  "serde",
  "tokio",
- "tokio-stream",
- "tonic",
  "tracing",
 ]
 

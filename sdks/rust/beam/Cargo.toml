@@ -29,10 +29,14 @@ description = "Apache Beam Rust SDK umbrella crate"
 name = "beam"
 
 [features]
-default = ["fluent", "io-file", "gcs", "managed", "derive", "external"]
+default = ["fluent", "io-file", "gcp-gcs", "managed", "derive", "external"]
 fluent = ["dep:fluent"]
 io-file = ["dep:file"]
-gcs = ["dep:gcp", "io-file"]
+# Google Cloud: one feature per connector (D8), each with only its own dependencies.
+gcp-gcs = ["dep:gcp", "gcp/gcs", "io-file"]
+gcp-bigquery = ["dep:gcp", "gcp/bigquery", "external"]
+gcp-bigtable = ["dep:gcp", "gcp/bigtable", "external"]
+gcp-pubsub = ["dep:gcp", "gcp/pubsub", "external"]
 # Columnar formats via arrow-rs. Off by default: they pull in arrow and codec crates.
 arrow = ["dep:arrow_io"]
 parquet = ["dep:parquet_io", "arrow", "io-file"]
