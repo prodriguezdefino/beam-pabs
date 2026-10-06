@@ -22,6 +22,44 @@
 //! A native Rust SDK for writing portable [Apache Beam](https://beam.apache.org/) pipelines.
 //! Pipelines depend on this crate only. It re-exports the SDK crates, and its features
 //! select the optional ones.
+//!
+//! # Link-time registration
+//!
+//! Filesystems and runners register through [`inventory`], which sees only the crates
+//! that the linker keeps. Rust drops an rlib that nothing refers to, so this crate holds
+//! a `use ... as _` for each optional dependency. Then you do not have to name those
+//! crates only to keep them linked.
+//!
+//! [`inventory`]: https://docs.rs/inventory
 
 pub use core::*;
 pub use model;
+
+pub mod io {
+    #[cfg(feature = "io-file")]
+    pub use file;
+
+    #[cfg(feature = "io-file")]
+    pub use file::*;
+}
+
+/// Force-links optional dependencies so that their `inventory` registrations stay.
+///
+/// See the crate-level docs. These imports exist only for their link-time effect.
+mod link {
+    #[cfg(feature = "io-file")]
+    pub use file as _;
+}
+
+/// All that an ordinary pipeline needs.
+///
+/// Holds the core prelude (`apply` style: `pcoll.apply(Map::new(..))`),
+/// [`textio`](file::textio), and [`run`](core::runners::run).
+pub mod prelude {
+    pub use core::prelude::*;
+
+    #[cfg(feature = "io-file")]
+    pub use file::textio;
+
+    pub use core::runners::run;
+}
