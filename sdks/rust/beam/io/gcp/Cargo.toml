@@ -30,7 +30,7 @@ name = "gcp"
 [features]
 # One feature per connector (D8): each enables only its module and its dependencies.
 # `auth`, `options`, `runtime` and `secret_manager` are always built.
-default = ["gcs"]
+default = ["gcs", "bigquery"]
 gcs = ["dep:google-cloud-storage", "dep:google-cloud-gax", "dep:futures", "dep:bytes"]
 bigquery = []
 bigtable = []
@@ -38,7 +38,10 @@ pubsub = []
 
 [dependencies]
 beam = { package = "apache-beam-core", path = "../../core", version = "2.78.0-SNAPSHOT" }
+model = { workspace = true }
 file = { workspace = true }
+external = { workspace = true }
+managed_io = { workspace = true }
 clap = { workspace = true }
 inventory = { workspace = true }
 google-cloud-storage = { workspace = true, optional = true }
@@ -55,6 +58,10 @@ google-cloud-auth = { workspace = true }
 
 [dev-dependencies]
 gcp = { package = "apache-beam-io-gcp", path = "." }
+testutils = { workspace = true }
+prost = { workspace = true }
+tonic = { workspace = true }
+tokio-stream = { workspace = true }
 
 [lints]
 workspace = true
