@@ -43,8 +43,9 @@ Run builds and tests through Gradle. The rest of the Beam repository uses it too
 
 # Container & Validations
 ./gradlew :sdks:rust:docker                    # Build the SDK base container (apache/beam_rust_sdk)
-./gradlew :sdks:rust:prebakedImage             # Example image with its binary pre-baked (-Pexample=wordcount -PimageName=...)
+./gradlew :sdks:rust:prebakedImage             # Example image with its binary pre-baked (-Pexample=wordcount [-Pdocker-repository-root=...])
 ./gradlew :sdks:rust:buildWorker               # Linux worker binary for an example (-Pexample=wordcount)
+./gradlew :sdks:rust:expansionServiceImage     # Expansion service image; the binary is also the worker
 ./gradlew :sdks:rust:validatesRunnerPrism      # ValidatesRunner conformance suite on Prism
 ./gradlew :sdks:rust:validatesRunnerDataflow   # ValidatesRunner conformance suite on Dataflow
 ```

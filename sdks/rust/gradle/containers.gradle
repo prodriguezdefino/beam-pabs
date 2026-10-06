@@ -1,0 +1,294 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Container images and Linux worker binary compilation (`docker`, `prebakedImage`,
+// `buildWorker`, `buildRunnerTestsWorker`, `buildExpansionService`, `expansionServiceImage`).
+
+ext.rustBuilderImage = (project.findProperty('rustBuilderImage') ?: 'beam_rust_builder:latest').toString()
+
+ext.ensureBuilderImage = { ->
+  def img = project.rustBuilderImage
+  def checkResult = project.exec {
+    commandLine 'docker', 'image', 'inspect', img
+    ignoreExitValue = true
+    standardOutput = new ByteArrayOutputStream()
+    errorOutput = new ByteArrayOutputStream()
+  }
+  if (checkResult.exitValue != 0) {
+    logger.lifecycle("Docker image '${img}' not found locally. Building it from container/Dockerfile.builder...")
+    project.exec {
+      commandLine 'docker', 'build', '-t', img, '-f', "${rustDir}/container/Dockerfile.builder", "${rustDir}/container"
+    }
+  }
+}
+
+// Names a Rust image `<root>/beam_rust_<name>:<tag>`, as Beam names its images.
+// -Pdocker-repository-root and -Pdocker-tag set the root and the tag of every image.
+ext.rustImageRoot = (project.rootProject.findProperty('docker-repository-root') ?:
+    project.docker_image_default_repo_root).toString()
+ext.rustImageName = { String name, String root = rustImageRoot ->
+  containerImageName(
+      name: "${project.docker_image_default_repo_prefix}rust_${name}",
+      root: root,
+      tag: (project.rootProject.findProperty('docker-tag') ?: beamSdkVersion).toString()).toString()
+}
+
+// The SDK base image that `:sdks:rust:container:docker` builds.
+ext.defaultBaseImage = { -> rustImageName('sdk') }
+
+// Stops the build if `image` is not in the local Docker store for linux/`arch`.
+ext.requireLocalImage = { String image, String arch ->
+  def stdout = new ByteArrayOutputStream()
+  def inspect = project.exec {
+    commandLine 'docker', 'image', 'inspect', '--format', '{{.Architecture}}', image
+    standardOutput = stdout
+    errorOutput = new ByteArrayOutputStream()
+    ignoreExitValue = true
+  }
+  def foundArch = stdout.toString().trim()
+  if (inspect.exitValue != 0 || foundArch != arch) {
+    throw new GradleException("${image} is not available locally for linux/${arch}" +
+        (foundArch ? " (found linux/${foundArch})" : "") + ". Build it with " +
+        "./gradlew :sdks:rust:container:docker -Pcontainer-architecture-list=${arch}, " +
+        "or pass -PbaseImage=<image>.")
+  }
+}
+
+tasks.register('buildBuilderImage', Exec) {
+  group = 'Build'
+  description = 'Build the beam_rust_builder Docker image'
+  workingDir "${rustDir}/container"
+  commandLine 'docker', 'build', '-t', project.rustBuilderImage, '-f', 'Dockerfile.builder', '.'
+}
+
+// Compiles `examples` into Linux worker binaries under build/linux_<arch>/.
+ext.compileWorkers = { List<String> examples, String arch, String sdkVer, Map<String, String> binPackages = [:] ->
+  def outDir = file("${buildDir}/linux_${arch}")
+  outDir.mkdirs()
+
+  def rustTargets = [amd64: 'x86_64-unknown-linux-gnu', arm64: 'aarch64-unknown-linux-gnu']
+  def rustTarget = rustTargets[arch] ?: 'x86_64-unknown-linux-gnu'
+  def packageFlags = examples.collectMany { bin ->
+    binPackages[bin] ? ['-p', binPackages[bin], '--bin', bin] : ['-p', bin]
+  }
+  def isHostLinux = org.gradle.internal.os.OperatingSystem.current().isLinux()
+
+  def cargoProfile = 'worker'
+  def defaultCpu = [amd64: 'x86-64-v2', arm64: 'generic']
+  def targetCpu = project.findProperty('workerTargetCpu') ?: defaultCpu[arch] ?: 'generic'
+  def rustFlags = "-C target-cpu=${targetCpu}"
+  def jobFlags = project.findProperty('workerJobs')?.with { ['--jobs', it.toString()] } ?: []
+
+  if (isHostLinux && arch == project.nativeArchitecture()) {
+    project.exec {
+      workingDir rustDir
+      environment 'RUSTFLAGS', rustFlags
+      commandLine(['cargo', 'build', '--profile', cargoProfile] + jobFlags + packageFlags)
+    }
+    project.copy {
+      from "${rustDir}/target/${cargoProfile}"
+      into outDir
+      include examples
+    }
+  } else {
+    ensureBuilderImage()
+    def crossTarget = file("${buildDir}/cross-target")
+    crossTarget.mkdirs()
+
+    def copyOut = examples
+        .collect { "cp /tmp/target/${rustTarget}/${cargoProfile}/${it} /workspace/sdks/rust/build/linux_${arch}/${it}" }
+        .join(' && ')
+    def compileScript = "CARGO_TARGET_DIR=/tmp/target cargo build --profile ${cargoProfile} ${(jobFlags + packageFlags).join(' ')} --target ${rustTarget} && ${copyOut}"
+    project.exec {
+      workingDir rootDir
+      commandLine 'docker', 'run', '--rm',
+        '-v', "${rootDir}:/workspace",
+        '-v', "${crossTarget}:/tmp/target",
+        '-w', '/workspace/sdks/rust',
+        '-e', "BEAM_SDK_VERSION=${sdkVer}",
+        '-e', "BEAM_RELEASE_VERSION=${beamReleaseVersion}",
+        '-e', "BEAM_VERSION=${beamVersion}",
+        '-e', "RUSTFLAGS=${rustFlags}",
+        project.rustBuilderImage,
+        'sh', '-c', compileScript
+    }
+  }
+}
+
+tasks.register('buildWorker') {
+  group = 'Build'
+  description = 'Build a Linux worker binary for container/Dataflow execution (-Pexample=gaming -PexampleArch=amd64)'
+  onlyIf {
+    def supplied = suppliedWorkerBinary(selectedExample)
+    !supplied || (supplied == 'none' && gradle.taskGraph.hasTask("${project.path}:prebakedImage".toString()))
+  }
+  inputs.files rustWorkspaceTree
+  inputs.property('example', selectedExample)
+  inputs.property('arch', workerArch)
+  inputs.property('sdkVersion', beamSdkVersion)
+  inputs.property('targetCpu', project.findProperty('workerTargetCpu') ?: 'default')
+  outputs.file workerBinaryFor(selectedExample, workerArch)
+
+  doLast {
+    compileWorkers([selectedExample], workerArch, beamSdkVersion)
+  }
+}
+
+
+tasks.register('buildRunnerTestsWorker') {
+  group = 'Build'
+  description = 'Build Linux worker binary for ValidatesRunner Dataflow execution (-PexampleArch=amd64)'
+  inputs.files rustWorkspaceTree
+  inputs.property('arch', workerArch)
+  inputs.property('sdkVersion', beamSdkVersion)
+  inputs.property('targetCpu', project.findProperty('workerTargetCpu') ?: 'default')
+  outputs.file file("${buildDir}/linux_${workerArch}/beam-runner-tests-worker")
+
+  doLast {
+    compileWorkers(['beam-runner-tests-worker'], workerArch, beamSdkVersion,
+        ['beam-runner-tests-worker': 'apache-beam-runner-tests'])
+  }
+}
+
+tasks.register('docker') {
+  group = 'Build'
+  description = 'Build the Rust SDK base container image (apache/beam_rust_sdk)'
+  dependsOn ':sdks:rust:container:docker'
+}
+
+tasks.register('prebakedImage') {
+  group = 'Build'
+  description = "Build an example's worker image with its binary pre-baked, beam_rust_example_<example>[_flex] (-Pexample=wordcount [-PbaseImage=<image>] [-Pflex] [-Ppush-containers])"
+  dependsOn 'buildWorker'
+
+  doLast {
+    def resolve = propsFor(selectedExample)
+    def dockerfile = file("${projectDir}/examples/${selectedExample}/Dockerfile")
+    if (!dockerfile.exists()) {
+      throw new GradleException("Example '${selectedExample}' has no Dockerfile (expected ${dockerfile}). " +
+          "examples/wordcount/Dockerfile shows the layout.")
+    }
+    def defaultBase = defaultBaseImage()
+    def baseImage = resolve('baseImage', null, defaultBase).toString()
+    def flex = project.hasProperty('flex') && project.property('flex').toString() != 'false'
+    def imageName = rustImageName("example_${selectedExample}${flex ? '_flex' : ''}")
+
+    if (baseImage == defaultBase) {
+      requireLocalImage(baseImage, workerArch)
+    }
+
+    def supplied = suppliedWorkerBinary(selectedExample)
+    def binary = (supplied && supplied != 'none') ? file(supplied) : workerBinaryFor(selectedExample, workerArch)
+    if (!binary.isFile()) {
+      throw new GradleException("No worker binary at ${binary} to bake into ${imageName}.")
+    }
+    def context = file("${buildDir}/prebaked/${selectedExample}")
+    project.delete context
+    project.copy {
+      from binary
+      into context
+      rename { selectedExample }
+    }
+
+    project.exec {
+      commandLine 'docker', 'build',
+          '--platform', "linux/${workerArch}",
+          '--build-arg', "BASE_IMAGE=${baseImage}",
+          '--target', flex ? 'flex' : 'worker',
+          '-t', imageName,
+          '-f', dockerfile.absolutePath,
+          context.absolutePath
+    }
+    if (project.rootProject.hasProperty('push-containers')) {
+      project.exec { commandLine 'docker', 'push', imageName }
+    }
+    logger.lifecycle("Built ${imageName}. Launch with --sdk_container_image=${imageName} and no " +
+        "--worker_binary (-PworkerBinary=none with the Gradle launch tasks).")
+  }
+}
+
+// Registers a task that builds the Linux binary of an expansion service, and a task that bakes
+// it into the SDK base image at /opt/apache/beam/worker_binary. The binary is also the worker
+// of the transforms that it expands, so one image serves both roles. The optional keys
+// `baseImage` and `push` select another base image and push the image after the build.
+ext.registerExpansionImageTasks = { Map cfg ->
+  tasks.register(cfg.buildTask) {
+    group = 'Build'
+    description = cfg.buildDescription
+    inputs.files rustWorkspaceTree
+    inputs.property('package', cfg.pkg)
+    inputs.property('bin', cfg.bin)
+    inputs.property('arch', cfg.arch)
+    inputs.property('sdkVersion', beamSdkVersion)
+    inputs.property('targetCpu', project.findProperty('workerTargetCpu') ?: 'default')
+    outputs.file workerBinaryFor(cfg.bin, cfg.arch)
+
+    doLast {
+      compileWorkers([cfg.bin], cfg.arch, beamSdkVersion, [(cfg.bin): cfg.pkg])
+    }
+  }
+
+  tasks.register(cfg.imageTask) {
+    group = 'Build'
+    description = cfg.imageDescription
+    dependsOn cfg.buildTask
+
+    doLast {
+      def defaultBase = defaultBaseImage()
+      def baseImage = (cfg.baseImage ?: project.findProperty('baseImage') ?: defaultBase).toString()
+      if (baseImage == defaultBase) {
+        requireLocalImage(baseImage, cfg.arch)
+      }
+
+      def context = file("${buildDir}/expansion-image/${cfg.imageTask}")
+      project.delete context
+      project.copy {
+        from workerBinaryFor(cfg.bin, cfg.arch)
+        into context
+        rename { 'expansion_service' }
+      }
+
+      project.exec {
+        commandLine 'docker', 'build',
+            '--platform', "linux/${cfg.arch}",
+            '--build-arg', "BASE_IMAGE=${baseImage}",
+            '-t', cfg.image,
+            '-f', "${rustDir}/container/Dockerfile.expansion",
+            context.absolutePath
+      }
+      if (cfg.push || project.rootProject.hasProperty('push-containers')) {
+        project.exec { commandLine 'docker', 'push', cfg.image }
+      }
+      logger.lifecycle("Built ${cfg.image}. Start the expansion service with: docker run -p 8097:8097 " +
+          "--entrypoint /opt/apache/beam/worker_binary ${cfg.image} --port 8097 --docker-image ${cfg.image}")
+    }
+  }
+}
+
+// A binary that links more providers can replace the default one with -PexpansionPackage and
+// -PexpansionBin.
+registerExpansionImageTasks(
+    buildTask: 'buildExpansionService',
+    imageTask: 'expansionServiceImage',
+    pkg: (project.findProperty('expansionPackage') ?: 'apache-beam-expansion').toString(),
+    bin: (project.findProperty('expansionBin') ?: 'beam-expansion-service').toString(),
+    arch: workerArch,
+    image: rustImageName('expansion_service'),
+    buildDescription: 'Build the Linux expansion service binary (-PexampleArch=amd64 [-PexpansionPackage=<crate> -PexpansionBin=<bin>])',
+    imageDescription: 'Build the expansion service image: the SDK base image with the expansion service as the worker binary ([-PbaseImage=<image>] [-PexampleArch=amd64] [-Ppush-containers])',
+)

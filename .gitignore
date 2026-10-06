@@ -18,6 +18,9 @@
 **/.nb-gradle/**/*
 **/gogradle.lock
 **/build/**/*
+**/.local/
+sdks/rust/build/
+sdks/rust/target/
 .test-infra/**/vendor/**/*
 sdks/**/vendor/**/*
 runners/**/vendor/**/*

@@ -20,18 +20,18 @@ resolver = "3"
 members = [
     "beam",
     "beam/model",
-    "beam/derive",
     "beam/core",
+    "beam/derive",
     "beam/fluent",
-    "beam/io/*",
-    "beam/test-utils",
     "beam/harness",
     "beam/external",
     "beam/expansion",
     "beam/ml",
     "beam/runners/*",
-    "beam/testing",
+    "beam/io/*",
     "beam/runner-tests",
+    "beam/test-utils",
+    "beam/testing",
     "examples/*",
 ]
 exclude = [
@@ -109,6 +109,7 @@ rust_decimal = { version = "1", default-features = false, features = ["std"] }
 proptest = "1"
 wiremock = "0.6"
 libc = "0.2"
+mimalloc = { version = "0.1", default-features = false }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 arrow-array = { version = "60.0.0", default-features = false }
 arrow-buffer = { version = "60.0.0", default-features = false }
@@ -149,3 +150,16 @@ debug = "line-tables-only"
 debug = false
 
 # The test profile inherits from dev, so it picks up both settings above.
+
+# Profile for worker binaries shipped to a runner (`./gradlew :sdks:rust:buildWorker`).
+#
+# A worker spends its life in a handful of hot loops that cross many crates
+# (harness -> coder -> user DoFn -> IO), so whole-program optimization pays off
+# far more than the extra link time costs. Kept separate from `release` so that
+# everyday `cargo build --release` stays quick.
+[profile.worker]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+# file:line in panic backtraces and profiles from the fleet, without full DWARF.
+debug = "line-tables-only"

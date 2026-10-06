@@ -95,12 +95,16 @@ Count occurrences of words from local files or Google Cloud Storage (`gs://`). F
 ./gradlew :sdks:rust:dataflow -Pexample=wordcount
 ```
 
-The example includes a [`Dockerfile`](wordcount/Dockerfile) to build an image with a pre-baked binary. It also includes a Flex Template launcher described by [`metadata.json`](wordcount/metadata.json):
+The example includes a [`Dockerfile`](wordcount/Dockerfile) to build an image with a pre-baked binary:
 
 ```bash
-./gradlew :sdks:rust:prebakedImage -Pexample=wordcount -PimageName=<registry>/wordcount:1.0 -Ppush-containers
-./gradlew :sdks:rust:dataflow -Pexample=wordcount -PsdkContainerImage=<registry>/wordcount:1.0 -PworkerBinary=none
+./gradlew :sdks:rust:prebakedImage -Pexample=wordcount -Pdocker-repository-root=<registry> -Ppush-containers
+./gradlew :sdks:rust:dataflow -Pexample=wordcount -PsdkContainerImage=<registry>/beam_rust_example_wordcount:<sdk version> -PworkerBinary=none
 ```
+
+Add `-Pflex` to build the `flex` stage instead (`beam_rust_example_wordcount_flex`), which
+also holds the Flex Template launcher. [`metadata.json`](wordcount/metadata.json) describes the
+template parameters. See [Flex Templates](../docs/containers.md#flex-templates-experimental).
 
 ## Streaming (Continuous Ingestion with PeriodicImpulse)
 
@@ -363,7 +367,7 @@ This pipeline demonstrates columnar data processing on Apache Parquet datasets:
 - Type-driven schemas derived with `#[derive(BeamRow)]`.
 - Filtering and key extraction mapping TLC license numbers to service providers (Uber, Lyft, Via, Juno) and day of week.
 - Combiner-backed partial aggregation (`combine_per_key`) computing revenue, driver earnings, trip miles, duration, averages, and speeds.
-- Sharded, distributed Parquet writing with `beam::io::parquet::parquetio::Write` with a `ParquetSink` of `DailyServiceSummary` rows.
+- Sharded, distributed Parquet writing of `DailyServiceSummary` rows with `beam::io::parquet::parquetio::Write::<DailyServiceSummary>`.
 
 `--output` is required. `--input` defaults to `gs://apache-beam-samples/nyc_trip/parquet/fhvhv_tripdata_2023-02.parquet`:
 
@@ -386,7 +390,7 @@ This pipeline demonstrates batch event processing reading CSV telemetry and writ
 - Strongly typed records derived with `#[derive(BeamRow)]`.
 - Route corridor classification and traffic metric calculation (flow, occupancy, speed, congestion incidents).
 - Keyed combiner partial aggregation (`combine_per_key`) with functional accumulator logic.
-- Sharded, Deflate-compressed Avro writing with `beam::io::avro::avroio::Write` with an `AvroSink::<RouteTrafficSummary>`.
+- Sharded, Deflate-compressed Avro writing with `beam::io::avro::avroio::Write::<RouteTrafficSummary>`.
 
 `--output` is required. `--input` defaults to a public sample under `gs://apache-beam-samples/traffic_sensor/`:
 
