@@ -32,6 +32,10 @@ members = [
     "beam/runners/*",
     "beam/testing",
     "beam/runner-tests",
+    "examples/*",
+]
+exclude = [
+    "examples/build",
 ]
 
 [workspace.package]
@@ -91,6 +95,7 @@ globset = "0.4"
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 snap = "1.1"
 zstd = { version = "0.14", default-features = false }
+regex = "1.13"
 foldhash = "0.2"
 serde-saphyr = "1"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
