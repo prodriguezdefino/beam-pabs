@@ -185,7 +185,7 @@ impl<'a> HandlerContext<'a> {
         self.header
     }
 
-    /// Converts to a typed [`ProcessContext`] for a `DoFn`.
+    /// Converts to a typed [`ProcessContext`] for a [`DoFn`](crate::transforms::DoFn).
     pub fn as_process_context<T>(&mut self) -> ProcessContext<'_, T> {
         ProcessContext {
             sink: self.sink,

@@ -26,6 +26,8 @@ use std::io::Write;
 use super::metadata::ElementMetadata;
 use super::pane::PaneInfo;
 use super::standard::{decode_timestamp, encode_timestamp};
+use super::{Coder, Context, GlobalWindow, IntervalWindowCoder};
+use crate::windowing::BoundedWindow;
 
 /// Longest header kept inline. A global-window header is 13 bytes and a one-interval-window
 /// header is about 26. Only headers with many windows, such as sliding windows, use the heap.
@@ -258,6 +260,25 @@ impl WindowedHeader {
     /// Returns true if the element is in more than one window, as after `SlidingWindows`.
     pub fn is_multi_window(&self) -> bool {
         self.window_count() > 1
+    }
+
+    /// Decodes the one window of the header: the global window (zero bytes) or an interval
+    /// window.
+    pub fn single_window(&self) -> Result<BoundedWindow, String> {
+        if self.is_multi_window() {
+            return Err(format!(
+                "Expected one window, found {}: the element was not split per window",
+                self.window_count()
+            ));
+        }
+        let bytes = self.window_bytes();
+        if bytes.is_empty() {
+            return Ok(BoundedWindow::Global(GlobalWindow));
+        }
+        IntervalWindowCoder
+            .decode(&mut std::io::Cursor::new(bytes), Context::Nested)
+            .map(BoundedWindow::Interval)
+            .map_err(|e| format!("Unsupported window, expected global or interval: {e}"))
     }
 
     /// Returns the encoded windows as opaque bytes, because the window coder is not known.

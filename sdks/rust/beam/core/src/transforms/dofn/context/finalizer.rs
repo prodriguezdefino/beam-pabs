@@ -18,19 +18,40 @@
  */
 
 //! Bundle finalization: callbacks that run after the runner durably commits a bundle, for
-//! side effects such as message acks or file promotion.
+//! side effects such as message acknowledgements or offset commits.
+//!
+//! A function declares finalization with `type Out = WithFinalizer<O>`. Only its contexts
+//! have [`finalizer`](ProcessContext::finalizer).
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use super::ProcessContext;
+use super::{FinishBundleContext, ProcessContext};
+use crate::transforms::dofn::outputs::{Outputs, WithFinalizer};
+
+/// The time after registration when a callback expires, unless
+/// [`Finalizer::expire_after`] sets another. An expired callback does not run.
+pub const DEFAULT_FINALIZER_EXPIRY: Duration = Duration::from_secs(10 * 60);
 
 /// Runs once the runner confirms that the bundle was committed.
 pub type FinalizationCallback = Box<dyn FnOnce() -> crate::Result + Send + 'static>;
 
+/// A callback of a bundle and the time after which it must not run.
+pub struct PendingFinalizer {
+    pub deadline: Instant,
+    pub callback: FinalizationCallback,
+}
+
+impl PendingFinalizer {
+    pub fn is_expired(&self, now: Instant) -> bool {
+        now > self.deadline
+    }
+}
+
 /// Collects the finalization callbacks of a bundle. The harness runs them after commit.
 #[derive(Default)]
 pub struct BundleFinalizerCollector {
-    callbacks: Mutex<Vec<FinalizationCallback>>,
+    callbacks: Mutex<Vec<PendingFinalizer>>,
 }
 
 impl BundleFinalizerCollector {
@@ -38,9 +59,9 @@ impl BundleFinalizerCollector {
         Self::default()
     }
 
-    pub fn register_callback(&self, callback: FinalizationCallback) {
+    pub fn register(&self, finalizer: PendingFinalizer) {
         if let Ok(mut guard) = self.callbacks.lock() {
-            guard.push(callback);
+            guard.push(finalizer);
         }
     }
 
@@ -51,32 +72,88 @@ impl BundleFinalizerCollector {
             .unwrap_or(false)
     }
 
-    pub fn drain(&self) -> Vec<FinalizationCallback> {
-        if let Ok(mut guard) = self.callbacks.lock() {
-            std::mem::take(&mut *guard)
-        } else {
-            Vec::new()
-        }
+    pub fn drain(&self) -> Vec<PendingFinalizer> {
+        self.callbacks
+            .lock()
+            .map(|mut guard| std::mem::take(&mut *guard))
+            .unwrap_or_default()
     }
 }
 
-impl<T> ProcessContext<'_, T> {
-    /// Registers `callback` to run after the runner commits the outputs of this bundle. Fails
-    /// unless the function returns `true` from
-    /// [`DoFn::requests_finalization`](crate::transforms::DoFn::requests_finalization): the
-    /// runner would never finalize the bundle, and the callback would never run.
-    pub fn register_finalizer<F>(&self, callback: F) -> crate::Result
+/// A finalization callback under construction. [`register`](Self::register) adds it to the
+/// bundle.
+#[must_use = "a finalizer does nothing until `register` is called"]
+pub struct Finalizer<'a> {
+    collector: Option<&'a Arc<BundleFinalizerCollector>>,
+    callback: FinalizationCallback,
+    expiry: Duration,
+}
+
+impl Finalizer<'_> {
+    /// Sets the time after registration when the callback expires. The default is
+    /// [`DEFAULT_FINALIZER_EXPIRY`]. Use the longest time that the effect of the callback
+    /// can wait, for example the time that an acknowledgement stays valid.
+    pub fn expire_after(mut self, expiry: Duration) -> Self {
+        self.expiry = expiry;
+        self
+    }
+
+    /// Adds the callback to the bundle. It runs at most once, after the runner commits the
+    /// outputs and the residuals of the bundle, and only if that happens before it expires.
+    pub fn register(self) -> crate::Result {
+        let Self {
+            collector,
+            callback,
+            expiry,
+        } = self;
+        let collector = collector.ok_or_else(|| {
+            crate::Error::msg(
+                "This bundle has no finalizer: the runner did not ask the SDK to finalize it",
+            )
+        })?;
+        collector.register(PendingFinalizer {
+            deadline: Instant::now() + expiry,
+            callback: Box::new(callback),
+        });
+        Ok(())
+    }
+}
+
+fn finalizer<'a, F>(
+    collector: Option<&'a Arc<BundleFinalizerCollector>>,
+    callback: F,
+) -> Finalizer<'a>
+where
+    F: FnOnce() -> crate::Result + Send + 'static,
+{
+    Finalizer {
+        collector,
+        callback: Box::new(callback),
+        expiry: DEFAULT_FINALIZER_EXPIRY,
+    }
+}
+
+impl<'a, O: Outputs> ProcessContext<'a, WithFinalizer<O>> {
+    /// Starts a callback that runs after the runner commits this bundle. Use it to
+    /// acknowledge or release what the bundle read, never for work that the output needs:
+    /// the callback can run never, for example when the commit fails or the callback
+    /// expires. It runs on another thread, possibly while later bundles run, so make its
+    /// effect safe to apply out of order.
+    pub fn finalizer<F>(&self, callback: F) -> Finalizer<'a>
     where
         F: FnOnce() -> crate::Result + Send + 'static,
     {
-        let finalizer = self.bundle_finalizer.ok_or_else(|| {
-            crate::Error::from(
-                "register_finalizer needs bundle finalization: return true from \
-                 `requests_finalization()`"
-                    .to_string(),
-            )
-        })?;
-        finalizer.register_callback(Box::new(callback));
-        Ok(())
+        finalizer(self.bundle_finalizer, callback)
+    }
+}
+
+impl<'a, O: Outputs> FinishBundleContext<'a, WithFinalizer<O>> {
+    /// Starts a callback that runs after the runner commits this bundle. See
+    /// [`ProcessContext::finalizer`].
+    pub fn finalizer<F>(&self, callback: F) -> Finalizer<'a>
+    where
+        F: FnOnce() -> crate::Result + Send + 'static,
+    {
+        finalizer(self.inner.bundle_finalizer, callback)
     }
 }

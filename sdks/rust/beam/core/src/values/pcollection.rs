@@ -113,14 +113,10 @@ impl<T: 'static> PCollection<T> {
     {
         transform.expand(self)
     }
-}
 
-impl PCollection<crate::schema::Row> {
-    /// Replaces the coder with a `beam:coder:row:v1` coder that carries `schema`. Call it
-    /// before a Row PCollection crosses into another SDK, which reads the field layout from
-    /// the coder payload, not from the elements.
-    pub fn with_row_schema(mut self, schema: &crate::schema::Schema) -> Self {
-        self.coder_id = self.pipeline.register_row_coder(schema);
+    /// Replaces the coder of this PCollection in the pipeline graph. The coder must encode `T`.
+    /// Call it only on the output of the transform that is being expanded.
+    pub(crate) fn with_coder_id(mut self, coder_id: String) -> Self {
         if let Some(pcoll) = self
             .pipeline
             .lock()
@@ -128,9 +124,62 @@ impl PCollection<crate::schema::Row> {
             .pcollections
             .get_mut(&self.id)
         {
-            pcoll.coder_id = self.coder_id.clone();
+            pcoll.coder_id.clone_from(&coder_id);
         }
+        self.coder_id = coder_id;
         self
+    }
+
+    /// The coder of this PCollection, if the graph has it. The output of a cross-language
+    /// transform has no coder until the expansion service replies.
+    pub(crate) fn registered_coder_id(&self) -> Option<&str> {
+        self.pipeline
+            .lock()
+            .components
+            .coders
+            .contains_key(&self.coder_id)
+            .then_some(self.coder_id.as_str())
+    }
+
+    /// Gives this PCollection the coder of `source`, which has the same element type. A
+    /// transform that passes its elements through keeps their coder, so a row keeps its schema.
+    pub(crate) fn with_coder_of(self, source: &PCollection<T>) -> Self {
+        match source.registered_coder_id() {
+            Some(coder_id) => self.with_coder_id(coder_id.to_string()),
+            None => self,
+        }
+    }
+}
+
+impl PCollection<crate::schema::RowElement> {
+    /// The same PCollection, with each element as a [`Row`](crate::schema::Row). The coder
+    /// stays the same.
+    pub fn as_rows(&self) -> PCollection<crate::schema::Row> {
+        PCollection::new(
+            self.id.clone(),
+            self.coder_id.clone(),
+            self.pipeline.clone(),
+        )
+    }
+}
+
+impl PCollection<crate::schema::Row> {
+    /// The same PCollection, with each element as a [`RowElement`](crate::schema::RowElement):
+    /// the input of a `DoFn` that reads the row coder bytes. The coder stays the same.
+    pub fn as_row_elements(&self) -> PCollection<crate::schema::RowElement> {
+        PCollection::new(
+            self.id.clone(),
+            self.coder_id.clone(),
+            self.pipeline.clone(),
+        )
+    }
+
+    /// Replaces the coder with a `beam:coder:row:v1` coder that carries `schema`. Call it
+    /// before a Row PCollection crosses into another SDK, which reads the field layout from
+    /// the coder payload, not from the elements.
+    pub fn with_row_schema(self, schema: &crate::schema::Schema) -> Self {
+        let coder_id = self.pipeline.register_row_coder(schema);
+        self.with_coder_id(coder_id)
     }
 
     /// Returns the schema associated with this Row PCollection, if present in its coder.
@@ -152,9 +201,11 @@ impl<T: 'static> POutput for PCollection<T> {
     }
 }
 
-/// [`PCollection`]s of one element type `T`: the input of `Flatten` or the output of
-/// `Partition`.
+/// [`PCollection`]s of one element type `T`: the input of [`Flatten`] or the output of
+/// [`Partition`].
 ///
+/// [`Flatten`]: crate::transforms::Flatten
+/// [`Partition`]: crate::transforms::Partition
 pub struct PCollectionList<T> {
     pipeline: Pipeline,
     collections: Vec<PCollection<T>>,

@@ -23,11 +23,13 @@
 //! use beam::prelude::*;
 //! ```
 //!
-//! Pipeline, options, PValues, the `PTransform` trait, state and timer specs, common windows
-//! and triggers, user metrics and rows.
+//! Pipeline, options, PValues, built-in transforms, the `PTransform`/`DoFn` traits, state
+//! cells, common windows and triggers, user metrics and rows.
 //!
+//! This prelude is `apply`-style; the facade's `beam::prelude` adds the fluent methods.
 //! Specialised items stay in their modules: [`crate::pipeline`] (resource hints),
-//! [`crate::metrics`] (query API), [`crate::coders`] and [`crate::internals`].
+//! [`crate::metrics`] (query API),
+//! [`crate::coders`] and [`crate::internals`].
 
 pub use crate::coders::BeamIterable;
 pub use crate::error::{Error, Result};
@@ -37,11 +39,19 @@ pub use crate::pipeline::Pipeline;
 #[cfg(feature = "derive")]
 pub use crate::schema::BeamEnum;
 pub use crate::schema::{BeamRow, Row, Schema};
+pub use crate::time::Instant;
 pub use crate::transforms::{
-    BagState, BagStateSpec, MapState, MapStateSpec, PTransform, ProcessContext, SetState,
-    SetStateSpec, TimeDomain, TimerFamilySpec, ValueState, ValueStateSpec,
+    BagState, Create, DoFn, Failure, Filter, FinishBundleContext, FlatMap, Flatten, GroupByKey,
+    Inspect, Map, MapState, NoTimers, OrderedListState, Outputs, PTransform, ParDo, Partition,
+    ProcessContext, SetState, StatefulContext, StatefulDoFn, TryMap, ValueState, Windowed,
+    WithFailures,
 };
-pub use crate::values::{PBegin, PCollection, PCollectionList, PCollectionView, PDone};
+#[cfg(feature = "derive")]
+pub use crate::transforms::{Register, State, Timers};
+pub use crate::values::{
+    AnySideInput, IntoSideInputs, IterView, MultimapView, PBegin, PCollection, PCollectionList,
+    PDone, SideInputs, SideIter, SideMap, SingletonView,
+};
 pub use crate::windowing::{
     AccumulationMode, BoundedWindow, FixedWindows, GlobalWindows, IntervalWindow, Sessions,
     SlidingWindows, Trigger, WindowFn, WindowInto,
