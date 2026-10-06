@@ -21,11 +21,13 @@
 
 pub(crate) mod error;
 pub mod strategy;
+pub mod transform;
 pub mod trigger;
 pub mod window_fn;
 
 pub use crate::coders::{GlobalWindow, IntervalWindow};
 pub use error::*;
 pub use strategy::*;
+pub use transform::WindowInto;
 pub use trigger::*;
 pub use window_fn::*;

@@ -32,7 +32,7 @@ use super::graph::PipelineInner;
 use super::{ExpansionMode, Pipeline};
 use crate::coders::CoderRegistry;
 use crate::runners::{PipelineResult, PipelineRunner};
-use crate::transforms::PTransform;
+use crate::transforms::{PTransform, TransformFn, TryPTransform};
 use crate::values::{IsBounded, PBegin, PCollection, POutput};
 
 impl Default for Pipeline {
@@ -285,6 +285,43 @@ impl Pipeline {
         output
     }
 
+    /// Applies one primitive as the transform `name`. `build` gets the resolved name, adds
+    /// exactly one primitive with it, and returns the output.
+    pub(crate) fn add_scoped_primitive<O: POutput>(
+        &self,
+        name: &str,
+        build: impl FnOnce(String) -> O,
+    ) -> O {
+        self.apply_scoped(name, HashMap::new(), || build(self.primitive_name(name)))
+    }
+
+    /// The full name of the transform that is expanding, or `None` at the root.
+    pub(crate) fn scope_name(&self) -> Option<String> {
+        self.lock().scope_name().map(str::to_string)
+    }
+
+    /// Sets the spec of the composite node of the transform that is expanding, for a runner
+    /// that replaces the composite. A primitive node ignores it.
+    pub(crate) fn set_scope_spec(&self, spec: proto::FunctionSpec) {
+        if let Some(scope) = self.lock().current_scope_mut() {
+            scope.spec = Some(spec);
+        }
+    }
+
+    /// Sets the display data of the node of the transform that is expanding.
+    pub(crate) fn set_scope_display_data(&self, display_data: Vec<proto::DisplayData>) {
+        if let Some(scope) = self.lock().current_scope_mut() {
+            scope.display_data = display_data;
+        }
+    }
+
+    /// Adds an annotation to the node of the transform that is expanding.
+    pub(crate) fn set_scope_annotation(&self, key: &str, value: Vec<u8>) {
+        if let Some(scope) = self.lock().current_scope_mut() {
+            scope.annotations.insert(key.to_string(), value);
+        }
+    }
+
     /// Finds the ID of the primitive transform that produces `pcollection_id`.
     pub fn producer_transform_id(&self, pcollection_id: &str) -> Option<String> {
         self.lock().producer_transform_id(pcollection_id)
@@ -391,6 +428,33 @@ impl Pipeline {
         Tform: PTransform<PBegin>,
     {
         self.begin().apply(name, transform)
+    }
+
+    /// Applies a root transform whose expansion can fail, under the name `name`.
+    pub fn try_apply<Tform>(
+        &self,
+        name: impl Into<String>,
+        transform: Tform,
+    ) -> Result<Tform::Output, Tform::Error>
+    where
+        Tform: TryPTransform<PBegin>,
+    {
+        self.begin().try_apply(name, transform)
+    }
+
+    /// Registers the executable handler under `key`, replacing any existing one.
+    ///
+    /// The harness derives `key` from the transform payload. For a `ParDo`, `key` is the
+    /// `do_fn` payload: the unique name that
+    /// [`ParDoRegistration`](crate::internals::ParDoRegistration) sets. Lookup is exact.
+    /// The worker rebuilds the same graph, so a miss is a graph-construction bug.
+    pub(crate) fn register_transform_handler(&self, key: impl Into<String>, handler: TransformFn) {
+        self.lock().transform_handlers.insert(key.into(), handler);
+    }
+
+    /// Returns a map of registered transform handlers.
+    pub(crate) fn transform_handlers(&self) -> HashMap<String, TransformFn> {
+        self.lock().transform_handlers.clone()
     }
 
     /// Replaces the default and Rust environments with a Docker environment that runs
