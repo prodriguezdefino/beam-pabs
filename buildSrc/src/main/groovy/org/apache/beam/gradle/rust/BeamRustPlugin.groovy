@@ -48,14 +48,18 @@ class BeamRustPlugin implements Plugin<Project> {
 
     RustLintTasks.register(build)
     RustTestTasks.register(build)
-    RustPrismTasks.register(build)
+    RustPrismTasks prism = RustPrismTasks.register(build)
+    RustConfig config = new RustConfig(build, prism)
+    RustContainerTasks containers = RustContainerTasks.register(config)
+    project.extensions.add(RustContainerTasks, 'rustContainerSupport', containers)
+    prism.registerLaunchTasks(config)
 
     project.tasks.named('build').configure { Task task -> task.dependsOn('buildWorkspace') }
     project.tasks.named('check').configure { Task task ->
       task.dependsOn('fmtCheck', 'clippy', 'pythonScriptsTest')
     }
     project.tasks.named('clean').configure { Task task ->
-      task.dependsOn('cleanSdk')
+      task.dependsOn('cleanSdk', ':sdks:rust:container:clean')
     }
   }
 }

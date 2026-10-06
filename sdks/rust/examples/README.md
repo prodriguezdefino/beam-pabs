@@ -37,7 +37,7 @@ Unit and pipeline tests live in each example's `tests/` directory. `minimal_word
 | Example | Topic |
 |---|---|
 | [`minimal_wordcount`](#minimal-wordcount) | Simplest pipeline, hardcoded paths |
-| [`wordcount`](#wordcount) | Pipeline options, composite transforms |
+| [`wordcount`](#wordcount) | Pipeline options, composite transforms, pre-baked image, Flex Template |
 | [`streaming`](#streaming-continuous-ingestion-with-periodicimpulse) | `PeriodicImpulse`, fixed windows |
 | [`side_inputs`](#side-inputs--broadcast-joins) | Singleton and iterable side inputs, broadcast join |
 | [`join`](#relational-joins) | `inner_join`, `left_join`, `CoGroupByKey` |
@@ -81,6 +81,14 @@ Count occurrences of words from local files or Google Cloud Storage (`gs://`). F
 # Custom input/output with extraArgs
 ./gradlew :sdks:rust:prism -Pexample=wordcount -PextraArgs="--input=/path/to/input.txt --output=/tmp/counts.txt"
 ```
+
+The example includes a [`Dockerfile`](wordcount/Dockerfile) to build an image with a pre-baked binary:
+
+```bash
+./gradlew :sdks:rust:prebakedImage -Pexample=wordcount -Pdocker-repository-root=<registry> -Ppush-containers
+```
+
+Add `-Pflex` to build the `flex` stage instead (`beam_rust_example_wordcount_flex`), which also holds the Flex Template launcher. [`metadata.json`](wordcount/metadata.json) describes the template parameters. See [Flex Templates](../docs/containers.md#flex-templates-experimental).
 
 ## Streaming (Continuous Ingestion with PeriodicImpulse)
 
@@ -271,7 +279,7 @@ This pipeline processes columnar data in Apache Parquet datasets. It shows:
 - Type-driven schemas derived with `#[derive(BeamRow)]`.
 - Filtering and key extraction mapping TLC license numbers to service providers (Uber, Lyft, Via, Juno) and day of week.
 - Combiner-backed partial aggregation (`combine_per_key`) computing revenue, driver earnings, trip miles, duration, averages, and speeds.
-- Sharded, distributed Parquet writing with `beam::io::parquet::parquetio::Write` with a `ParquetSink` of `DailyServiceSummary` rows.
+- Sharded, distributed Parquet writing of `DailyServiceSummary` rows with `beam::io::parquet::parquetio::Write::<DailyServiceSummary>`.
 
 `--output` is required. `--input` defaults to `gs://apache-beam-samples/nyc_trip/parquet/fhvhv_tripdata_2023-02.parquet`:
 
@@ -289,7 +297,7 @@ This pipeline demonstrates batch event processing reading CSV telemetry and writ
 - Strongly typed records derived with `#[derive(BeamRow)]`.
 - Route corridor classification and traffic metric calculation (flow, occupancy, speed, congestion incidents).
 - Keyed combiner partial aggregation (`combine_per_key`) with functional accumulator logic.
-- Sharded, Deflate-compressed Avro writing with `beam::io::avro::avroio::Write` with an `AvroSink::<RouteTrafficSummary>`.
+- Sharded, Deflate-compressed Avro writing with `beam::io::avro::avroio::Write::<RouteTrafficSummary>`.
 
 `--output` is required. `--input` defaults to a public sample under `gs://apache-beam-samples/traffic_sensor/`:
 
@@ -331,7 +339,7 @@ Reads a manifest of image paths (`--input`, default `gs://apache-beam-ml/testing
   -PextraArgs="--model_path=/path/to/mobilenet_v2_torchvision.onnx --dylib_path=/path/to/libonnxruntime.dylib"
 ```
 
-The [`Dockerfile`](cv_onnx_classification/Dockerfile) builds a self-contained CUDA worker image with ONNX Runtime GPU. Build it from the repository root (`docker build -f sdks/rust/examples/cv_onnx_classification/Dockerfile .`).
+The [`Dockerfile`](cv_onnx_classification/Dockerfile) builds a self-contained CUDA worker image with ONNX Runtime GPU. Build it from the repository root (`docker build -f sdks/rust/examples/cv_onnx_classification/Dockerfile .`). It is not a `prebakedImage` layout.
 
 ### Text Embeddings with Candle (`text_embedding_candle`)
 
@@ -396,6 +404,13 @@ Other flags:
 - `--intra_op_threads` (default `1`).
 - `--num_shards` (default `0`, a single file).
 - The `OnnxDeviceOptions` flags `--device`, `--device_id` and `--allow_cpu_fallback`.
+
+Dataflow workers also need ONNX Runtime. The [`Dockerfile`](columnar_feature_engineering/Dockerfile) puts the CPU build and the pipeline binary into an image and sets `ORT_DYLIB_PATH`:
+
+```bash
+./gradlew :sdks:rust:prebakedImage -Pexample=columnar_feature_engineering \
+  -Pdocker-repository-root=us-central1-docker.pkg.dev/<project>/<repo> -Ppush-containers
+```
 
 The ignored test runs the whole pipeline with ONNX Runtime and compares it with the Python output for the fixture rows:
 

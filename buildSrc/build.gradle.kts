@@ -115,5 +115,9 @@ gradlePlugin {
       id = "org.apache.beam.rust"
       implementationClass = "org.apache.beam.gradle.rust.BeamRustPlugin"
     }
+    create("beamRustContainer") {
+      id = "org.apache.beam.rust-container"
+      implementationClass = "org.apache.beam.gradle.rust.BeamRustContainerPlugin"
+    }
   }
 }
