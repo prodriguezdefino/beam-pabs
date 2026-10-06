@@ -48,6 +48,7 @@ class BeamRustPlugin implements Plugin<Project> {
 
     RustLintTasks.register(build)
     RustTestTasks.register(build)
+    RustPrismTasks.register(build)
 
     project.tasks.named('build').configure { Task task -> task.dependsOn('buildWorkspace') }
     project.tasks.named('check').configure { Task task -> task.dependsOn('fmtCheck', 'clippy') }
