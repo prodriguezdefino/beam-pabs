@@ -81,10 +81,12 @@ pub mod io {
     #[cfg(feature = "io-file")]
     pub use beam_io_file as file;
 
-    #[cfg(feature = "io-file")]
-    pub use beam_io_file::*;
-
-    #[cfg(feature = "gcs")]
+    #[cfg(any(
+        feature = "gcp-gcs",
+        feature = "gcp-bigquery",
+        feature = "gcp-bigtable",
+        feature = "gcp-pubsub"
+    ))]
     pub use beam_io_gcp as gcp;
 
     /// Beam schema and `Row` bridge to Apache Arrow.
@@ -124,7 +126,12 @@ mod link {
     #[cfg(feature = "io-file")]
     pub use beam_io_file as _;
 
-    #[cfg(feature = "gcs")]
+    #[cfg(any(
+        feature = "gcp-gcs",
+        feature = "gcp-bigquery",
+        feature = "gcp-bigtable",
+        feature = "gcp-pubsub"
+    ))]
     pub use beam_io_gcp as _;
 
     #[cfg(feature = "harness")]
