@@ -16,27 +16,28 @@
 # under the License.
 
 [package]
-name = "apache-beam"
+name = "apache-beam-io-file"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
-description = "Apache Beam Rust SDK umbrella crate"
-
-[lib]
-name = "beam"
-
-[features]
-default = ["io-file", "derive"]
-io-file = ["dep:file"]
-derive = ["core/derive"]
-
-[dependencies]
-core = { workspace = true }
-model = { workspace = true }
-file = { workspace = true, optional = true }
+description = "File and filesystem I/O connectors for Apache Beam in Rust"
 
 [lints]
 workspace = true
+
+[lib]
+name = "file"
+
+[dependencies]
+beam = { package = "apache-beam-core", path = "../../core", version = "2.78.0-SNAPSHOT", features = ["derive"] }
+model = { workspace = true }
+inventory = { workspace = true }
+globset = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+sync_wrapper = { workspace = true }
+
+[dev-dependencies]
+file = { package = "apache-beam-io-file", path = "." }

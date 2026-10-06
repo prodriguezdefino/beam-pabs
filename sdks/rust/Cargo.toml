@@ -22,6 +22,7 @@ members = [
     "beam/model",
     "beam/derive",
     "beam/core",
+    "beam/io/file",
 ]
 
 [workspace.package]
@@ -69,8 +70,10 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tracing = "0.1"
 thiserror = "2"
+sync_wrapper = "1"
 clap = { version = "4.5", features = ["derive", "string"] }
 inventory = "0.3"
+globset = "0.4"
 foldhash = "0.2"
 serde-saphyr = "1"
 proc-macro2 = "1.0"
@@ -84,6 +87,7 @@ proptest = "1"
 beam = { package = "apache-beam", path = "beam", version = "2.78.0-SNAPSHOT" }
 core = { package = "apache-beam-core", path = "beam/core", version = "2.78.0-SNAPSHOT" }
 model = { package = "apache-beam-model", path = "beam/model", version = "2.78.0-SNAPSHOT" }
+file = { package = "apache-beam-io-file", path = "beam/io/file", version = "2.78.0-SNAPSHOT" }
 derive = { package = "apache-beam-derive", path = "beam/derive", version = "2.78.0-SNAPSHOT" }
 
 # Keep file:line in panic backtraces without full DWARF debug info.
