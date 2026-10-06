@@ -33,6 +33,38 @@ install_go_packages(){
         fi
 }
 
+# Installs the tooling behind './gradlew :sdks:rust:coverage'.
+install_rust_coverage_tools(){
+        # A rustup install puts cargo on PATH only after sourcing its env file.
+        if [ -f "$HOME/.cargo/env" ]; then
+            . "$HOME/.cargo/env"
+        fi
+
+        cargo llvm-cov --version > /dev/null 2>&1
+        llvmCovExists=$?
+        if [ $llvmCovExists -eq 0 ]; then
+            echo "cargo-llvm-cov already installed. Skipping"
+        else
+            echo "Installing cargo-llvm-cov"
+            cargo install cargo-llvm-cov --locked
+            echo "cargo-llvm-cov installed to ${HOME}/.cargo/bin. Make sure that directory is on your PATH."
+        fi
+
+        # cargo-llvm-cov needs llvm-cov and llvm-profdata. rustup ships versions
+        # matching the compiler as a component. A Homebrew Rust install has no
+        # rustup, in which case the Gradle coverage tasks fall back to the copies
+        # in the Xcode Command Line Tools.
+        type -P rustup > /dev/null 2>&1
+        rustupExists=$?
+        if [ $rustupExists -eq 0 ]; then
+            echo "Adding llvm-tools-preview component"
+            rustup component add llvm-tools-preview
+        elif [ ! -x /Library/Developer/CommandLineTools/usr/bin/llvm-profdata ]; then
+            echo "WARNING: no rustup and no Xcode Command Line Tools found, so code coverage will not run."
+            echo "         Install the command line tools with 'xcode-select --install', or install rustup."
+        fi
+}
+
 kernelname=$(uname -s)
 
 # Running on Linux
@@ -74,6 +106,8 @@ if [ "$kernelname" = "Linux" ]; then
         echo "Installing rust via rustup..."
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
     fi
+
+    install_rust_coverage_tools
 
 # Running on Mac
 elif [ "$kernelname" = "Darwin" ]; then
@@ -159,6 +193,8 @@ elif [ "$kernelname" = "Darwin" ]; then
         echo "Installing rust"
         brew install rust
     fi
+
+    install_rust_coverage_tools
 
     type -P protoc > /dev/null 2>&1
     protocExists=$?
