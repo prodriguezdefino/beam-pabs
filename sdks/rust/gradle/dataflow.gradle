@@ -1,0 +1,123 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Google Cloud Dataflow runner configuration and example launcher (`dataflow`),
+// plus shared environment wiring imported by validates-runner.gradle.
+
+ext.configureDataflowEnvironment = { Exec task ->
+  def resolve = propsFor('dataflow')
+  def gcpProject = gcpProjectFrom(resolve)
+  def gcpTempLocation = resolve('gcpTempLocation', 'GCP_TEMP_LOCATION')
+  def sdkContainerImage = resolve('sdkContainerImage', 'SDK_CONTAINER_IMAGE')
+  if (!gcpProject || !gcpTempLocation || !sdkContainerImage) {
+    throw new GradleException(
+      "${task.name} requires gcpProject, gcpTempLocation, and sdkContainerImage. " +
+      "Configure them in sdks/rust/.local/sdk.properties or pass with -P (e.g. -PgcpProject=... -PgcpTempLocation=... -PsdkContainerImage=...)"
+    )
+  }
+  def workerBinary = resolve('workerBinary', 'WORKER_BINARY')
+      ?: file("${buildDir}/linux_${workerArch}/beam-runner-tests-worker").absolutePath
+  [
+    BEAM_DATAFLOW_PROJECT            : gcpProject,
+    BEAM_DATAFLOW_REGION             : resolve('gcpRegion', 'GCP_REGION', 'us-central1'),
+    BEAM_DATAFLOW_TEMP_LOCATION      : gcpTempLocation,
+    BEAM_DATAFLOW_SDK_CONTAINER_IMAGE: sdkContainerImage,
+    BEAM_DATAFLOW_WORKER_BINARY      : workerBinary,
+    BEAM_DATAFLOW_NETWORK            : resolve('network', 'NETWORK'),
+    BEAM_DATAFLOW_SUBNETWORK         : resolve('subnetwork', 'SUBNETWORK'),
+  ].findAll { it.value }.each { name, value -> task.environment(name, value) }
+}
+
+ext.buildDataflowArgs = { String example, File workerBin = null ->
+  def resolve = propsFor(example)
+  def gcpProject = gcpProjectFrom(resolve)
+  def gcpRegion = resolve('gcpRegion', 'GCP_REGION', 'us-central1')
+  def gcpTempLocation = resolve('gcpTempLocation', 'GCP_TEMP_LOCATION')
+  def sdkContainerImage = resolve('sdkContainerImage', 'SDK_CONTAINER_IMAGE')
+
+  if (!gcpProject || !gcpTempLocation) {
+    throw new GradleException("Missing required GCP parameters for example '${example}'!\n" +
+      "Provide -PgcpProject=<project> and -PgcpTempLocation=gs://<bucket>/tmp on the CLI " +
+      "or in sdks/rust/.local/sdk.properties (globally or under example.${example}.*).")
+  }
+
+  def supplied = suppliedWorkerBinary(example)
+  def workerBinPath = supplied == 'none' ? null
+      : supplied ?: (workerBin ?: workerBinaryFor(example, workerArch)).absolutePath
+
+  def args = [
+    "--runner=DataflowRunner",
+    "--project=${gcpProject}",
+    "--region=${gcpRegion}",
+    "--temp_location=${gcpTempLocation}",
+  ]
+  if (workerBinPath) args << "--worker_binary=${workerBinPath}"
+  if (sdkContainerImage) args << "--sdk_container_image=${sdkContainerImage}"
+
+  [
+    [prop: 'subnetwork',                env: 'SUBNETWORK',                 flag: 'subnetwork'],
+    [prop: 'network',                   env: 'NETWORK',                    flag: 'network'],
+    [prop: 'serviceAccountEmail',       env: 'SERVICE_ACCOUNT_EMAIL',      flag: 'service_account_email'],
+    [prop: 'numWorkers',                env: 'NUM_WORKERS',                flag: 'num_workers'],
+    [prop: 'maxNumWorkers',             env: 'MAX_NUM_WORKERS',            flag: 'max_num_workers'],
+    [prop: 'autoscalingAlgorithm',      env: 'AUTOSCALING_ALGORITHM',      flag: 'autoscaling_algorithm'],
+    [prop: 'workerMachineType',         env: 'WORKER_MACHINE_TYPE',        flag: 'worker_machine_type'],
+    [prop: 'diskSizeGb',                env: 'DISK_SIZE_GB',               flag: 'disk_size_gb'],
+    [prop: 'workerDiskType',            env: 'WORKER_DISK_TYPE',           flag: 'worker_disk_type'],
+    [prop: 'dataflowServiceOptions',    env: 'DATAFLOW_SERVICE_OPTIONS',   flag: 'dataflow_service_options'],
+    [prop: 'experiments',               env: 'EXPERIMENTS',                flag: 'experiments'],
+    [prop: 'numberOfWorkerHarnessThreads', env: 'WORKER_HARNESS_THREADS', flag: 'number_of_worker_harness_threads'],
+    [prop: 'usePublicIps',              env: 'USE_PUBLIC_IPS',             flag: 'use_public_ips'],
+  ].each { opt ->
+    def val = resolve(opt.prop, opt.env)
+    if (val != null && !val.toString().isEmpty()) {
+      args << "--${opt.flag}=${val}"
+    }
+  }
+
+  // `input` and `output` become --input and --output. `none` passes no flag, for an example
+  // that does not take it.
+  ['input', 'output'].each { name ->
+    def val = resolve(name)?.toString()
+    if (val && val != 'none') {
+      args << "--${name}=${val}"
+    }
+  }
+
+  def extraArgs = (resolve('extraArgs') ?: resolve('exampleArgs') ?: '').toString().tokenize(' ')
+  args.addAll(extraArgs)
+
+  def features = (resolve('exampleFeatures') ?: '').toString().trim()
+  def featureFlags = features ? ['--features', features] : []
+
+  return ['cargo', 'run', '--release', '-p', example, *featureFlags, '--'] + args.collect { it.toString() }
+}
+
+tasks.register('dataflow', Exec) {
+  group = 'Application'
+  description = 'Run a Rust example on Google Cloud Dataflow (-Pexample=wordcount)'
+  workingDir rustDir
+  if (!suppliedWorkerBinary(selectedExample)) {
+    dependsOn 'buildWorker'
+  }
+
+  doFirst {
+    environment launchEnvironment()
+    commandLine buildDataflowArgs(selectedExample)
+  }
+}

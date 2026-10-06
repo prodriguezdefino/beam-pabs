@@ -1,0 +1,97 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// ValidatesRunner conformance tasks (`validatesRunner`, `validatesRunnerStreaming`,
+// `validatesRunnerPrism`, `validatesRunnerPrismStreaming`, `validatesRunnerDataflow`,
+// `validatesRunnerDataflowStreaming`).
+
+def resolveTestFilter = { ->
+  def f = project.findProperty('filter')
+  if (!f && project.hasProperty('test') && project.property('test') instanceof String) {
+    f = project.property('test')
+  }
+  return f ? f.toString() : null
+}
+
+def resolveTestThreads = { String defaultThreads = null ->
+  def threads = project.findProperty('batchSize')
+      ?: project.findProperty('testThreads')
+      ?: project.findProperty('concurrency')
+      ?: System.getenv('RUST_TEST_THREADS')
+      ?: defaultThreads
+  return threads ? threads.toString() : null
+}
+
+def cargoTestCommand = { String testBinary, List<String> libtestFlags = [], String defaultThreads = null ->
+  def testArgs = [resolveTestFilter(), resolveTestThreads(defaultThreads)?.with { "--test-threads=${it}".toString() }]
+      .findAll { it } + libtestFlags
+  def command = ['cargo', 'test', '-p', 'apache-beam-runner-tests', '--test', testBinary]
+  return testArgs ? command + ['--'] + testArgs : command
+}
+
+
+[
+  [name: 'validatesRunnerPrism', runner: 'prism', streaming: false,
+   description: 'Run the ValidatesRunner conformance suite on the Prism runner'],
+  [name: 'validatesRunnerPrismStreaming', runner: 'prism', streaming: true,
+   description: 'Run the ValidatesRunner conformance suite in streaming mode on the Prism runner'],
+  [name: 'validatesRunnerDataflow', runner: 'dataflow', streaming: false,
+   description: 'Run the ValidatesRunner conformance suite on Google Cloud Dataflow'],
+  [name: 'validatesRunnerDataflowStreaming', runner: 'dataflow', streaming: true,
+   description: 'Run the ValidatesRunner conformance suite in streaming mode on Google Cloud Dataflow'],
+].each { cfg ->
+  tasks.register(cfg.name, Exec) {
+    group = 'Verification'
+    description = "${cfg.description} (-Pfilter=<name> -PbatchSize=<n>)"
+    workingDir rustDir
+    if (cfg.streaming) {
+      environment 'BEAM_STREAMING', 'true'
+    }
+
+    if (cfg.runner == 'prism') {
+      dependsOn 'fetchPrism'
+      inputs.file(prismHostBinary)
+      environment 'BEAM_PRISM_PATH', prismHostBinary.absolutePath
+      if (cfg.streaming) {
+        environment 'BEAM_PRISM_STREAMING', 'true'
+      }
+      commandLine cargoTestCommand('validates_runner_prism')
+    } else {
+      dependsOn 'buildWorkspace', 'buildRunnerTestsWorker'
+      doFirst {
+        configureDataflowEnvironment(it)
+        if (cfg.streaming) {
+          environment 'BEAM_DATAFLOW_STREAMING', 'true'
+        }
+        commandLine cargoTestCommand('validates_runner_dataflow', ['--ignored'], '4')
+      }
+    }
+  }
+}
+
+tasks.register('validatesRunnerStreaming') {
+  group = 'Verification'
+  description = 'Run all ValidatesRunner streaming tasks that need no cloud project (Prism)'
+  dependsOn 'validatesRunnerPrismStreaming'
+}
+
+tasks.register('validatesRunner') {
+  group = 'Verification'
+  description = 'Run all ValidatesRunner conformance suites that need no cloud project (Prism)'
+  dependsOn 'validatesRunnerPrism'
+}

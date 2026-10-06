@@ -122,6 +122,44 @@ Dataflow tests carry `#[ignore]`, so `cargo test` and `:sdks:rust:test` do not s
 ./gradlew :sdks:rust:validatesRunnerDataflowStreaming -PbatchSize=4
 ```
 
+### Cross-language Suites
+
+[`sdks/rust/gradle/xlang.gradle`](../gradle/xlang.gradle) runs the Python cross-language suite (`validate_runner_xlang_test.py`) on Prism and on Dataflow against the Rust test expansion service in [`beam/runner-tests/src/xlang_transforms.rs`](../beam/runner-tests/src/xlang_transforms.rs). That service serves the `beam:transforms:xlang:test:*` URNs, as the Java and Python test expansion services do. Its image is `beam_rust_testing_expansion_service`.
+
+```bash
+./gradlew :sdks:rust:validatesCrossLanguageRunnerPythonPrism -PpythonVersion=3.12
+./gradlew :sdks:rust:validatesCrossLanguageRunnerPythonPrism -Ptests=prefix,group_by_key
+./gradlew :sdks:rust:validatesCrossLanguageRunnerPythonDataflow -PpythonVersion=3.12
+```
+
+- The tasks build the service image for the host architecture, start it on a free port and remove it at the end. Prism starts the Rust worker from the same image.
+- `setupXlangPythonEnv` makes a virtualenv in `sdks/rust/build/xlang-venv` with the Python SDK of this tree and its `gcp` and `test` extras. The suite imports `apache_beam` from `sdks/python`, so the task builds the virtualenv once; `-PrefreshXlangPythonEnv` builds it again. `-PpythonVersion` selects the interpreter (3.11 or later).
+- `-Ptests` takes test method names without the `test_` prefix. The default runs the whole `ValidateRunnerXlangTest` class.
+- The tasks need Docker. If the Docker API is not on the default socket (for example with Colima), the tasks take the socket from the current Docker context.
+
+The Dataflow task also builds a linux/amd64 worker image and pushes it to the registry in `dataflowRepositoryRoot`, for example `us-central1-docker.pkg.dev/<project>/<repository>`. Each test is one Dataflow job, and `-PxlangParallelism` (default `8`) sets how many run at the same time. The Python transforms run in the Python SDK container of this tree, with the SDK staged from `sdks/python/build/apache-beam.tar.gz`. The task reads these properties from `sdks/rust/.local/sdk.properties` (with the `example.xlang.` prefix or without it) or from `-P` flags:
+
+| Property | Meaning |
+|---|---|
+| `dataflowRepositoryRoot` | Registry path of the worker images. Required. |
+| `gcpProject`, `gcpTempLocation` | Project and temp location of the jobs. Required. |
+| `gcpRegion` | Region of the jobs. Defaults to `us-central1`. |
+| `network`, `subnetwork`, `workerMachineType` | Optional worker settings. |
+| `pythonSdkImage` | Python SDK container that already holds the SDK of this tree. Optional. |
+
+The SDK base image must be in that registry for linux/amd64 first:
+
+```bash
+./gradlew :sdks:rust:container:docker -Pcontainer-architecture-list=amd64 \
+  -Pdocker-repository-root=<dataflowRepositoryRoot> -Ppush-containers
+```
+
+Without `pythonSdkImage`, each worker builds the staged SDK into a wheel before the Python worker starts, which adds about five minutes to each job. `pythonSdkDataflowImage` builds the Python SDK container of this tree for linux/amd64, pushes it to `dataflowRepositoryRoot` and prints the value for `pythonSdkImage`. The task then sets `--sdk_container_image` and `--sdk_location=container`. Build the image again after changes in `sdks/python`, and use the same `-PpythonVersion` for the image and the suite:
+
+```bash
+./gradlew :sdks:rust:pythonSdkDataflowImage -PpythonVersion=3.12
+```
+
 ---
 
 ## 3. Conformance Results
