@@ -1,0 +1,78 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+[package]
+name = "apache-beam-runner-tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Integration tests for Apache Beam Rust SDK transforms that require a runner to execute"
+publish = false
+
+# Named "tests" for succinct internal usage in integration test binaries.
+[lib]
+name = "beam_runner_tests"
+test = false
+doctest = false
+
+[[bin]]
+name = "beam-runner-tests-worker"
+path = "src/worker.rs"
+test = false
+
+[[bin]]
+name = "beam-runner-tests-expansion-service"
+path = "src/expansion_service.rs"
+test = false
+
+[[test]]
+name = "validates_runner_prism"
+path = "tests/validates_runner_prism/main.rs"
+harness = false
+
+[[test]]
+name = "validates_runner_dataflow"
+path = "tests/validates_runner_dataflow/main.rs"
+harness = false
+test = false
+
+[dependencies]
+beam = { workspace = true, features = ["fluent", "io-file", "gcp-gcs", "gcp-bigquery", "gcp-bigtable", "gcp-pubsub", "derive", "external", "prism", "dataflow", "testing", "parquet", "avro"] }
+beam_runner_prism = { workspace = true }
+beam_io_file = { workspace = true }
+beam_io_gcp = { workspace = true, features = ["gcs"] }
+beam_fluent = { workspace = true }
+beam_external = { workspace = true }
+beam_expansion = { workspace = true }
+clap = { workspace = true }
+inventory = { workspace = true }
+prost = { workspace = true }
+rust_decimal = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+beam_harness = { workspace = true }
+beam_model = { workspace = true }
+tonic = { workspace = true }
+
+[lints]
+workspace = true
+
