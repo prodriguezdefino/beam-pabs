@@ -95,6 +95,7 @@ dependencies = [
  "apache-beam-harness",
  "apache-beam-io-file",
  "apache-beam-model",
+ "apache-beam-runner-prism",
 ]
 
 [[package]]
@@ -177,6 +178,25 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+]
+
+[[package]]
+name = "apache-beam-runner-prism"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam-core",
+ "apache-beam-harness",
+ "apache-beam-model",
+ "apache-beam-runner-prism",
+ "async-trait",
+ "inventory",
+ "prost",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

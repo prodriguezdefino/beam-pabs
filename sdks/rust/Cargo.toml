@@ -25,6 +25,7 @@ members = [
     "beam/io/file",
     "beam/test-utils",
     "beam/harness",
+    "beam/runners/prism",
 ]
 
 [workspace.package]
@@ -93,6 +94,7 @@ core = { package = "apache-beam-core", path = "beam/core", version = "2.78.0-SNA
 model = { package = "apache-beam-model", path = "beam/model", version = "2.78.0-SNAPSHOT" }
 harness = { package = "apache-beam-harness", path = "beam/harness", version = "2.78.0-SNAPSHOT" }
 file = { package = "apache-beam-io-file", path = "beam/io/file", version = "2.78.0-SNAPSHOT" }
+prism = { package = "apache-beam-runner-prism", path = "beam/runners/prism", version = "2.78.0-SNAPSHOT" }
 testutils = { package = "apache-beam-test-utils", path = "beam/test-utils", version = "2.78.0-SNAPSHOT" }
 derive = { package = "apache-beam-derive", path = "beam/derive", version = "2.78.0-SNAPSHOT" }
 
