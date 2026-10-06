@@ -21,7 +21,7 @@
 //!
 //! A [`PCollectionView`] is a `PValue`, not a transform. It names a collection that
 //! already exists and describes how a `DoFn` reads it. The runner-facing reader is
-//! `SideInputReader`.
+//! [`SideInputReader`](crate::internals::SideInputReader).
 
 use std::borrow::Cow;
 use std::marker::PhantomData;

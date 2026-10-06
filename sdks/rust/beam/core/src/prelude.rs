@@ -23,8 +23,8 @@
 //! use beam::prelude::*;
 //! ```
 //!
-//! Pipeline, options, PValues, the `PTransform` trait, common windows and triggers, user
-//! metrics and rows.
+//! Pipeline, options, PValues, the `PTransform` trait, state and timer specs, common windows
+//! and triggers, user metrics and rows.
 //!
 //! Specialised items stay in their modules: [`crate::pipeline`] (resource hints),
 //! [`crate::metrics`] (query API), [`crate::coders`] and [`crate::internals`].
@@ -37,9 +37,12 @@ pub use crate::pipeline::Pipeline;
 #[cfg(feature = "derive")]
 pub use crate::schema::BeamEnum;
 pub use crate::schema::{BeamRow, Row, Schema};
-pub use crate::transforms::PTransform;
+pub use crate::transforms::{
+    BagState, BagStateSpec, MapState, MapStateSpec, PTransform, ProcessContext, SetState,
+    SetStateSpec, TimeDomain, Timer, TimerFamilySpec, ValueState, ValueStateSpec,
+};
 pub use crate::values::{PBegin, PCollection, PCollectionList, PCollectionView, PDone};
 pub use crate::windowing::{
     AccumulationMode, BoundedWindow, FixedWindows, GlobalWindows, IntervalWindow, Sessions,
-    SlidingWindows, Trigger, WindowFn,
+    SlidingWindows, Trigger, WindowFn, WindowInto,
 };

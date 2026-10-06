@@ -19,7 +19,8 @@
 
 //! Transforms: the operations that build a pipeline's graph.
 //!
-//! A [`PTransform`] expands a [`PInput`] into a [`POutput`].
+//! A [`PTransform`] expands a [`PInput`] into a [`POutput`]. The byte-level handlers that a
+//! runner executes are in [`crate::internals`].
 //!
 //! This crate is `apply`-style: `pcoll.apply(Map::new("Name", f))`. Method syntax
 //! (`.map(..)`) comes from extension traits in `apache-beam-fluent`; `beam::prelude`
@@ -28,6 +29,14 @@
 use crate::values::{PInput, POutput};
 
 pub mod display_data;
+pub(crate) mod dofn;
+pub(crate) mod handler;
+
+pub use dofn::{
+    BagState, BagStateSpec, MapState, MapStateSpec, OutputBuilder, OutputTag, ProcessContext,
+    SetState, SetStateSpec, TimeDomain, Timer, TimerFamilySpec, ValueState, ValueStateSpec,
+};
+pub(crate) use handler::{BundleHandler, ElementSink, HandlerInstance, TransformFn, TypedElement};
 
 /// A composite or primitive transform converting a [`PInput`] into a [`POutput`].
 pub trait PTransform<Input: PInput> {

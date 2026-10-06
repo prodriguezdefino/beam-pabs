@@ -32,6 +32,7 @@ use crate::pipeline::constants::{
 use crate::pipeline::error::PipelineError;
 use crate::pipeline::roots;
 use crate::pipeline::validation;
+use crate::transforms::TransformFn;
 use crate::values::IsBounded;
 
 /// Process-wide counter that makes node ids in the pipeline DAG unique.
@@ -49,6 +50,7 @@ pub struct PipelineInner {
     pub transform_order: Vec<String>,
     pub default_environment_id: String,
     pub default_windowing_strategy_id: String,
+    pub transform_handlers: HashMap<String, TransformFn>,
     pub expansion_mode: ExpansionMode,
     /// Local files that expansion services used (typically the JAR), which a runner must ship
     /// to its workers. In expansion order, without duplicates.
@@ -71,6 +73,7 @@ impl std::fmt::Debug for PipelineInner {
                 "default_windowing_strategy_id",
                 &self.default_windowing_strategy_id,
             )
+            .field("transform_handlers_count", &self.transform_handlers.len())
             .field("expansion_mode", &self.expansion_mode)
             .field("xlang_artifacts", &self.xlang_artifacts)
             .field(
@@ -157,6 +160,7 @@ impl PipelineInner {
             transform_order: Vec::new(),
             default_environment_id,
             default_windowing_strategy_id,
+            transform_handlers: HashMap::new(),
             expansion_mode: ExpansionMode::default(),
             xlang_artifacts: Vec::new(),
             expansion_clients: HashMap::new(),

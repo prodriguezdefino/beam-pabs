@@ -7,7 +7,7 @@
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
  * software distributed under the License is distributed on an
@@ -17,15 +17,19 @@
  * under the License.
  */
 
-//! Window functions, windowing strategies, triggers and watermark estimators.
+//! DoFn/ParDo execution, context, state and timers.
+//!
+//! This module is crate-private. [`crate::transforms`] exports the user items and
+//! [`crate::internals`] exports the runner plumbing.
 
-pub mod strategy;
-pub mod transform;
-pub mod trigger;
-pub mod window_fn;
+pub(crate) mod context;
+pub(crate) mod side_input;
+pub(crate) mod state;
+pub(crate) mod timer;
 
-pub use crate::coders::{GlobalWindow, IntervalWindow};
-pub use strategy::*;
-pub use transform::*;
-pub use trigger::*;
-pub use window_fn::*;
+pub use context::{HandlerContext, OutputBuilder, OutputTag, ProcessContext};
+pub use state::{
+    BagState, BagStateSpec, MapState, MapStateSpec, SetState, SetStateSpec, ValueState,
+    ValueStateSpec,
+};
+pub use timer::{TimeDomain, Timer, TimerFamilySpec};

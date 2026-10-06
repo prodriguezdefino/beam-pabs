@@ -17,15 +17,16 @@
  * under the License.
  */
 
-//! Window functions, windowing strategies, triggers and watermark estimators.
+//! Access to the [`MetricsContainer`](crate::metrics::MetricsContainer) of a
+//! [`ProcessContext`]. [`Metrics`](crate::metrics::Metrics) writes into the scope that the
+//! harness enters for the running transform.
 
-pub mod strategy;
-pub mod transform;
-pub mod trigger;
-pub mod window_fn;
+use std::sync::Arc;
 
-pub use crate::coders::{GlobalWindow, IntervalWindow};
-pub use strategy::*;
-pub use transform::*;
-pub use trigger::*;
-pub use window_fn::*;
+use super::ProcessContext;
+
+impl<T> ProcessContext<'_, T> {
+    pub fn metrics_container(&self) -> Option<&Arc<crate::metrics::MetricsContainer>> {
+        self.metrics_container
+    }
+}
