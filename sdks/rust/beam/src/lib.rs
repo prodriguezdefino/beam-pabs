@@ -20,8 +20,32 @@
 //! Apache Beam Rust SDK
 //!
 //! A native Rust SDK for writing portable [Apache Beam](https://beam.apache.org/) pipelines.
-//! Pipelines depend on this crate only. It re-exports the SDK crates, and its features
-//! select the optional ones.
+//!
+//! # Getting Started
+//!
+//! One dependency is enough. Select the runner as a feature. The connectors, the
+//! Fn API worker harness and the schema derive macros come with it:
+//!
+//! ```toml
+//! [dependencies]
+//! beam = { package = "apache-beam", version = "0.1", features = ["prism"] }
+//! ```
+//!
+//! Writing a pipeline using `beam::prelude::*`:
+//!
+//! ```rust
+//! use beam::prelude::*;
+//!
+//! let p = Pipeline::new();
+//!
+//! p.apply("TextIO.Read", textio::Read::new("input.txt"))
+//!     .flat_map("ExtractWords", |line: String| {
+//!         line.split_whitespace().map(String::from).collect::<Vec<_>>()
+//!     })
+//!     .count_per_element("CountWords")
+//!     .map("FormatCounts", |(word, count)| format!("{word}: {count}"))
+//!     .apply("TextIO.Write", textio::Write::new("counts.txt"));
+//! ```
 //!
 //! # Link-time registration
 //!
@@ -34,6 +58,9 @@
 
 pub use beam_core::*;
 pub use beam_model as model;
+
+#[cfg(feature = "fluent")]
+pub use beam_fluent as fluent;
 
 #[cfg(feature = "harness")]
 pub mod logging {
@@ -74,12 +101,16 @@ mod link {
     pub use beam_runner_prism as _;
 }
 
-/// All that an ordinary pipeline needs.
+/// All that an ordinary pipeline needs, in both styles.
 ///
-/// Holds the core prelude (`apply` style: `pcoll.apply(Map::new(..))`),
-/// [`textio`](beam_io_file::textio), and [`run`](beam_core::runners::run).
+/// Holds the core prelude (`apply` style: `pcoll.apply(.., Map::new())`), the fluent
+/// extension traits (method style: `pcoll.map(..)`), [`textio`](beam_io_file::textio), and
+/// [`run`](beam_core::runners::run).
 pub mod prelude {
     pub use beam_core::prelude::*;
+
+    #[cfg(feature = "fluent")]
+    pub use beam_fluent::prelude::*;
 
     #[cfg(feature = "io-file")]
     pub use beam_io_file::textio;

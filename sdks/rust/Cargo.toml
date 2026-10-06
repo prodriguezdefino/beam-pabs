@@ -22,6 +22,7 @@ members = [
     "beam/model",
     "beam/derive",
     "beam/core",
+    "beam/fluent",
     "beam/io/file",
     "beam/test-utils",
     "beam/harness",
@@ -112,6 +113,7 @@ proptest = "1"
 beam = { package = "apache-beam", path = "beam", version = "2.79.0-SNAPSHOT" }
 beam_core = { package = "apache-beam-core", path = "beam/core", version = "2.79.0-SNAPSHOT" }
 beam_model = { package = "apache-beam-model", path = "beam/model", version = "2.79.0-SNAPSHOT" }
+beam_fluent = { package = "apache-beam-fluent", path = "beam/fluent", version = "2.79.0-SNAPSHOT" }
 beam_harness = { package = "apache-beam-harness", path = "beam/harness", version = "2.79.0-SNAPSHOT" }
 beam_io_file = { package = "apache-beam-io-file", path = "beam/io/file", version = "2.79.0-SNAPSHOT" }
 beam_runner_prism = { package = "apache-beam-runner-prism", path = "beam/runners/prism", version = "2.79.0-SNAPSHOT" }
