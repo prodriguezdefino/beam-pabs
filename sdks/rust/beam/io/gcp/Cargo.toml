@@ -29,7 +29,10 @@ name = "gcp"
 
 [dependencies]
 beam = { package = "apache-beam-core", path = "../../core", version = "2.78.0-SNAPSHOT" }
+model = { workspace = true }
 file = { workspace = true }
+external = { workspace = true }
+managed_io = { workspace = true }
 clap = { workspace = true }
 inventory = { workspace = true }
 google-cloud-storage = { workspace = true }
@@ -43,6 +46,9 @@ serde = { workspace = true }
 
 [dev-dependencies]
 gcp = { package = "apache-beam-io-gcp", path = "." }
+prost = { workspace = true }
+tonic = { workspace = true }
+tokio-stream = { workspace = true }
 
 [lints]
 workspace = true

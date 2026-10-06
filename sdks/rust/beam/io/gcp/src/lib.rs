@@ -27,6 +27,7 @@
 //! register().unwrap();
 //! ```
 
+pub mod bigquery;
 pub mod gcs;
 pub mod options;
 pub mod runtime;
@@ -36,6 +37,11 @@ use std::sync::Arc;
 
 use file::filesystem::{FileSystemRegistration, register_filesystem};
 
+pub use bigquery::{
+    BigQueryRead, BigQueryWrite, CreateDisposition, URN_BIGQUERY_FILELOADS,
+    URN_BIGQUERY_STORAGE_READ, URN_BIGQUERY_STORAGE_WRITE, URN_BIGQUERY_WRITE, WriteDisposition,
+    WriteMethod,
+};
 pub use gcs::{GcsFileSystem, parse_gcs_uri};
 pub use options::GcpOptions;
 

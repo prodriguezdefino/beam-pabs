@@ -285,8 +285,11 @@ name = "apache-beam-io-gcp"
 version = "2.78.0-SNAPSHOT"
 dependencies = [
  "apache-beam-core",
+ "apache-beam-external",
  "apache-beam-io-file",
  "apache-beam-io-gcp",
+ "apache-beam-io-managed",
+ "apache-beam-model",
  "bytes",
  "clap",
  "futures",
@@ -294,9 +297,12 @@ dependencies = [
  "google-cloud-secretmanager-v1",
  "google-cloud-storage",
  "inventory",
+ "prost",
  "rustls",
  "serde",
  "tokio",
+ "tokio-stream",
+ "tonic",
 ]
 
 [[package]]
