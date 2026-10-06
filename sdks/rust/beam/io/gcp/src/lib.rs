@@ -28,8 +28,10 @@
 //! ```
 
 pub mod bigquery;
+pub mod bigtable;
 pub mod gcs;
 pub mod options;
+pub mod pubsub;
 pub mod runtime;
 pub mod secret_manager;
 
@@ -42,8 +44,17 @@ pub use bigquery::{
     URN_BIGQUERY_STORAGE_READ, URN_BIGQUERY_STORAGE_WRITE, URN_BIGQUERY_WRITE, WriteDisposition,
     WriteMethod,
 };
+pub use bigtable::{
+    BigtableCell, BigtableColumn, BigtableMutation, BigtableRead, BigtableWrite, URN_BIGTABLE_READ,
+    URN_BIGTABLE_WRITE,
+};
 pub use gcs::{GcsFileSystem, parse_gcs_uri};
 pub use options::GcpOptions;
+pub use pubsub::{
+    PubsubFormat, PubsubRead, PubsubWrite, URN_PUBSUB_READ, URN_PUBSUB_READ_TRANSFORM,
+    URN_PUBSUB_WRITE, URN_PUBSUB_WRITE_TRANSFORM, raw_bytes_row, raw_bytes_schema, raw_string_row,
+    raw_string_schema,
+};
 
 inventory::submit! {
     FileSystemRegistration {
