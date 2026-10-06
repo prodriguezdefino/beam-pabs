@@ -94,7 +94,7 @@ impl<'ctx, 'a, T> OutputBuilder<'ctx, 'a, T> {
     ///
     /// `emit` fails if `timestamp` is earlier than the timestamp of the current element or
     /// timer minus the allowed timestamp skew of the function, or later than
-    /// [`Instant::MAX`]. See `DoFn::allowed_timestamp_skew`.
+    /// [`Instant::MAX`]. See [`DoFn::allowed_timestamp_skew`](crate::transforms::DoFn::allowed_timestamp_skew).
     pub fn at(mut self, timestamp: Instant) -> Self {
         self.timestamp = Some(timestamp);
         self

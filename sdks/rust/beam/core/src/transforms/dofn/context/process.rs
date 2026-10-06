@@ -29,20 +29,17 @@ use crate::coders::{ElementMetadata, PaneInfo, WindowedHeader};
 
 impl<'a, T> ProcessContext<'a, T> {
     /// Sets the encoded key of the current element.
-    #[expect(dead_code, reason = "the DoFn handlers of the next commit use it")]
     pub(crate) fn with_key_bytes(mut self, key_bytes: impl Into<Cow<'a, [u8]>>) -> Self {
         self.key_bytes = Some(key_bytes.into());
         self
     }
 
-    #[expect(dead_code, reason = "the DoFn handlers of the next commit use it")]
     pub(crate) fn with_header(mut self, header: &'a WindowedHeader) -> Self {
         self.header = header;
         self
     }
 
     /// Sets the allowed timestamp skew of the function that receives the context.
-    #[expect(dead_code, reason = "the DoFn handlers of the next commit use it")]
     pub(crate) fn with_allowed_timestamp_skew(mut self, skew: Duration) -> Self {
         self.allowed_timestamp_skew = skew;
         self
@@ -62,7 +59,6 @@ impl<'a, T> ProcessContext<'a, T> {
 
     /// The encoded windows of the current element: one window when the element was split per
     /// window, several otherwise.
-    #[expect(dead_code, reason = "the DoFn handlers of the next commit use it")]
     pub(crate) fn window_bytes(&self) -> &'a [u8] {
         self.header.window_bytes()
     }

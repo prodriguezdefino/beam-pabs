@@ -1,0 +1,111 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+//! Fallible one-to-one element mapping with dead-letter routing.
+
+use std::fmt::Display;
+use std::sync::Arc;
+
+use super::composite::expand_as;
+use super::{ClosureFn, Failure, PTransform, ParDo, WithFailures};
+use crate::coders::DefaultCoder;
+use crate::values::PCollection;
+
+/// Applies a fallible function to every element and sends failures to a dead-letter output.
+///
+/// `Ok` values go to [`output`](WithFailures::output). The failure handler converts each `Err`
+/// (a [`Failure<In, E>`]) into a failure of type `F` on [`failures`](WithFailures::failures);
+/// the bundle does not fail. The default handler from [`new`](Self::new) produces
+/// [`Failure<In>`] with the `Display` text of the error. To replace it, use
+/// [`with_failure_handler`](Self::with_failure_handler):
+///
+/// ```ignore
+/// let parsed = lines.apply(
+///     "Parse",
+///     TryMap::new(|s: &String| s.parse::<i64>())
+///         .with_failure_handler(|f| format!("{}: {}", f.input, f.error)),
+/// );
+/// ```
+pub struct TryMap<In, Out, E, F = Failure<In>> {
+    func: Arc<MapFn<In, Out, E>>,
+    handler: Arc<HandlerFn<In, E, F>>,
+}
+
+type MapFn<In, Out, E> = dyn Fn(&In) -> Result<Out, E> + Send + Sync;
+type HandlerFn<In, E, F> = dyn Fn(Failure<In, E>) -> F + Send + Sync;
+
+impl<In, Out, E> TryMap<In, Out, E>
+where
+    In: 'static,
+    E: Display + 'static,
+{
+    /// Maps each element with `func`. Each `Err` becomes a [`Failure<In>`] with the input element
+    /// and the `Display` text of the error.
+    pub fn new<Func>(func: Func) -> Self
+    where
+        Func: Fn(&In) -> Result<Out, E> + Send + Sync + 'static,
+    {
+        Self {
+            func: Arc::new(func),
+            handler: Arc::new(|failure: Failure<In, E>| {
+                Failure::new(failure.input, failure.error.to_string())
+            }),
+        }
+    }
+}
+
+impl<In, Out, E, F> TryMap<In, Out, E, F> {
+    /// Replaces the failure handler that converts each failed element and its error into the
+    /// failure element on [`failures`](WithFailures::failures).
+    pub fn with_failure_handler<G, H>(self, handler: H) -> TryMap<In, Out, E, G>
+    where
+        H: Fn(Failure<In, E>) -> G + Send + Sync + 'static,
+    {
+        TryMap {
+            func: self.func,
+            handler: Arc::new(handler),
+        }
+    }
+}
+
+impl<In, Out, E, F> PTransform<PCollection<In>> for TryMap<In, Out, E, F>
+where
+    In: DefaultCoder,
+    Out: DefaultCoder,
+    E: 'static,
+    F: DefaultCoder,
+{
+    type Output = WithFailures<Out, F>;
+
+    fn expand(self, input: &PCollection<In>) -> Self::Output {
+        let func = self.func;
+        let handler = self.handler;
+        expand_as(
+            input,
+            ParDo::new(ClosureFn::new("TryMap", move |element: In, ctx| {
+                ctx.emit(func(&element).map_err(|error| {
+                    handler(Failure {
+                        input: element,
+                        error,
+                    })
+                }))
+            })),
+        )
+    }
+}
