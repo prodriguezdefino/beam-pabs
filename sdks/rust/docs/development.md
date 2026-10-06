@@ -216,3 +216,11 @@ It measures production code only and runs in seconds.
 The task uses the `scc` and `lizard` versions that the builder image pins. An image without these tools fails the marker check. Rebuild it with `./gradlew :sdks:rust:buildBuilderImage`.
 
 [scripts/quality/README.md](../scripts/quality/README.md#complexity-scorecard) tells what the scorecard counts and how the areas map to the paths of each SDK.
+
+### Unused dependencies
+
+Check all workspace manifests for unused dependencies with `cargo-machete` in the builder container:
+
+```bash
+./gradlew :sdks:rust:machete
+```
