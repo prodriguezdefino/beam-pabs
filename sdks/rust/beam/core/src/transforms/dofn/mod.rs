@@ -29,6 +29,7 @@ pub(crate) mod input;
 pub(crate) mod outputs;
 mod pardo;
 pub(crate) mod registered;
+pub mod sdf;
 pub(crate) mod side_input;
 pub(crate) mod state;
 mod stateful;
