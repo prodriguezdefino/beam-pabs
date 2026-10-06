@@ -30,6 +30,7 @@ members = [
     "beam/expansion",
     "beam/runners/*",
     "beam/testing",
+    "beam/runner-tests",
 ]
 
 [workspace.package]
