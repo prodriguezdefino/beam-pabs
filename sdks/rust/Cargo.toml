@@ -19,6 +19,7 @@
 resolver = "3"
 members = [
     "beam/model",
+    "beam/derive",
 ]
 
 [workspace.package]
@@ -59,6 +60,9 @@ prost-types = "0.14"
 tonic = "0.14"
 tonic-prost = "0.14"
 tonic-prost-build = "0.14"
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "3", features = ["full", "extra-traits"] }
 
 # Keep file:line in panic backtraces without full DWARF debug info.
 [profile.dev]
