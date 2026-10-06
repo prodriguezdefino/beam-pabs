@@ -32,6 +32,10 @@ name = "beam"
 default = ["fluent", "io-file", "derive", "external"]
 fluent = ["dep:fluent"]
 io-file = ["dep:file"]
+# Columnar formats via arrow-rs. Off by default: they pull in arrow and codec crates.
+arrow = ["dep:arrow_io"]
+parquet = ["dep:parquet_io", "arrow", "io-file"]
+avro = ["dep:avro_io", "arrow", "io-file"]
 derive = ["core/derive"]
 external = ["dep:external"]
 expansion = ["dep:expansion"]
@@ -48,6 +52,9 @@ model = { workspace = true }
 fluent = { workspace = true, optional = true }
 harness = { workspace = true, optional = true }
 file = { workspace = true, optional = true }
+arrow_io = { workspace = true, optional = true }
+parquet_io = { workspace = true, optional = true }
+avro_io = { workspace = true, optional = true }
 external = { workspace = true, optional = true }
 expansion = { workspace = true, optional = true }
 prism = { workspace = true, optional = true }
