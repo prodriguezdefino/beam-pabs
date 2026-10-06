@@ -17,6 +17,5 @@
  * under the License.
  */
 
-//! Subprocess harness tests for global logging initialization.
-
+mod element_timeout_test;
 mod logging_init_test;
