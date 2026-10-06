@@ -28,6 +28,7 @@ members = [
     "beam/harness",
     "beam/external",
     "beam/expansion",
+    "beam/ml",
     "beam/runners/*",
     "beam/testing",
     "beam/runner-tests",
@@ -90,6 +91,13 @@ globset = "0.4"
 foldhash = "0.2"
 serde-saphyr = "1"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json"] }
+arc-swap = "1.7"
+candle-core = "0.11.0"
+candle-nn = "0.11.0"
+candle-transformers = "0.11.0"
+tokenizers = { version = "0.22.2", default-features = false, features = ["fancy-regex"] }
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "load-dynamic"] }
 google-cloud-storage = "1.18.0"
 google-cloud-gax = "1.14.0"
 google-cloud-auth = "1.16.0"
@@ -116,6 +124,7 @@ beam = { package = "apache-beam", path = "beam", version = "2.78.0-SNAPSHOT" }
 core = { package = "apache-beam-core", path = "beam/core", version = "2.78.0-SNAPSHOT" }
 model = { package = "apache-beam-model", path = "beam/model", version = "2.78.0-SNAPSHOT" }
 fluent = { package = "apache-beam-fluent", path = "beam/fluent", version = "2.78.0-SNAPSHOT" }
+ml = { package = "apache-beam-ml", path = "beam/ml", version = "2.78.0-SNAPSHOT" }
 harness = { package = "apache-beam-harness", path = "beam/harness", version = "2.78.0-SNAPSHOT" }
 external = { package = "apache-beam-external", path = "beam/external", version = "2.78.0-SNAPSHOT" }
 expansion = { package = "apache-beam-expansion", path = "beam/expansion", version = "2.78.0-SNAPSHOT" }
