@@ -29,10 +29,24 @@ workspace = true
 
 [lib]
 name = "beam_ml"
+test = false
 
 [features]
 default = []
 remote = ["dep:reqwest", "dep:tokio", "dep:futures", "dep:beam_io_gcp"]
+
+# Hugging Face Candle (Pure Rust)
+candle = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers", "dep:beam_io_file"]
+candle-cpu = ["candle"]
+candle-cuda = ["candle", "candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
+candle-metal = ["candle", "candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
+# ONNX Runtime (Universal Cross-Framework)
+onnx = ["dep:ort", "dep:beam_io_file"]
+onnx-dynamic = ["onnx", "ort/load-dynamic"]
+onnx-cuda = ["onnx", "ort/cuda"]
+onnx-tensorrt = ["onnx", "ort/tensorrt"]
+onnx-coreml = ["onnx", "ort/coreml"]
+onnx-download-binaries = ["onnx", "ort/download-binaries", "ort/copy-dylibs", "ort/tls-rustls"]
 
 [dependencies]
 beam = { package = "apache-beam-core", path = "../core", version = "2.79.0-SNAPSHOT" }
@@ -48,6 +62,12 @@ beam_io_gcp = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
+candle-core = { workspace = true, optional = true }
+candle-nn = { workspace = true, optional = true }
+candle-transformers = { workspace = true, optional = true }
+tokenizers = { workspace = true, optional = true }
+beam_io_file = { workspace = true, optional = true }
+ort = { workspace = true, optional = true }
 
 [dev-dependencies]
 beam_fluent = { package = "apache-beam-fluent", path = "../fluent" }
@@ -59,3 +79,18 @@ wiremock = { workspace = true }
 name = "remote"
 path = "tests/remote/main.rs"
 required-features = ["remote"]
+
+[[test]]
+name = "onnx"
+path = "tests/onnx/main.rs"
+required-features = ["onnx"]
+
+[[test]]
+name = "onnx_runtime"
+path = "tests/onnx_runtime/main.rs"
+required-features = ["onnx"]
+
+[[test]]
+name = "candle"
+path = "tests/candle/main.rs"
+required-features = ["candle"]

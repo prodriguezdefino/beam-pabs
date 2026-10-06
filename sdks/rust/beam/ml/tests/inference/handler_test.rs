@@ -207,3 +207,55 @@ fn test_prediction_result_registers_kv_of_components() {
     assert_eq!(components.len(), 2);
     assert_eq!(id, format!("coder_{}", calls.len()));
 }
+
+#[cfg(feature = "candle")]
+mod vector_embedding_tests {
+    use beam::coders::{Coder, CoderError, Context, DefaultCoder, URN_KV};
+    use beam_ml::candle::VectorEmbedding;
+
+    #[test]
+    fn test_vector_embedding_coder_roundtrip() {
+        let coder = VectorEmbedding::coder();
+        assert_eq!(Coder::<VectorEmbedding>::urn(&coder), URN_KV);
+
+        for value in [
+            VectorEmbedding {
+                doc_id: "doc-empty".to_string(),
+                embedding: Vec::new(),
+            },
+            VectorEmbedding {
+                doc_id: "doc-1".to_string(),
+                embedding: vec![0.25, -1.5, 3.125],
+            },
+        ] {
+            for context in [Context::Nested, Context::WholeStream] {
+                let mut buf = Vec::new();
+                coder.encode(&value, &mut buf, context).expect("encode");
+                let mut slice = buf.as_slice();
+                let decoded = coder.decode(&mut slice, context).expect("decode");
+                assert!(slice.is_empty());
+                assert_eq!(decoded, value);
+            }
+        }
+    }
+
+    #[test]
+    fn test_vector_embedding_decode_rejects_trailing_bytes() {
+        for trailing in 1..=3usize {
+            let mut buf = Vec::new();
+            "doc-bad".to_string().encode_element(&mut buf).expect("id");
+            let mut raw = vec![0u8; 8 + trailing];
+            raw[..4].copy_from_slice(&1.0_f32.to_le_bytes());
+            raw[4..8].copy_from_slice(&2.0_f32.to_le_bytes());
+            raw.encode_element(&mut buf).expect("bytes");
+
+            let mut slice = buf.as_slice();
+            let err = VectorEmbedding::decode_element(&mut slice)
+                .expect_err("trailing bytes must fail decoding");
+            assert!(
+                matches!(err, CoderError::Format(ref msg) if msg.contains("not a multiple of 4")),
+                "unexpected error for {trailing} trailing byte(s): {err:?}"
+            );
+        }
+    }
+}
