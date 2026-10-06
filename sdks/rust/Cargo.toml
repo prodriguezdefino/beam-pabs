@@ -23,6 +23,7 @@ members = [
     "beam/derive",
     "beam/core",
     "beam/io/file",
+    "beam/test-utils",
 ]
 
 [workspace.package]
@@ -64,6 +65,7 @@ tonic = "0.14"
 tonic-prost = "0.14"
 tonic-prost-build = "0.14"
 tokio = { version = "1.40", features = ["full"] }
+tokio-stream = "0.1"
 async-trait = "0.1"
 bytes = "1.7"
 serde = { version = "1.0", features = ["derive"] }
@@ -88,6 +90,7 @@ beam = { package = "apache-beam", path = "beam", version = "2.78.0-SNAPSHOT" }
 core = { package = "apache-beam-core", path = "beam/core", version = "2.78.0-SNAPSHOT" }
 model = { package = "apache-beam-model", path = "beam/model", version = "2.78.0-SNAPSHOT" }
 file = { package = "apache-beam-io-file", path = "beam/io/file", version = "2.78.0-SNAPSHOT" }
+testutils = { package = "apache-beam-test-utils", path = "beam/test-utils", version = "2.78.0-SNAPSHOT" }
 derive = { package = "apache-beam-derive", path = "beam/derive", version = "2.78.0-SNAPSHOT" }
 
 # Keep file:line in panic backtraces without full DWARF debug info.
