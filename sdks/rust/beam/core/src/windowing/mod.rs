@@ -20,14 +20,18 @@
 //! Window functions, windowing strategies, and triggers.
 
 pub(crate) mod error;
-pub mod strategy;
-pub mod transform;
-pub mod trigger;
-pub mod window_fn;
+pub(crate) mod strategy;
+pub(crate) mod transform;
+pub(crate) mod trigger;
+pub(crate) mod watermark;
+pub(crate) mod window_fn;
 
 pub use crate::coders::{GlobalWindow, IntervalWindow};
 pub use error::*;
 pub use strategy::*;
 pub use transform::WindowInto;
 pub use trigger::*;
-pub use window_fn::*;
+pub use watermark::*;
+pub use window_fn::{
+    BoundedWindow, FixedWindows, GlobalWindows, MergeStatus, Sessions, SlidingWindows, WindowFn,
+};

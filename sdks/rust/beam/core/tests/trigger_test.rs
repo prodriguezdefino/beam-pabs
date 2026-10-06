@@ -405,6 +405,7 @@ fn element_count_preserves_the_exact_value() {
         assert_eq!(decoded, Trigger::after_count(count));
     }
 }
+
 #[test]
 fn element_count_zero_or_negative_fails_conversion() {
     for count in [i32::MIN, -1, 0] {
@@ -419,6 +420,32 @@ fn element_count_zero_or_negative_fails_conversion() {
             Trigger::try_from(&proto),
             Err(beam::windowing::WindowingError::InvalidTriggerCount(count))
         );
+    }
+}
+
+#[test]
+fn element_count_zero_or_negative_fails_pipeline_validation() {
+    use beam::pipeline::Pipeline;
+    use beam::transforms::Create;
+    use beam::windowing::{FixedWindows, WindowInto};
+
+    for count in [i32::MIN, -1, 0] {
+        let p = Pipeline::new();
+        let _ = p.apply(Create::new("Create", vec![1i64, 2, 3])).apply(
+            WindowInto::new("WindowInto", FixedWindows::of(Duration::from_secs(10)))
+                .with_trigger(Trigger::after_count(count)),
+        );
+        let err = p.validate().unwrap_err();
+        match err {
+            beam::pipeline::PipelineError::InvalidConstruction {
+                transform_id,
+                reason,
+            } => {
+                assert_eq!(transform_id, "WindowInto");
+                assert!(reason.contains("count >= 1"), "unexpected reason: {reason}");
+            }
+            other => panic!("Expected InvalidConstruction, got {other:?}"),
+        }
     }
 }
 
@@ -480,4 +507,3 @@ fn continuation_fires_once_for_each_upstream_pane() {
         );
     }
 }
-

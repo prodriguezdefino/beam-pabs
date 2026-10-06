@@ -31,12 +31,21 @@ use crate::pipeline::constants::URN_RUST_DOFN;
 use crate::pipeline::resources::ResourceHints;
 use crate::pipeline::{Pipeline, URN_PAR_DO};
 
+pub use crate::metrics::scope::process_wide_container;
 pub use crate::transforms::create::create_handler;
 pub use crate::transforms::dofn::context::{
     BundleFinalizerCollector, FinalizationCallback, HandlerContext, PendingFinalizer,
     ResidualApplication, ResidualCollector,
 };
-pub use crate::transforms::dofn::outputs::{Emitter, OutputDeclarer};
+pub use crate::transforms::dofn::outputs::{Emitter, Indexed, OutputDeclarer};
+pub use crate::transforms::dofn::sdf::dynamic_split::{
+    DynamicSplitGuard, DynamicSplitHandler, DynamicSplitRegistrar, DynamicSplitResult,
+    SdfDynamicSplitter,
+};
+pub use crate::transforms::dofn::sdf::splittable_dofn::{
+    SdfPairWithRestrictionHandler, SdfProcessSizedElementsHandler, SdfSplitAndSizeHandler,
+    SdfTruncateSizedRestrictionsHandler, SplittableDoFnHandler,
+};
 pub use crate::transforms::dofn::side_input::{
     ScopedSideInputReader, SideInputElements, SideInputError, SideInputReader,
     extract_side_input_tags,
@@ -46,9 +55,9 @@ pub use crate::transforms::dofn::timer::{
     TimeDomain, TimerCollector, TimerFamilySpec, TimerMutation,
 };
 pub use crate::transforms::dofn::{
-    DoFnHandler, FnRegistration, IntoParDoFn, PerWindow, Registered, RegisteredFn, StateBinding,
-    StateCell, StateCells, Stateful, Stateless, TimerFamilies, build_registered, encode_registered,
-    registered_handler,
+    DoFnHandler, FnRegistration, IntoParDoFn, PerWindow, Registered, RegisteredFn, Splittable,
+    StateBinding, StateCell, StateCells, Stateful, Stateless, TimerFamilies, build_registered,
+    encode_registered, registered_handler,
 };
 pub use crate::transforms::handler::{
     BundleHandler, ElementSink, HandlerInstance, TransformFn, TypedElement,
@@ -64,9 +73,7 @@ pub(crate) type FastHashMap<K, V> = HashMap<K, V, foldhash::fast::RandomState>;
 
 pub use crate::coders::display::ElementFormatter;
 pub use crate::metrics::context::MetricsContainer;
-pub use crate::metrics::scope::{
-    MetricsScope, TransformMetrics, TransformSelection, process_wide_container,
-};
+pub use crate::metrics::scope::{MetricsScope, TransformMetrics, TransformSelection};
 pub use crate::metrics::short_ids::ShortIdCache;
 pub use crate::metrics::system::{
     data_channel_read_index, element_count, finish_bundle_msecs, process_bundle_msecs,
