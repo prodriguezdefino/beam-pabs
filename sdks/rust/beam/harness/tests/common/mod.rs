@@ -24,6 +24,8 @@
     reason = "shared by several test binaries, each using a different subset"
 )]
 
+pub mod state_mock;
+
 /// How long a test waits for an event that should arrive promptly. Correct code takes
 /// milliseconds; the deadline makes a lost input fail the test, not hang it.
 pub const WAIT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -33,6 +35,30 @@ pub async fn within<F: IntoFuture>(what: &str, fut: F) -> F::Output {
     tokio::time::timeout(WAIT, fut)
         .await
         .unwrap_or_else(|_| panic!("timed out after {WAIT:?} waiting for {what}"))
+}
+
+/// The user state of one bundle of `descriptor` on `channel`. Panics when the descriptor
+/// declares no user state.
+pub fn bundle_user_state(
+    descriptor: &model::fn_execution::ProcessBundleDescriptor,
+    channel: harness::state::StateChannel,
+    cache: Option<harness::user_state::UserStateCache>,
+) -> harness::user_state::BundleUserState {
+    let coders = std::sync::Arc::new(descriptor.coders.clone());
+    let specs = harness::user_state::UserStateSpecs::from_descriptor(descriptor, coders)
+        .expect("the descriptor declares user state");
+    harness::user_state::BundleUserState::new(std::sync::Arc::new(specs), channel, cache)
+}
+
+/// The side input reader of one bundle of `descriptor` on `channel`, or `None` when the
+/// descriptor reads no side inputs.
+pub fn side_input_reader(
+    descriptor: &model::fn_execution::ProcessBundleDescriptor,
+    channel: Option<harness::state::StateChannel>,
+) -> Option<harness::state::FnApiSideInputReader> {
+    let coders = std::sync::Arc::new(descriptor.coders.clone());
+    harness::state::SideInputSpecs::from_descriptor(descriptor, coders)
+        .map(|specs| harness::state::FnApiSideInputReader::new(std::sync::Arc::new(specs), channel))
 }
 
 /// A one-shot latch that threads block on until another thread opens it. Waits are bounded
