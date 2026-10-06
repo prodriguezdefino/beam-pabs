@@ -303,6 +303,23 @@ fn skip_value(
             }
             Ok(())
         }
+        URN_ROW => {
+            let schema_bytes = coder
+                .spec
+                .as_ref()
+                .map(|s| s.payload.as_slice())
+                .unwrap_or(&[]);
+            if schema_bytes.is_empty() {
+                skip_to_end(cursor);
+                return Ok(());
+            }
+            let schema = crate::schema::Schema::from_proto_bytes(schema_bytes)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            let schema_arc = std::sync::Arc::new(schema);
+            super::RowCoder::decode_row(&schema_arc, cursor)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            Ok(())
+        }
         _ => {
             skip_to_end(cursor);
             Ok(())

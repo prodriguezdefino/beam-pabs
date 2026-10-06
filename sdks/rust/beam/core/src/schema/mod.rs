@@ -22,9 +22,19 @@
 //! A schema is a language-independent type definition for rows. Cross-language transforms,
 //! SchemaTransforms and SQL transforms use schemas as their payload representation.
 
+mod convert;
 mod error;
+mod logical;
 mod proto;
+mod row;
 mod types;
 
+pub use convert::*;
 pub use error::*;
+pub use logical::*;
+pub use row::*;
 pub use types::*;
+
+// The derive macros share the trait names; macros and traits are separate namespaces.
+#[cfg(feature = "derive")]
+pub use derive::{BeamEnum, BeamRow};

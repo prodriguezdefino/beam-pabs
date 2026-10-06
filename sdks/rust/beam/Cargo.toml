@@ -28,6 +28,10 @@ description = "Apache Beam Rust SDK umbrella crate"
 [lib]
 name = "beam"
 
+[features]
+default = ["derive"]
+derive = ["core/derive"]
+
 [dependencies]
 core = { workspace = true }
 model = { workspace = true }

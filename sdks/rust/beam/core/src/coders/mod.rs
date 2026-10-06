@@ -21,10 +21,12 @@
 //! exchange PCollection elements, window metadata and KV records.
 
 mod composite;
+mod display;
 mod header;
 mod iterable;
 mod metadata;
 mod pane;
+mod row;
 mod runner_framing;
 mod standard;
 mod timer;
@@ -33,10 +35,12 @@ mod traversal;
 mod windowed;
 
 pub use composite::*;
+pub use display::ElementFormatter;
 pub use header::WindowedHeader;
 pub use iterable::*;
 pub use metadata::*;
 pub use pane::*;
+pub use row::*;
 pub use runner_framing::*;
 pub use standard::*;
 pub use timer::*;
@@ -82,4 +86,17 @@ pub const SUPPORTED_CODER_URNS: &[&str] = &[
     URN_WINDOWED_VALUE,
     URN_PARAM_WINDOWED_VALUE,
     URN_TIMER,
+    URN_ROW,
 ];
+
+/// Largest number of elements pre-allocated from a runner-supplied count.
+const MAX_PREALLOCATED_ELEMENTS: usize = 4096;
+
+/// Capacity to reserve for a container whose `count` came off the wire. The count is untrusted:
+/// a corrupt header can claim `i32::MAX` elements, so the cap bounds the allocation to what the
+/// stream delivers.
+pub(crate) fn preallocation_for(count: i32) -> usize {
+    usize::try_from(count)
+        .unwrap_or(0)
+        .min(MAX_PREALLOCATED_ELEMENTS)
+}
