@@ -32,6 +32,8 @@
 //! ```
 
 pub mod auth;
+#[cfg(feature = "bigquery")]
+pub mod bigquery;
 pub mod gcs;
 pub mod options;
 pub mod runtime;
@@ -43,6 +45,11 @@ use std::sync::Arc;
 #[cfg(feature = "gcs")]
 use file::{FileSystemRegistration, register_filesystem};
 
+pub use bigquery::{
+    BigQueryRead, BigQueryWrite, CreateDisposition, URN_BIGQUERY_FILELOADS,
+    URN_BIGQUERY_STORAGE_READ, URN_BIGQUERY_STORAGE_WRITE, URN_BIGQUERY_WRITE, WriteDisposition,
+    WriteMethod,
+};
 pub use gcs::{GcsFileSystem, parse_gcs_uri};
 pub use options::GcpOptions;
 
@@ -59,3 +66,7 @@ inventory::submit! {
 pub fn register() -> std::io::Result<()> {
     register_filesystem("gs", Arc::new(GcsFileSystem::new()))
 }
+
+/// Default expansion service for Google Cloud Platform transforms.
+pub const DEFAULT_EXPANSION_SERVICE: &str =
+    "autojava::sdks:java:io:google-cloud-platform:expansion-service:runExpansionService";
