@@ -24,6 +24,8 @@
     reason = "shared by several test binaries, each using a different subset"
 )]
 
+pub mod state_mock;
+
 /// How long a test waits for an event that should arrive promptly. Correct code takes
 /// milliseconds; the deadline makes a lost input fail the test, not hang it.
 pub const WAIT: std::time::Duration = std::time::Duration::from_secs(5);
