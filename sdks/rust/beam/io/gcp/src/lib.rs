@@ -34,8 +34,13 @@
 pub mod auth;
 #[cfg(feature = "bigquery")]
 pub mod bigquery;
+#[cfg(feature = "bigtable")]
+pub mod bigtable;
+#[cfg(feature = "gcs")]
 pub mod gcs;
 pub mod options;
+#[cfg(feature = "pubsub")]
+pub mod pubsub;
 pub mod runtime;
 pub mod secret_manager;
 
@@ -45,28 +50,20 @@ use std::sync::Arc;
 #[cfg(feature = "gcs")]
 use file::{FileSystemRegistration, register_filesystem};
 
-pub use bigquery::{
-    BigQueryRead, BigQueryWrite, CreateDisposition, URN_BIGQUERY_FILELOADS,
-    URN_BIGQUERY_STORAGE_READ, URN_BIGQUERY_STORAGE_WRITE, URN_BIGQUERY_WRITE, WriteDisposition,
-    WriteMethod,
-};
-pub use gcs::{GcsFileSystem, parse_gcs_uri};
-pub use options::GcpOptions;
+/// Default expansion service for Google Cloud Platform transforms.
+pub const DEFAULT_EXPANSION_SERVICE: &str =
+    "autojava::sdks:java:io:google-cloud-platform:expansion-service:runExpansionService";
 
 #[cfg(feature = "gcs")]
 inventory::submit! {
     FileSystemRegistration {
         scheme: "gs",
-        factory: || Arc::new(GcsFileSystem::new()),
+        factory: || Arc::new(gcs::GcsFileSystem::new()),
     }
 }
 
 /// Registers `GcsFileSystem` with the default configuration.
 #[cfg(feature = "gcs")]
 pub fn register() -> std::io::Result<()> {
-    register_filesystem("gs", Arc::new(GcsFileSystem::new()))
+    register_filesystem("gs", Arc::new(gcs::GcsFileSystem::new()))
 }
-
-/// Default expansion service for Google Cloud Platform transforms.
-pub const DEFAULT_EXPANSION_SERVICE: &str =
-    "autojava::sdks:java:io:google-cloud-platform:expansion-service:runExpansionService";
