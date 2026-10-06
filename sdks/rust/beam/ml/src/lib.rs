@@ -30,6 +30,15 @@ pub mod run_inference;
 #[cfg(feature = "remote")]
 pub mod remote;
 
+#[cfg(any(feature = "candle", feature = "onnx"))]
+pub mod artifact;
+
+#[cfg(feature = "candle")]
+pub mod candle;
+
+#[cfg(feature = "onnx")]
+pub mod onnx;
+
 pub use cache::WorkerModelCache;
 pub use handler::{BatchBounds, InferenceArgs, KeyedModelHandler, ModelHandler};
 pub use prediction::{PredictionResult, PredictionResultCoder};
@@ -43,3 +52,13 @@ pub use remote::{
     GeminiAdapter, LLMResponse, PromptRequest, RemoteAuth, RemoteConfig, RemoteEndpointAdapter,
     RemoteInferenceError, RemoteModelHandler, ResolvedAuth,
 };
+
+#[cfg(feature = "candle")]
+pub use candle::{
+    BertEmbeddingAdapter, BertEmbeddingModelHandler, CandleAdapter, CandleConfig, CandleDevice,
+    CandleDeviceKind, CandleDeviceOptions, CandleModelHandler, LoadedBertEmbeddingModel,
+    TextDocument, VectorEmbedding,
+};
+
+#[cfg(feature = "onnx")]
+pub use onnx::{OnnxAdapter, OnnxConfig, OnnxError, OnnxExecutionProvider, OnnxModelHandler};

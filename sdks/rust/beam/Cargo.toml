@@ -52,6 +52,18 @@ prism = ["dep:prism", "harness"]
 dataflow = ["dep:dataflow", "harness"]
 # `passert` and `TestStream`, as `beam::testing`. Usually enabled for tests only.
 testing = ["dep:testing"]
+# Machine learning inference and hardware acceleration
+ml = ["dep:ml"]
+ml-remote = ["ml", "ml/remote"]
+ml-candle = ["ml", "ml/candle"]
+ml-candle-cuda = ["ml", "ml/candle-cuda"]
+ml-candle-metal = ["ml", "ml/candle-metal"]
+ml-onnx = ["ml", "ml/onnx"]
+ml-onnx-dynamic = ["ml", "ml/onnx-dynamic"]
+ml-onnx-cuda = ["ml", "ml/onnx-cuda"]
+ml-onnx-tensorrt = ["ml", "ml/onnx-tensorrt"]
+ml-onnx-coreml = ["ml", "ml/onnx-coreml"]
+ml-onnx-download = ["ml-onnx", "ml/onnx-download-binaries"]
 
 [dependencies]
 core = { workspace = true }
@@ -70,6 +82,7 @@ expansion = { workspace = true, optional = true }
 prism = { workspace = true, optional = true }
 dataflow = { workspace = true, optional = true }
 testing = { workspace = true, optional = true }
+ml = { workspace = true, optional = true }
 
 [lints]
 workspace = true
