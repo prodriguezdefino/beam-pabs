@@ -69,6 +69,11 @@ class BeamModuleExtras {
   }
 
   @CompileDynamic
+  static String mapToArgString(Project pythonProject, Map<String, Object> args) {
+    return pythonProject.mapToArgString(args).toString()
+  }
+
+  @CompileDynamic
   private static Object callClosure(Project project, String name, Object arg = null) {
     Closure fn = (Closure) project.extensions.extraProperties.get(name)
     return arg == null ? fn.call() : fn.call(arg)
