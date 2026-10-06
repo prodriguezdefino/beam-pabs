@@ -49,10 +49,10 @@
 //!
 //! # Link-time registration
 //!
-//! Filesystems and runners register through [`inventory`], which sees only the crates
-//! that the linker keeps. Rust drops an rlib that nothing refers to, so this crate holds
-//! a `use ... as _` for each optional dependency. Then you do not have to name those
-//! crates only to keep them linked.
+//! Filesystems (`gs://`) and runners register through [`inventory`], which sees only
+//! the crates that the linker keeps. Rust drops an rlib that nothing refers to, so this
+//! crate holds a `use ... as _` for each optional dependency. Then you do not have to
+//! name `beam-io-gcp` or `beam-harness` only to keep them linked.
 //!
 //! [`inventory`]: https://docs.rs/inventory
 
@@ -122,7 +122,15 @@ pub mod runners {
     pub use prism;
 }
 
-/// Force-links optional dependencies so that their `inventory` registrations stay.
+/// Process-wide allocator for binaries that link the facade.
+///
+/// Declared here so that users get it by default. To install a different allocator, set
+/// `default-features = false` and enable again the features that you need.
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+/// Force-links optional dependencies so their [`inventory`] registrations stay.
 ///
 /// Downstream crates often import only `beam::prelude::*` and omit direct references
 /// to `beam::io::*`. This module forces the linker to retain the registration symbols
