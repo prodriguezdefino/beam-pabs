@@ -104,6 +104,7 @@ tasks.rat {
 
     // Json doesn't support comments.
     "**/*.json",
+    "**/*.jsonl",
 
     // Katas files
     "learning/katas/**/course-info.yaml",
