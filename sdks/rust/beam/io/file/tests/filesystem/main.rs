@@ -23,3 +23,4 @@ mod compression_test;
 mod fileio_test;
 mod glob;
 mod local;
+mod registry;

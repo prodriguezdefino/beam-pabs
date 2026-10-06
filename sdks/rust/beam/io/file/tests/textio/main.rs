@@ -20,3 +20,4 @@
 //! TextIO: line splitting across restrictions, the read facades, and display data.
 
 mod display_data;
+mod split;
