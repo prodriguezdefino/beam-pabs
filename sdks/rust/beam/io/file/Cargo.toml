@@ -41,3 +41,4 @@ sync_wrapper = { workspace = true }
 
 [dev-dependencies]
 file = { package = "apache-beam-io-file", path = "." }
+testutils = { workspace = true }
