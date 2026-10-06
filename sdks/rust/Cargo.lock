@@ -92,6 +92,7 @@ name = "apache-beam"
 version = "2.78.0-SNAPSHOT"
 dependencies = [
  "apache-beam-core",
+ "apache-beam-harness",
  "apache-beam-io-file",
  "apache-beam-model",
 ]
@@ -141,6 +142,7 @@ dependencies = [
  "async-trait",
  "clap",
  "foldhash 0.2.0",
+ "inventory",
  "prost",
  "prost-types",
  "thiserror",

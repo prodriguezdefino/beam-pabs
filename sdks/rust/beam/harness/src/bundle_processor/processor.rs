@@ -131,7 +131,7 @@ impl BundleProcessor {
 
     /// Sets the worker id that the state channel sends as gRPC metadata, so the runner can
     /// match the stream with the worker that registered on the control channel.
-    /// the worker attaches it to the other channels at connection time.
+    /// [`crate::worker`] attaches it to the other channels at connection time.
     pub fn with_worker_id(mut self, worker_id: String) -> Self {
         self.worker_id = worker_id;
         self
