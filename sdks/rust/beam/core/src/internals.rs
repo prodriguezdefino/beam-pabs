@@ -441,3 +441,25 @@ impl PipelineInternals for Pipeline {
         self.set_scope_annotation(key, value);
     }
 }
+
+/// Replaces the windowing strategy that `pcoll` declares with `f` of it, for SDK transforms
+/// whose step chooses how its output is grouped later, such as a sink that must see each
+/// result once. No transform runs: the step that produces `pcoll` declares the new strategy.
+pub fn map_windowing_strategy<T: 'static>(
+    pcoll: PCollection<T>,
+    f: impl FnOnce(proto::WindowingStrategy) -> proto::WindowingStrategy,
+) -> PCollection<T> {
+    let pipeline = pcoll.pipeline().clone();
+    let strategy_id = pcoll.windowing_strategy_id();
+    let mapped = {
+        let mut lock = pipeline.lock();
+        let strategy = lock
+            .components
+            .windowing_strategies
+            .get(&strategy_id)
+            .cloned()
+            .unwrap_or_default();
+        lock.register_windowing_strategy(f(strategy))
+    };
+    pcoll.with_windowing_strategy_id(mapped)
+}
