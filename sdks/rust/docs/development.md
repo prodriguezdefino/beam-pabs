@@ -48,9 +48,11 @@ Run builds and tests through Gradle. The rest of the Beam repository uses it too
 ./gradlew :sdks:rust:expansionServiceImage     # Expansion service image; the binary is also the worker
 ./gradlew :sdks:rust:validatesRunnerPrism      # ValidatesRunner conformance suite on Prism
 ./gradlew :sdks:rust:validatesRunnerDataflow   # ValidatesRunner conformance suite on Dataflow
+./gradlew :sdks:rust:validatesCrossLanguageRunnerPythonPrism     # Python xlang suite on Prism against the Rust test expansion service
+./gradlew :sdks:rust:validatesCrossLanguageRunnerPythonDataflow  # Python xlang suite on Dataflow against the Rust test expansion service
 ```
 
-## One way
+## Public API Changes
 
 Every public API change follows these rules:
 
@@ -71,6 +73,50 @@ Every public API change follows these rules:
   `.with_*()` builders. Value types (e.g. `FixedWindows::of`) are exempt.
 - **Errors.** User hooks (`DoFn`, `CombineFn`, state, timers) return `beam::Result`.
 - **Prelude.** `beam::prelude` contains only the items that a typical pipeline author uses.
+
+## Programming style
+
+Write functional, data-oriented, idiomatic Rust that follows current practice.
+
+- **Functional.** Prefer pure functions and immutable bindings. Use iterator
+  chains (`map`, `filter`, `fold`) and expressions (`match`, `if let`) instead of
+  loops that change local state. Keep side effects at the edges of a module.
+- **Data-oriented.** Model the domain with plain data types first, then write
+  functions that transform them. Use `enum`s for closed sets of states, so that
+  invalid states cannot be represented. Keep data in contiguous collections and
+  avoid pointer-heavy object graphs and deep trait hierarchies.
+- **Pattern matching.** Use `match` to branch on the shape of data, not chains
+  of `if` with type or flag checks. Match exhaustively and do not add a `_` arm
+  to an `enum` that the crate owns, so that a new variant is a compile error.
+  Destructure structs, tuples and slices in `let`, function parameters and match
+  arms instead of reading fields one at a time. Use guards (`if`), bindings
+  (`name @ ..`) and or-patterns (`A | B`) to keep each case in one arm. Use
+  `if let` or `let`-`else` when only one case is important.
+- **No clones, no copies.** Borrow when you can and move when you must. Do not
+  `clone` to satisfy the borrow checker; change the ownership design instead.
+  Pass `&str`, `&[T]` and `impl Iterator` instead of `String`, `Vec<T>` or
+  collected copies. Use `Cow` when a value is only sometimes changed, and
+  `bytes::Bytes` or slices to share buffers without copying them. Reuse buffers
+  in hot paths instead of allocating per element. A `clone` in a hot path needs
+  a comment that says why it is necessary.
+- **Avoid locks.** Design so that data has one owner: move it between tasks
+  through channels, or split it so that each worker owns its part. Prefer
+  immutable shared data (`Arc<T>` without a lock) and atomics over `Mutex` and
+  `RwLock`. If a lock is necessary, keep the critical section short, never hold
+  it across `.await` or I/O, and do not nest locks.
+- **Errors as values.** Return `Result` or `Option` and propagate with `?`. Do
+  not call `unwrap`, `expect` or `panic!` outside tests, unless an invariant makes
+  the failure impossible; state the invariant in the `expect` message.
+- **Types carry meaning.** Use newtypes for identifiers and units. Use
+  `From`/`TryFrom`, `Default`, `Display` and other standard traits instead of
+  custom conversion methods.
+- **Small generic surface.** Prefer `impl Trait` and generics over `dyn Trait`
+  unless type erasure is necessary. Keep trait bounds at the point of use.
+- **Current Rust.** Use the workspace edition and its idioms: `let`-`else`,
+  `async fn` in traits where it fits, `std::sync::LazyLock` instead of
+  `lazy_static`. Code must pass `cargo fmt` and `cargo clippy` with no warnings.
+- **No `unsafe`** without a `// SAFETY:` comment that states why the code is
+  sound.
 
 ## Comments and documentation
 
