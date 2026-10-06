@@ -1,0 +1,329 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Rust SDK code-quality tasks: coverage, coveragePerTest, mutants, testQualityReport,
+// complexityScorecard.
+// This file only assembles `docker run` arguments; the work is in scripts/quality/, except for
+// `coverage`, which runs cargo-llvm-cov directly.
+//
+// Applied from sdks/rust/build.gradle, which must first define the ext values
+// rustBuilderImage, ensureBuilderImage, prismLinuxBinary, beamSdkVersion,
+// beamReleaseVersion, beamVersion, and the fetchPrismLinux task.
+//
+// Everything runs in the beam_rust_builder container; there is no host mode. Reports go to
+// build/reports/test-quality/<pkg>/ and build/reports/quality/.
+
+def testQualityScripts = '/workspace/sdks/rust/scripts/quality'
+
+// Runs `script` from a copy taken at container start: bash reads scripts lazily, so editing
+// one during a long run would otherwise break it.
+def runScript = { String interpreter, String script ->
+  ['bash', '-c', "cp -r ${testQualityScripts} /tmp/quality && exec ${interpreter} /tmp/quality/\"\$0\" \"\$@\"".toString(), script]
+}
+def testQualityDir = { String scope -> file("${buildDir}/reports/test-quality/${scope}") }
+
+// The path of `f`, which must be inside the repository, as the container sees it.
+def inContainer = { File f ->
+  def rel = rootDir.canonicalFile.toPath().relativize(f.canonicalFile.toPath()).toString()
+  if (rel.startsWith('..')) {
+    throw new GradleException("${f} is outside the repository and not visible to the container")
+  }
+  return '/workspace/' + rel
+}
+
+def selectedPkg = { -> (project.findProperty('pkg') ?: project.findProperty('package'))?.toString() }
+
+def requirePkg = { String taskName ->
+  def p = selectedPkg()
+  if (!p) {
+    throw new GradleException("${taskName} needs a crate: -Ppkg=<cargo package>, e.g. -Ppkg=apache-beam-core")
+  }
+  return p
+}
+
+// Directory of the workspace crate whose [package] name is `pkg`.
+def crateDirFor = { String pkg ->
+  def packageName = { File toml ->
+    def section = null
+    for (String line : toml.readLines()) {
+      def t = line.trim()
+      if (t.startsWith('[')) {
+        section = t
+      } else if (section == '[package]') {
+        def m = t =~ /^name\s*=\s*"([^"]+)"/
+        if (m) return m[0][1]
+      }
+    }
+    return null
+  }
+  def found = project.fileTree("${rootDir}/sdks/rust") {
+    include '**/Cargo.toml'
+    exclude '**/target/**', '**/build/**', 'container/**'
+  }.files.find { packageName(it) == pkg }
+  if (!found) {
+    throw new GradleException("No crate named '${pkg}' under sdks/rust (looked for name = \"${pkg}\" in Cargo.toml files)")
+  }
+  return found.parentFile
+}
+
+// `docker run` arguments up to and including the image; the named volume caches the cargo registry.
+// withPrism=false skips the Prism mount, which creates an empty directory if Prism is unfetched.
+def testQualityDocker = { List extra = [], boolean withPrism = true ->
+  def prism = withPrism ? ['-v', "${project.ext.prismLinuxBinary.absolutePath}:/opt/prism/prism:ro",
+                           '-e', 'BEAM_PRISM_PATH=/opt/prism/prism'] : []
+  // -Pcpus=<n> caps the container's CPU share, e.g. to run beside another heavy job.
+  def cpus = project.findProperty('cpus') ? ['--cpus', project.findProperty('cpus').toString()] : []
+  (['docker', 'run', '--rm'] + cpus + [
+    '-v', "${rootDir}:/workspace",
+    '-v', 'beam-cargo-registry:/usr/local/cargo/registry'] + prism + [
+    '-e', "BEAM_SDK_VERSION=${project.ext.beamSdkVersion}",
+    '-e', "BEAM_RELEASE_VERSION=${project.ext.beamReleaseVersion}",
+    '-e', "BEAM_VERSION=${project.ext.beamVersion}",
+    '-w', '/workspace/sdks/rust'] + extra + [project.ext.rustBuilderImage])*.toString()
+}
+
+// Fails early, with the fix, if the image predates the BEAM_RUST_BUILDER marker the scripts require.
+def ensureTestQualityImage = {
+  project.ext.ensureBuilderImage.call()
+  def stdout = new ByteArrayOutputStream()
+  project.exec {
+    commandLine 'docker', 'image', 'inspect', '--format', '{{json .Config.Env}}', project.ext.rustBuilderImage
+    standardOutput = stdout
+  }
+  if (!stdout.toString().contains('BEAM_RUST_BUILDER=1')) {
+    throw new GradleException("${project.ext.rustBuilderImage} predates the BEAM_RUST_BUILDER marker. " +
+        "Rebuild it with ./gradlew :sdks:rust:buildBuilderImage")
+  }
+}
+
+tasks.register('coveragePerTest') {
+  group = "Verification"
+  description = "Per-test line coverage of one crate and its redundancy report, in the builder container " +
+      "(-Ppkg=<crate> [-Psrc=<dir>] [-Pfocus=/coders/] [-Pfeatures=<a,b>]) -> build/reports/test-quality/<pkg>/coverage"
+  dependsOn 'fetchPrismLinux'
+
+  doLast {
+    def pkg = requirePkg('coveragePerTest')
+    def src = (project.findProperty('src') ?: '').toString()
+    if (!src) {
+      src = inContainer(new File(crateDirFor(pkg), 'src')) - '/workspace/'
+    } else if (!src.startsWith('sdks/')) {
+      src = "sdks/rust/${src}"   // accept paths relative to sdks/rust as well
+    }
+    def focus = (project.findProperty('focus') ?: '').toString()
+    def outDir = new File(testQualityDir(pkg), 'coverage')
+    def covTarget = file("${buildDir}/cov-target")
+    covTarget.mkdirs()
+    ensureTestQualityImage()
+
+    project.exec {
+      commandLine testQualityDocker(['-v', "${covTarget}:/tmp/target-cov".toString(),
+                                     '-e', "COV_FEATURES=${project.findProperty('features') ?: ''}".toString()]) +
+          runScript('bash', 'run_coverage.sh') + [pkg, src, inContainer(outDir)] +
+          (focus ? [focus] : [])
+    }
+    logger.lifecycle("Per-test coverage for ${pkg} written to ${outDir} " +
+        "(tests.tsv, lcov/, overlap_report.txt, redundancy_all.tsv)")
+  }
+}
+
+tasks.register('coverage') {
+  group = "Verification"
+  description = "Line coverage of the workspace, or of one crate with -Ppkg=<crate>, in the builder container " +
+      "([-Pfeatures=<a,b>]) -> build/reports/coverage/<pkg|workspace>/{summary.txt,lcov.info,html/}"
+  dependsOn 'fetchPrismLinux'
+
+  doLast {
+    def pkg = selectedPkg()
+    def scope = pkg ?: 'workspace'
+    def outDir = file("${buildDir}/reports/coverage/${scope}")
+    outDir.mkdirs()
+    // Shares the instrumented target directory with coveragePerTest.
+    def covTarget = file("${buildDir}/cov-target")
+    covTarget.mkdirs()
+    def testArgs = (pkg ? ['-p', pkg] : ['--workspace']) +
+        (project.findProperty('features') ? ['--features', project.findProperty('features').toString()] : [])
+    def out = inContainer(outDir)
+    def script = [
+        "cargo llvm-cov --no-report ${testArgs.join(' ')}",
+        "cargo llvm-cov report --summary-only | tee ${out}/summary.txt",
+        "cargo llvm-cov report --lcov --output-path ${out}/lcov.info",
+        "cargo llvm-cov report --html --output-dir ${out}",
+    ].join(' && ')
+    ensureTestQualityImage()
+
+    project.exec {
+      commandLine testQualityDocker(['-v', "${covTarget}:/tmp/target-cov".toString(),
+                                     '-e', 'CARGO_TARGET_DIR=/tmp/target-cov']) +
+          ['bash', '-c', "set -eo pipefail; ${script}".toString()]
+    }
+    logger.lifecycle("Coverage for ${scope} written to ${outDir} (summary.txt, lcov.info, html/index.html)")
+  }
+}
+
+tasks.register('mutants') {
+  group = "Verification"
+  description = "Mutation testing with a per-test kill matrix, in the builder container " +
+      "(-Ppkg=<crate> and/or -PinDiff=<diff> [-Pfiles=<glob,...>] [-Pexclude=<glob,...>] [-Pjobs=4] " +
+      "[-Ptimeout=60] [-Ptag=<name>] [-Pfeatures=<a,b>] [-PlistOnly] [-PfailOnMissed]) -> build/reports/test-quality/<pkg|workspace>/mutants[-<tag>]"
+  dependsOn 'fetchPrismLinux'
+
+  doLast {
+    def pkg = selectedPkg()
+    def inDiff = project.findProperty('inDiff')?.toString()
+    if (!pkg && !inDiff) {
+      throw new GradleException("mutants needs -Ppkg=<crate>, -PinDiff=<diff file>, or both. A whole-workspace " +
+          "run without a diff takes many hours.")
+    }
+    def scope = pkg ?: 'workspace'
+    def flag = { String p -> project.hasProperty(p) && project.property(p).toString() != 'false' }
+    def globs = { String p -> (project.findProperty(p) ?: '').toString().tokenize(',')*.trim().findAll { it } }
+    // -Ptag writes to mutants-<tag>/ so runs over different -Pfiles coexist; testQualityReport reads all.
+    def tag = project.findProperty('tag')?.toString()
+    def outDir = new File(testQualityDir(scope), tag ? "mutants-${tag}" : 'mutants')
+    outDir.parentFile.mkdirs()
+
+    // RUSTFLAGS replaces the image's aarch64 `+fp16` flag (needed by gemm); keep it on arm64 hosts.
+    def arm64 = System.getProperty('os.arch') in ['aarch64', 'arm64']
+    def rustflags = '-C link-arg=-fuse-ld=mold' + (arm64 ? ' -C target-feature=+fp16' : '')
+    def extraMounts = [
+        // cargo-mutants copies only sdks/rust; the model crate's build script reads the protos
+        // from ../../../../model relative to the copy, i.e. /model.
+        '-v', "${rootDir}/model:/model:ro".toString(),
+        // mold and no debug info make the build-per-mutant loop about twice as fast.
+        '-e', "RUSTFLAGS=${rustflags}".toString(),
+        '-e', 'CARGO_PROFILE_DEV_DEBUG=0',
+        '-e', 'CARGO_PROFILE_TEST_DEBUG=0',
+    ]
+    // The copy has no locally built expansion-service JARs; -PexpansionServiceVersion picks a released one.
+    if (project.findProperty('expansionServiceVersion')) {
+      extraMounts += ['-e', "BEAM_EXPANSION_SERVICE_VERSION=${project.findProperty('expansionServiceVersion')}".toString()]
+    }
+    def args = pkg ? ['--package', pkg] : ['--workspace']
+    globs('files').each { args += ['--file', it] }
+    globs('exclude').each { args += ['--exclude', it] }
+    if (project.findProperty('features')) {
+      args += ['--features', project.findProperty('features').toString()]
+    }
+
+    if (inDiff) {
+      def diffFile = file(inDiff)
+      if (!diffFile.isFile()) {
+        throw new GradleException("-PinDiff=${inDiff}: not a regular file")
+      }
+      // cargo-mutants expects diff paths relative to sdks/rust; strip that prefix from repo-root diffs.
+      def text = diffFile.text.replaceAll(/(?m)^(diff --git a\/|--- a\/|\+\+\+ b\/)sdks\/rust\//, '$1')
+          .replaceAll(/(?m)^(diff --git a\/\S+ b\/)sdks\/rust\//, '$1')
+      if (!(text =~ /(?m)^\+\+\+ b\/\S+\.rs\s*$/)) {
+        logger.lifecycle("${inDiff} changes no Rust sources under sdks/rust; no mutants to test.")
+        return
+      }
+      def staged = file("${buildDir}/tmp/test-quality/${scope}.diff")
+      staged.parentFile.mkdirs()
+      staged.text = text
+      extraMounts += ['-v', "${staged.absolutePath}:/tmp/in.diff:ro".toString()]
+      args += ['--in-diff', '/tmp/in.diff']
+    }
+
+    def listOnly = flag('listOnly')
+    if (listOnly) {
+      args += ['--list']
+    } else {
+      args += ['--test-tool', 'nextest', '--cargo-test-arg=--no-fail-fast',
+               '--jobs', (project.findProperty('jobs') ?: '4').toString(),
+               '--timeout', (project.findProperty('timeout') ?: '60').toString(),
+               '--gitignore', 'true',
+               '--output', inContainer(outDir)]
+    }
+
+    ensureTestQualityImage()
+    project.exec {
+      commandLine testQualityDocker(extraMounts) +
+          runScript('bash', 'run_mutants.sh') + [inContainer(outDir),
+           flag('failOnMissed').toString()] + args
+    }
+    if (!listOnly) {
+      logger.lifecycle("Mutation results for ${scope} written to ${outDir} " +
+          "(mutants.out/, kill_matrix.txt, kill_matrix.tsv)")
+    }
+  }
+}
+
+tasks.register('testQualityReport') {
+  group = "Verification"
+  description = "Remove/merge candidates from the coveragePerTest and mutants outputs of one crate " +
+      "(-Ppkg=<crate> [-PtestFileRegex=<regex>] [-PmutantsDirs=<dir,...>]) -> build/reports/test-quality/<pkg>/candidates.tsv"
+
+  doLast {
+    def pkg = requirePkg('testQualityReport')
+    def dir = testQualityDir(pkg)
+    def redundancy = new File(dir, 'coverage/redundancy_all.tsv')
+    if (!redundancy.isFile()) {
+      throw new GradleException("${redundancy} not found; run ./gradlew :sdks:rust:coveragePerTest -Ppkg=${pkg} first")
+    }
+    def hasOutcomes = { File d -> new File(d, 'mutants.out/outcomes.json').isFile() || new File(d, 'outcomes.json').isFile() }
+    // All mutants runs of this crate plus any -PmutantsDirs, which must be inside the repository.
+    def mutantDirs = (dir.listFiles() ?: []).findAll { it.isDirectory() && it.name ==~ /mutants(-.+)?/ && hasOutcomes(it) }.sort()
+    (project.findProperty('mutantsDirs') ?: '').toString().tokenize(',')*.trim().findAll { it }.each { p ->
+      def d = file(p)
+      if (!hasOutcomes(d)) {
+        throw new GradleException("-PmutantsDirs: ${d} holds no cargo-mutants outcomes")
+      }
+      mutantDirs << d
+    }
+    if (!mutantDirs) {
+      throw new GradleException("No cargo-mutants outcomes under ${dir}; run ./gradlew :sdks:rust:mutants -Ppkg=${pkg} first")
+    }
+    def args = ['--redundancy', inContainer(redundancy), '--out', inContainer(new File(dir, 'candidates.tsv'))]
+    mutantDirs.each { args += ['--mutants', inContainer(it)] }
+    def regex = project.findProperty('testFileRegex')?.toString()
+    if (regex) {
+      args += ['--test-file-regex', regex]
+    }
+    project.ext.ensureBuilderImage.call()
+    project.exec {
+      // No Prism: this task only reads files (see testQualityDocker).
+      commandLine testQualityDocker([], false) +
+          runScript('bash', 'run_report.sh') + [inContainer(new File(dir, 'candidates.txt'))] + args
+    }
+  }
+}
+
+tasks.register('complexityScorecard') {
+  group = "Verification"
+  description = "Cross-SDK size and complexity scorecard (scc, lizard, feature points from docs/sdk-parity.md), " +
+      "in the builder container ([-PwithJavaTs]) -> build/reports/quality/scorecard.{md,json}"
+
+  doLast {
+    def outDir = file("${buildDir}/reports/quality")
+    outDir.mkdirs()
+    def md = new File(outDir, 'scorecard.md')
+    def json = new File(outDir, 'scorecard.json')
+    def args = ['--repo-root', '/workspace', '--out', inContainer(md), '--json-out', inContainer(json)]
+    if (project.hasProperty('withJavaTs') && project.property('withJavaTs').toString() != 'false') {
+      args += ['--with-java-ts']
+    }
+    // The marker check also rejects images that predate the pinned scc and lizard.
+    ensureTestQualityImage()
+    project.exec {
+      commandLine testQualityDocker([], false) +
+          runScript('python3', 'complexity_scorecard.py') + args
+    }
+    logger.lifecycle("Complexity scorecard written to ${md} and ${json}")
+  }
+}
