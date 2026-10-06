@@ -17,6 +17,8 @@
  */
 
 mod client_test;
+mod common;
+mod environment_test;
 mod pipeline_adaptation_test;
 mod staging_test;
 mod translate_test;
