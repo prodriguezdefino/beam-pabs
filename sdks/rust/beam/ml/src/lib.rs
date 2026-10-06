@@ -30,6 +30,15 @@ pub(crate) mod run_inference;
 #[cfg(feature = "remote")]
 pub mod remote;
 
+#[cfg(any(feature = "candle", feature = "onnx"))]
+pub(crate) mod artifact;
+
+#[cfg(feature = "candle")]
+pub mod candle;
+
+#[cfg(feature = "onnx")]
+pub mod onnx;
+
 pub use cache::WorkerModelCache;
 pub use handler::{BatchBounds, InferenceArgs, KeyedModelHandler, ModelHandler};
 pub use prediction::{PredictionResult, PredictionResultCoder};
@@ -37,9 +46,3 @@ pub use run_inference::{RunInference, RunInferenceMulti};
 
 #[cfg(feature = "dynamic-refresh")]
 pub use cache::SwappableModel;
-
-#[cfg(feature = "remote")]
-pub use remote::{
-    GeminiAdapter, LLMResponse, PromptRequest, RemoteAuth, RemoteConfig, RemoteEndpointAdapter,
-    RemoteInferenceError, RemoteModelHandler, ResolvedAuth,
-};
