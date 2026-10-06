@@ -29,13 +29,18 @@ description = "Apache Beam Rust SDK umbrella crate"
 name = "beam"
 
 [features]
-default = ["fluent", "io-file", "derive", "external"]
+default = ["fluent", "io-file", "managed", "derive", "external"]
 fluent = ["dep:fluent"]
 io-file = ["dep:file"]
 # Columnar formats via arrow-rs. Off by default: they pull in arrow and codec crates.
 arrow = ["dep:arrow_io"]
 parquet = ["dep:parquet_io", "arrow", "io-file"]
 avro = ["dep:avro_io", "arrow", "io-file"]
+# Cross-language Kafka via the Java expansion service. Off by default.
+kafka = ["dep:kafka_io", "external"]
+# Managed I/O (Iceberg, Kafka, BigQuery, JDBC, Delta Lake) via the Java expansion
+# service. On by default: it is small and `gcs` and `kafka` build on it anyway.
+managed = ["dep:managed_io", "external"]
 derive = ["core/derive"]
 external = ["dep:external"]
 expansion = ["dep:expansion"]
@@ -55,6 +60,8 @@ file = { workspace = true, optional = true }
 arrow_io = { workspace = true, optional = true }
 parquet_io = { workspace = true, optional = true }
 avro_io = { workspace = true, optional = true }
+kafka_io = { workspace = true, optional = true }
+managed_io = { workspace = true, optional = true }
 external = { workspace = true, optional = true }
 expansion = { workspace = true, optional = true }
 prism = { workspace = true, optional = true }
