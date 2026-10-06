@@ -43,6 +43,7 @@ class BeamRustPlugin implements Plugin<Project> {
     extension.benchmarkPackages.finalizeValueOnRead()
 
     RustSdkBuild build = new RustSdkBuild(project, extension)
+    build.pythonScriptSubdirs.addAll(['scripts/quality'])
     Map<String, String> cargoEnv = build.versions.cargoEnv()
     project.tasks.withType(Exec).configureEach { Exec task -> task.environment(cargoEnv) }
 
@@ -56,6 +57,7 @@ class BeamRustPlugin implements Plugin<Project> {
     RustDataflowTasks dataflow = RustDataflowTasks.register(config)
     RustValidatesRunnerTasks.register(dataflow)
     RustXlangTasks.register(containers)
+    RustQualityTasks.register(containers)
 
     project.tasks.named('build').configure { Task task -> task.dependsOn('buildWorkspace') }
     project.tasks.named('check').configure { Task task ->
