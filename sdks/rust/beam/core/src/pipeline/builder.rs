@@ -32,7 +32,7 @@ use super::graph::PipelineInner;
 use super::{ExpansionMode, Pipeline};
 use crate::coders::CoderRegistry;
 use crate::runners::{PipelineResult, PipelineRunner};
-use crate::transforms::PTransform;
+use crate::transforms::{PTransform, TransformFn, TryPTransform};
 use crate::values::{IsBounded, PBegin, PCollection};
 
 impl Default for Pipeline {
@@ -286,6 +286,29 @@ impl Pipeline {
         Tform: PTransform<PBegin>,
     {
         self.begin().apply(transform)
+    }
+
+    /// Applies a root transform whose expansion can fail: `self.begin().try_apply(transform)`.
+    pub fn try_apply<Tform>(&self, transform: Tform) -> Result<Tform::Output, Tform::Error>
+    where
+        Tform: TryPTransform<PBegin>,
+    {
+        self.begin().try_apply(transform)
+    }
+
+    /// Registers the executable handler under `key`, replacing any existing one.
+    ///
+    /// The harness derives `key` from the transform payload. For a `ParDo`, `key` is the
+    /// `do_fn` payload: the unique name that
+    /// [`ParDoRegistration`](crate::internals::ParDoRegistration) sets. Lookup is exact.
+    /// The worker rebuilds the same graph, so a miss is a graph-construction bug.
+    pub(crate) fn register_transform_handler(&self, key: impl Into<String>, handler: TransformFn) {
+        self.lock().transform_handlers.insert(key.into(), handler);
+    }
+
+    /// Returns a map of registered transform handlers.
+    pub(crate) fn transform_handlers(&self) -> HashMap<String, TransformFn> {
+        self.lock().transform_handlers.clone()
     }
 
     /// Replaces the default and Rust environments with a Docker environment that runs
