@@ -26,9 +26,9 @@ type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 /// The error returned by every fallible user hook (`DoFn` methods, state, timers, side inputs,
 /// emits). `?` converts from any [`std::error::Error`] and from `String`/`&str`, and keeps the
-/// original error as [`source`](Self::source). An `Err` from a `DoFn` fails the bundle; use
-/// `TryMap` or `TryParDo` for
-/// dead-letter routing.
+/// original error as [`source`](Self::source). An `Err` from a `DoFn` fails the bundle;
+/// use [`TryMap`](crate::transforms::TryMap), or a `DoFn` whose `Out` is `Result<T, F>`,
+/// for dead-letter routing.
 ///
 /// This type does not implement [`std::error::Error`], so one blanket `From` covers both
 /// standard errors and strings.

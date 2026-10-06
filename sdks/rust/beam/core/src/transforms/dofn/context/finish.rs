@@ -43,11 +43,10 @@ use crate::windowing::BoundedWindow;
 /// # }
 /// ```
 pub struct FinishBundleContext<'a, T> {
-    inner: ProcessContext<'a, T>,
+    pub(super) inner: ProcessContext<'a, T>,
 }
 
 impl<'a, T: Outputs> FinishBundleContext<'a, T> {
-    #[expect(dead_code, reason = "the DoFn handlers of the next commit use it")]
     pub(crate) fn new(inner: ProcessContext<'a, T>) -> Self {
         Self { inner }
     }
@@ -71,15 +70,6 @@ impl<'a, T: Outputs> FinishBundleContext<'a, T> {
             timestamp,
             pane: PaneInfo::NO_FIRING,
         }
-    }
-
-    /// Registers `callback` to run after the runner commits the bundle. See
-    /// [`ProcessContext::register_finalizer`].
-    pub fn register_finalizer<F>(&self, callback: F) -> crate::Result
-    where
-        F: FnOnce() -> crate::Result + Send + 'static,
-    {
-        self.inner.register_finalizer(callback)
     }
 
     /// Output under a stored header. SDK crates use

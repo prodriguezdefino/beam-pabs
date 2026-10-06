@@ -186,8 +186,8 @@ impl<'a> HandlerContext<'a> {
         self.header
     }
 
-    /// Converts to a typed [`ProcessContext`] for a `DoFn`. The allowed timestamp skew is
-    /// zero.
+    /// Converts to a typed [`ProcessContext`] for a [`DoFn`](crate::transforms::DoFn). The
+    /// allowed timestamp skew is zero.
     pub fn as_process_context<T>(&mut self) -> ProcessContext<'_, T> {
         ProcessContext {
             sink: self.sink,
