@@ -55,8 +55,8 @@ pub enum DataError {
     Io(#[from] std::io::Error),
     #[error("No outbound data sink at index {0}")]
     UnknownSink(usize),
-    #[error("No outbound timer family '{family}' for transform '{transform}'")]
-    UnknownTimerFamily { transform: String, family: String },
+    #[error("No outbound timer family at index {0}")]
+    UnknownTimerFamily(usize),
     #[error("Inbound data stream ended before the runner finished instruction '{0}'")]
     StreamEnded(String),
 }
