@@ -84,6 +84,9 @@ pub mod io {
     #[cfg(feature = "io-file")]
     pub use beam_io_file::*;
 
+    #[cfg(feature = "gcs")]
+    pub use beam_io_gcp as gcp;
+
     /// Beam schema and `Row` bridge to Apache Arrow.
     #[cfg(feature = "arrow")]
     pub use beam_io_arrow as arrow;
@@ -120,6 +123,9 @@ pub mod runners {
 mod link {
     #[cfg(feature = "io-file")]
     pub use beam_io_file as _;
+
+    #[cfg(feature = "gcs")]
+    pub use beam_io_gcp as _;
 
     #[cfg(feature = "harness")]
     pub use beam_harness as _;
