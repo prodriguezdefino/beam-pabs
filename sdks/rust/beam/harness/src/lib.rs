@@ -20,14 +20,20 @@
 //! Apache Beam Rust worker harness: the worker side of the Fn API (control, data, state and
 //! logging streams, and bundle execution).
 
+pub mod data;
 pub mod grpc;
 pub mod logging;
 #[doc(hidden)]
 pub mod provisioning;
+pub mod state;
+pub mod user_state;
 
 pub use model;
 
+pub use data::DataManager;
 pub use logging::{
     BeamFnLoggingHandle, BeamFnLoggingLayer, LoggingClient, create_layer, init_logging,
     set_global_client,
 };
+pub use state::{FnApiSideInputReader, StateChannel};
+pub use user_state::BundleUserState;
