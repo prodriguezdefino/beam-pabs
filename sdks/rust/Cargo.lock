@@ -755,6 +755,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
+name = "bigquery_tornadoes"
+version = "2.79.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "clap",
+ "serde",
+ "tokio",
+]
+
+[[package]]
+name = "bigtable_wordcount"
+version = "2.79.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "clap",
+ "serde",
+ "tokio",
+ "wordcount",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2741,6 +2762,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "iceberg_wordcount"
+version = "2.79.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "clap",
+ "serde",
+ "tokio",
+ "tracing",
+ "wordcount",
+]
+
+[[package]]
 name = "icu_collections"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3481,6 +3514,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nyc_taxi"
+version = "2.79.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "chrono",
+ "clap",
+ "serde",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "objc"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3641,6 +3686,18 @@ dependencies = [
  "hmac-sha256",
  "lzma-rust2",
  "ureq",
+]
+
+[[package]]
+name = "ouroboros"
+version = "2.79.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "clap",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
