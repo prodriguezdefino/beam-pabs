@@ -458,6 +458,7 @@ clean.dependsOn 'cleanSdk'
 // build (build/libs/<artifact>-<version>.jar). Only those crate test tasks depend on the JARs.
 def testExpansionServiceJars = [
     'apache-beam-external': ':sdks:java:io:google-cloud-platform:expansion-service:shadowJar',
+    'apache-beam-runner-tests': ':sdks:java:io:expansion-service:shadowJar',
 ]
 testExpansionServiceJars.each { String pkg, String jar ->
   cargoTestTasks[pkg]?.configure {
