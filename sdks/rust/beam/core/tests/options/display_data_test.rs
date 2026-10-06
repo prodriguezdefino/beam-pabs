@@ -24,6 +24,7 @@
 //! display data of pipeline options.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use beam::pipeline::Pipeline;
 use beam::prelude::*;
@@ -31,7 +32,11 @@ use beam::transforms::display_data::{
     DisplayDataBuilder, DisplayDataItem, DisplayDataValue, HasDisplayData,
     URN_DISPLAY_DATA_LABELLED,
 };
-use beam::transforms::{Filter, FlatMap, Inspect, Map};
+use beam::transforms::{
+    BatchElements, BroadcastInnerJoin, BroadcastLeftJoin, CoGroupByKey, Filter, FlatMap,
+    FullOuterJoin, InnerJoin, Inspect, KeyedPCollectionTuple, LeftJoin, Map, Partition,
+    PeriodicImpulse, Reshuffle, RightJoin,
+};
 use beam_model::pipeline as proto;
 
 #[test]
@@ -135,7 +140,9 @@ impl PTransform<PCollection<i64>> for CustomTransformWithDisplayData {
 
     fn expand(self, input: &PCollection<i64>) -> Self::Output {
         let mult = self.multiplier;
-        input.apply("Multiply", Map::new(move |x: i64| x * mult))
+        let out = input.apply("Multiply", Map::new(move |x: i64| x * mult));
+        input.pipeline().record_display_data(&self);
+        out
     }
 }
 
@@ -157,6 +164,15 @@ fn test_display_data_optionality_on_custom_transforms() {
         CustomTransformWithDisplayData { multiplier: 10 },
     );
     assert!(!res2.id().is_empty());
+
+    let components = p.to_proto().components.expect("components present");
+    assert!(display_data_for(&components, "CustomTransformWithoutDisplayData").is_empty());
+    assert_eq!(
+        display_data_for(&components, "CustomTransformWithDisplayData")
+            .get("multiplier")
+            .map(String::as_str),
+        Some("10")
+    );
 }
 
 /// Decodes display data for the named transform in the pipeline protocol buffer.
@@ -214,6 +230,90 @@ fn test_par_do_transforms_attach_display_data_to_their_proto_node() {
             "'{unique_name}' should report its transform kind; got {items:?}"
         );
     }
+}
+
+#[test]
+fn test_composite_and_wrapper_transforms_record_display_data() {
+    let p = Pipeline::new();
+    let left = p.apply("Left", Create::new(vec![("a".to_string(), 1i64)]));
+    let right = p.apply("Right", Create::new(vec![("a".to_string(), 2i64)]));
+
+    let _ = KeyedPCollectionTuple::of("left", &left)
+        .and("right", &right)
+        .apply("CoGbk", CoGroupByKey::new());
+    let _ = left.apply("Inner", InnerJoin::new(&right));
+    let _ = left.apply("LeftOuter", LeftJoin::new(&right));
+    let _ = left.apply("RightOuter", RightJoin::new(&right));
+    let _ = left.apply("FullOuter", FullOuterJoin::new(&right));
+    let _ = left.apply("BcastInner", BroadcastInnerJoin::new(&right));
+    let _ = left.apply("BcastLeft", BroadcastLeftJoin::new(&right));
+
+    let numbers = p.apply("Numbers", Create::new(vec![1i64, 2, 3]));
+    let _ = numbers.apply("Parts", Partition::new(3, |x: &i64| (*x as usize) % 3));
+    let _ = numbers.apply(
+        "Batched",
+        BatchElements::new(2, 5).with_max_batch_duration(Duration::from_secs(1)),
+    );
+    let _ = p.apply(
+        "Ticks",
+        PeriodicImpulse::new(Duration::from_millis(500))
+            .with_max_read_time(Duration::from_secs(2))
+            .with_limit(4),
+    );
+    let _ = numbers.apply("Shuffled", Reshuffle::new().with_num_buckets(7));
+
+    let components = p.to_proto().components.expect("components present");
+    for (unique_name, kind) in [
+        ("CoGbk", "CoGroupByKey"),
+        ("Inner", "InnerJoin"),
+        ("LeftOuter", "LeftJoin"),
+        ("RightOuter", "RightJoin"),
+        ("FullOuter", "FullOuterJoin"),
+        ("BcastInner", "BroadcastInnerJoin"),
+        ("BcastLeft", "BroadcastLeftJoin"),
+    ] {
+        let items = display_data_for(&components, unique_name);
+        assert_eq!(items.get("transform").map(String::as_str), Some(kind));
+    }
+
+    let parts = display_data_for(&components, "Parts");
+    assert_eq!(
+        parts.get("transform").map(String::as_str),
+        Some("Partition")
+    );
+    assert_eq!(parts.get("num_partitions").map(String::as_str), Some("3"));
+
+    let batched = display_data_for(&components, "Batched");
+    assert_eq!(
+        batched.get("transform").map(String::as_str),
+        Some("BatchElements")
+    );
+    assert_eq!(batched.get("min_batch_size").map(String::as_str), Some("2"));
+    assert_eq!(batched.get("max_batch_size").map(String::as_str), Some("5"));
+    assert_eq!(
+        batched.get("max_batch_duration").map(String::as_str),
+        Some("1s")
+    );
+
+    let ticks = display_data_for(&components, "Ticks");
+    assert_eq!(
+        ticks.get("transform").map(String::as_str),
+        Some("PeriodicImpulse")
+    );
+    assert_eq!(ticks.get("interval_ms").map(String::as_str), Some("500"));
+    assert_eq!(
+        ticks.get("max_read_time_ms").map(String::as_str),
+        Some("2000")
+    );
+    assert_eq!(ticks.get("limit").map(String::as_str), Some("4"));
+    assert!(!ticks.contains_key("start"));
+
+    let shuffled = display_data_for(&components, "Shuffled");
+    assert_eq!(
+        shuffled.get("transform").map(String::as_str),
+        Some("Reshuffle")
+    );
+    assert_eq!(shuffled.get("num_buckets").map(String::as_str), Some("7"));
 }
 
 #[test]

@@ -21,10 +21,13 @@
 
 mod batched_dofn_test;
 mod bundle_finalizer_test;
+mod common;
 mod failure_coder_test;
 mod finish_bundle_context_test;
 mod registered_dofn_test;
+mod schema_mapping_test;
 mod side_input_test;
+mod state_row_schema_test;
 mod state_test;
 mod stateful_dofn_test;
 mod timer_builder_test;

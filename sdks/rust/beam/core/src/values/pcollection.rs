@@ -26,8 +26,10 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 
 use super::pvalue::{PInput, POutput};
+use crate::coders::{URN_ROW, extract_row_schema};
 use crate::pipeline::Pipeline;
-use crate::transforms::PTransform;
+use crate::schema::{BeamRow, Row, RowElement, Schema};
+use crate::transforms::{PTransform, TryPTransform};
 use beam_model::pipeline as proto;
 
 /// Whether a [`PCollection`] is bounded (finite) or unbounded (streaming). Pipeline
@@ -152,6 +154,21 @@ impl<T: 'static> PCollection<T> {
             })
     }
 
+    /// Applies a [`TryPTransform`] to this PCollection under the name `name`.
+    pub fn try_apply<Tform>(
+        &self,
+        name: impl Into<String>,
+        transform: Tform,
+    ) -> Result<Tform::Output, Tform::Error>
+    where
+        Tform: TryPTransform<Self>,
+    {
+        self.pipeline
+            .try_apply_scoped(&name.into(), PInput::pcollection_ids(self), || {
+                transform.try_expand(self)
+            })
+    }
+
     /// Replaces the coder of this PCollection in the pipeline graph. The coder must encode `T`.
     /// Call it only on the output of the transform that is being expanded.
     pub(crate) fn with_coder_id(mut self, coder_id: String) -> Self {
@@ -179,6 +196,24 @@ impl<T: 'static> PCollection<T> {
             .then_some(self.coder_id.as_str())
     }
 
+    /// Gives this PCollection the coder that `derive` builds from the coder of `source`, for a
+    /// transform whose output holds the elements of `source`: a row then keeps its schema.
+    /// Keeps the coder of `T` while `source` has no coder, for example before a cross-language
+    /// expansion replies. Call it only on the output of the transform that is being expanded.
+    pub fn with_coder_derived_from<U: 'static>(
+        self,
+        source: &PCollection<U>,
+        derive: impl FnOnce(&Pipeline, &str) -> String,
+    ) -> Self {
+        match source.registered_coder_id() {
+            Some(coder_id) => {
+                let derived = derive(&self.pipeline, coder_id);
+                self.with_coder_id(derived)
+            }
+            None => self,
+        }
+    }
+
     /// Gives this PCollection the coder of `source`, which has the same element type. A
     /// transform that passes its elements through keeps their coder, so a row keeps its schema.
     pub(crate) fn with_coder_of(self, source: &PCollection<T>) -> Self {
@@ -187,12 +222,32 @@ impl<T: 'static> PCollection<T> {
             None => self,
         }
     }
+
+    /// Replaces the windowing strategy of this PCollection in the pipeline graph.
+    pub(crate) fn with_windowing_strategy_id(self, windowing_strategy_id: String) -> Self {
+        if let Some(pcoll) = self
+            .pipeline
+            .lock()
+            .components
+            .pcollections
+            .get_mut(&self.id)
+        {
+            pcoll.windowing_strategy_id = windowing_strategy_id;
+        }
+        self
+    }
+
+    /// Gives this PCollection the windowing strategy of `source`.
+    pub(crate) fn with_windowing_strategy_of<U: 'static>(self, source: &PCollection<U>) -> Self {
+        let ws_id = source.windowing_strategy_id();
+        self.with_windowing_strategy_id(ws_id)
+    }
 }
 
-impl PCollection<crate::schema::RowElement> {
-    /// The same PCollection, with each element as a [`Row`](crate::schema::Row). The coder
+impl PCollection<RowElement> {
+    /// The same PCollection, with each element as a [`Row`]. The coder
     /// stays the same.
-    pub fn as_rows(&self) -> PCollection<crate::schema::Row> {
+    pub fn as_rows(&self) -> PCollection<Row> {
         PCollection::new(
             self.id.clone(),
             self.coder_id.clone(),
@@ -201,10 +256,37 @@ impl PCollection<crate::schema::RowElement> {
     }
 }
 
-impl PCollection<crate::schema::Row> {
-    /// The same PCollection, with each element as a [`RowElement`](crate::schema::RowElement):
+impl<T: BeamRow> PCollection<T> {
+    /// The same PCollection, with each element as a [`RowElement`],
+    /// if its coder is the row coder of the schema of `T`. Else `None`, and the elements need
+    /// a conversion such as `ToRows`.
+    pub fn as_row_elements(&self) -> Option<PCollection<RowElement>> {
+        let is_row_coder = self
+            .pipeline
+            .lock()
+            .components
+            .coders
+            .get(&self.coder_id)
+            .and_then(|coder| coder.spec.as_ref())
+            .is_some_and(|spec| {
+                spec.urn == URN_ROW
+                    && Schema::from_proto_bytes(&spec.payload)
+                        .is_ok_and(|schema| T::matches_schema(&schema))
+            });
+        is_row_coder.then(|| {
+            PCollection::new(
+                self.id.clone(),
+                self.coder_id.clone(),
+                self.pipeline.clone(),
+            )
+        })
+    }
+}
+
+impl PCollection<Row> {
+    /// The same PCollection, with each element as a [`RowElement`]:
     /// the input of a `DoFn` that reads the row coder bytes. The coder stays the same.
-    pub fn as_row_elements(&self) -> PCollection<crate::schema::RowElement> {
+    pub fn as_row_elements(&self) -> PCollection<RowElement> {
         PCollection::new(
             self.id.clone(),
             self.coder_id.clone(),
@@ -215,15 +297,15 @@ impl PCollection<crate::schema::Row> {
     /// Replaces the coder with a `beam:coder:row:v1` coder that carries `schema`. Call it
     /// before a Row PCollection crosses into another SDK, which reads the field layout from
     /// the coder payload, not from the elements.
-    pub fn with_row_schema(self, schema: &crate::schema::Schema) -> Self {
+    pub fn with_row_schema(self, schema: &Schema) -> Self {
         let coder_id = self.pipeline.register_row_coder(schema);
         self.with_coder_id(coder_id)
     }
 
     /// Returns the schema associated with this Row PCollection, if present in its coder.
-    pub fn row_schema(&self) -> Option<std::sync::Arc<crate::schema::Schema>> {
+    pub fn row_schema(&self) -> Option<std::sync::Arc<Schema>> {
         let lock = self.pipeline.lock();
-        crate::coders::extract_row_schema(&self.coder_id, &lock.components.coders)
+        extract_row_schema(&self.coder_id, &lock.components.coders)
     }
 }
 
@@ -281,6 +363,7 @@ impl<T: 'static> PCollectionList<T> {
         &self.pipeline
     }
 
+    /// Creates an empty list in `pipeline`.
     pub fn empty(pipeline: Pipeline) -> Self {
         Self {
             pipeline,
@@ -297,20 +380,48 @@ impl<T: 'static> PCollectionList<T> {
         }
     }
 
+    /// Creates a collection list from `pipeline` and `collections`.
+    ///
+    /// Accepts an empty `collections` vector. Records a construction error if any collection
+    /// belongs to a different pipeline.
     pub fn from_vec(pipeline: Pipeline, collections: Vec<PCollection<T>>) -> Self {
+        for collection in &collections {
+            if !collection.pipeline().same_as(&pipeline) {
+                pipeline.record_construction_error(
+                    crate::pipeline::PipelineError::InvalidConstruction {
+                        transform_id: "PCollectionList".to_string(),
+                        reason:
+                            "all collections in a PCollectionList must belong to the same pipeline"
+                                .to_string(),
+                    },
+                );
+                break;
+            }
+        }
         Self {
             pipeline,
             collections,
         }
     }
 
-    /// Appends `collection` and returns the list, for chaining.
+    /// Appends `collection` and returns the list.
     pub fn and(mut self, collection: PCollection<T>) -> Self {
-        self.collections.push(collection);
+        self.push(collection);
         self
     }
 
+    /// Appends `collection` to the list. Records a construction error if `collection` belongs to
+    /// a different pipeline.
     pub fn push(&mut self, collection: PCollection<T>) {
+        if !collection.pipeline().same_as(&self.pipeline) {
+            self.pipeline.record_construction_error(
+                crate::pipeline::PipelineError::InvalidConstruction {
+                    transform_id: "PCollectionList".to_string(),
+                    reason: "all collections in a PCollectionList must belong to the same pipeline"
+                        .to_string(),
+                },
+            );
+        }
         self.collections.push(collection);
     }
 
@@ -343,6 +454,21 @@ impl<T: 'static> PCollectionList<T> {
         self.pipeline
             .apply_scoped(&name.into(), PInput::pcollection_ids(self), || {
                 transform.expand(self)
+            })
+    }
+
+    /// Applies a [`TryPTransform`] to this collection list under the name `name`.
+    pub fn try_apply<Tform>(
+        &self,
+        name: impl Into<String>,
+        transform: Tform,
+    ) -> Result<Tform::Output, Tform::Error>
+    where
+        Tform: TryPTransform<Self>,
+    {
+        self.pipeline
+            .try_apply_scoped(&name.into(), PInput::pcollection_ids(self), || {
+                transform.try_expand(self)
             })
     }
 
