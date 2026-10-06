@@ -35,6 +35,31 @@ pub async fn within<F: IntoFuture>(what: &str, fut: F) -> F::Output {
         .unwrap_or_else(|_| panic!("timed out after {WAIT:?} waiting for {what}"))
 }
 
+/// The user state of one bundle of `descriptor` on `channel`. Panics when the descriptor
+/// declares no user state.
+pub fn bundle_user_state(
+    descriptor: &beam_model::fn_execution::ProcessBundleDescriptor,
+    channel: beam_harness::state::StateChannel,
+    cache: Option<beam_harness::user_state::UserStateCache>,
+) -> beam_harness::user_state::BundleUserState {
+    let coders = std::sync::Arc::new(descriptor.coders.clone());
+    let specs = beam_harness::user_state::UserStateSpecs::from_descriptor(descriptor, &coders)
+        .expect("the descriptor declares user state");
+    beam_harness::user_state::BundleUserState::new(std::sync::Arc::new(specs), channel, cache)
+}
+
+/// The side input reader of one bundle of `descriptor` on `channel`, or `None` when the
+/// descriptor reads no side inputs.
+pub fn side_input_reader(
+    descriptor: &beam_model::fn_execution::ProcessBundleDescriptor,
+    channel: Option<beam_harness::state::StateChannel>,
+) -> Option<beam_harness::state::FnApiSideInputReader> {
+    let coders = std::sync::Arc::new(descriptor.coders.clone());
+    beam_harness::state::SideInputSpecs::from_descriptor(descriptor, coders).map(|specs| {
+        beam_harness::state::FnApiSideInputReader::new(std::sync::Arc::new(specs), channel)
+    })
+}
+
 /// A one-shot latch that threads block on until another thread opens it. Waits are bounded
 /// by [`WAIT`], so a latch that never opens fails instead of hanging.
 #[derive(Default)]
