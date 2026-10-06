@@ -1,0 +1,118 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Prism, the portable runner used by tests and local launches.
+// A release build uses the Prism published with that release. For a SNAPSHOT build
+// no release asset exists. Gradle therefore compiles Prism from local Go source
+// (sdks/go/cmd/prism) with the pinned Go toolchain. Pass `-PprismVersion=<release>`
+// to download a specific release instead, for example to work without Go.
+
+def hostOs = System.getProperty('os.name').toLowerCase().contains('mac') ? 'darwin' : 'linux'
+def hostArch = System.getProperty('os.arch') in ['aarch64', 'arm64'] ? 'arm64' : 'amd64'
+def prismVersionOverride = project.findProperty('prismVersion')?.toString()
+ext.prismFromSource = !prismVersionOverride && beamVersion.endsWith('-SNAPSHOT')
+ext.prismVersion = prismVersionOverride ?: beamReleaseVersion
+def prismCacheDir = file("${System.getProperty('user.home')}/.apache_beam/cache/prism/bin")
+ext.prismBinaryFor = { String os ->
+  prismFromSource
+      ? file("${buildDir}/prism/prism-${os}-${hostArch}")
+      : new File(prismCacheDir, "apache_beam-v${prismVersion}-prism-${os}-${hostArch}")
+}
+ext.prismHostBinary = prismBinaryFor(hostOs)
+ext.prismLinuxBinary = prismBinaryFor('linux')
+
+def downloadPrism = { File dir, File binary, String version ->
+  dir.mkdirs()
+  def archive = new File(dir, "${binary.name}.zip")
+  project.exec {
+    commandLine 'curl', '-sSLf', '-o', archive.absolutePath,
+        "https://github.com/apache/beam/releases/download/v${version}/${binary.name}.zip"
+  }
+  project.copy {
+    from project.zipTree(archive)
+    into dir
+  }
+  binary.setExecutable(true)
+}
+
+// Compiles sdks/go/cmd/prism for `goos` on the host architecture, the way
+// :runners:prism:build does, using the Go command that project's goPrepare installs.
+def compilePrism = { File binary, String goos ->
+  binary.parentFile.mkdirs()
+  project.exec {
+    workingDir "${rootDir}/sdks"
+    environment 'GOOS', goos
+    environment 'GOARCH', hostArch
+    environment 'CGO_ENABLED', '0'
+    commandLine 'sh', '-c',
+        "${project.project(':runners:prism').ext.goCmd} build -o ${binary.absolutePath} ${rootDir}/sdks/go/cmd/prism"
+  }
+}
+
+ext.providePrism = { File binary, String goos ->
+  if (prismFromSource) {
+    compilePrism(binary, goos)
+  } else {
+    downloadPrism(prismCacheDir, binary, prismVersion)
+  }
+}
+
+// Wires a task that provides the Prism binary for `goos`.
+//
+// Downloads are cached by file name, which carries the version. Source builds track the Go
+// sources and module files under `sdks/`, so `fetchPrism` stays UP-TO-DATE when Go sources
+// have not changed.
+ext.configurePrismTask = { Task task, File binary, String goos ->
+  task.outputs.file(binary)
+  task.inputs.property('goos', goos)
+  task.inputs.property('goarch', hostArch)
+  if (prismFromSource) {
+    task.dependsOn ':runners:prism:goPrepare'
+    task.inputs.files(project.fileTree("${rootDir}/sdks/go") {
+      include '**/*.go'
+    }).withPathSensitivity(PathSensitivity.RELATIVE)
+    task.inputs.files("${rootDir}/sdks/go.mod", "${rootDir}/sdks/go.sum")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+  } else {
+    task.inputs.property('prismVersion', prismVersion)
+  }
+  task.doLast { providePrism(binary, goos) }
+}
+
+tasks.register('fetchPrism') {
+  group = 'Build'
+  description = prismFromSource
+      ? 'Build a host-native Prism from sdks/go/cmd/prism'
+      : "Download the host-native Prism ${prismVersion} into the shared Beam cache"
+  configurePrismTask(it, prismHostBinary, hostOs)
+}
+
+cargoTestTasks.each { String pkg, TaskProvider<Exec> tp ->
+  if ('apache-beam-runner-prism' in crateClosure[pkg]) {
+    tp.configure {
+      dependsOn 'fetchPrism'
+      inputs.file(prismHostBinary).withPathSensitivity(PathSensitivity.NONE)
+      environment 'BEAM_PRISM_PATH', prismHostBinary.absolutePath
+    }
+  }
+}
+
+tasks.matching { it.name == 'testBenchmarks' }.configureEach {
+  dependsOn 'fetchPrism'
+  environment 'BEAM_PRISM_PATH', prismHostBinary.absolutePath
+}
