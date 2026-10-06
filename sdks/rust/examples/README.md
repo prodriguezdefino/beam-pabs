@@ -318,7 +318,8 @@ This pipeline demonstrates batch event processing reading CSV telemetry and writ
 
 ## Machine Learning Inference
 
-These examples use `RunInference` from `beam::ml`.
+These examples use `RunInference` from `beam::ml`. See
+[Machine Learning and Vectorized Execution](../docs/accelerated-workloads.md).
 
 > [!NOTE]
 > The model and prompt files have no default location. Pass `--input` to
@@ -456,3 +457,7 @@ for the fixture rows:
 ORT_DYLIB_PATH=/path/to/libonnxruntime.dylib TABLE_ROW_ONNX_MODEL=/path/to/table_row_rf.onnx \
   ./gradlew :sdks:rust:test -Ppkg=columnar_feature_engineering -PtestArgs=--ignored
 ```
+
+## Building worker binaries
+
+Running in Docker requires a Linux build of the pipeline binary. See [Running Rust Pipelines](../docs/runners.md#building-linux-worker-binaries).
