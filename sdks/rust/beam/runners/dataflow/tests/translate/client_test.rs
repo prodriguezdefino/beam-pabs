@@ -22,8 +22,8 @@ use std::collections::HashMap;
 use beam_runner_dataflow::{
     ClientError, DataflowApiClient, HttpDataflowClient, JOB_STATE_CANCELLED, JOB_STATE_DONE,
     JOB_STATE_DRAINED, JOB_STATE_FAILED, JOB_STATE_PENDING, JOB_STATE_QUEUED, JOB_STATE_RUNNING,
-    JOB_STATE_UNKNOWN, JOB_STATE_UPDATED, JobMessageItem, JobMetricsResponse, MessageCursor,
-    is_successful_state, is_terminal_state,
+    JOB_STATE_UNKNOWN, JOB_STATE_UPDATED, JobMessageItem, JobMetricsResponse, MAX_REQUEST_ATTEMPTS,
+    MessageCursor, is_successful_state, is_terminal_state,
 };
 use beam_runner_dataflow::{
     DataflowEnvironment, DataflowJob, SdkOptionsPayload, SdkPipelineOptions, UserAgent, Version,
@@ -375,4 +375,114 @@ fn test_job_metrics_response_to_metric_results() {
     assert_eq!(dist.sum, 150);
     assert_eq!(dist.min, 10);
     assert_eq!(dist.max, 50);
+}
+
+const RETRY_JOBS: &str = "/v1b3/projects/p/locations/r/jobs";
+
+/// A job response with `id` in the running state.
+fn running_job(id: &str) -> ResponseTemplate {
+    ResponseTemplate::new(200)
+        .set_body_json(json!({"id": id, "name": "n", "currentState": "JOB_STATE_RUNNING"}))
+}
+
+#[tokio::test]
+async fn a_busy_api_gets_the_request_again() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{RETRY_JOBS}/j")))
+        .respond_with(ResponseTemplate::new(503))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{RETRY_JOBS}/j")))
+        .respond_with(running_job("j"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = HttpDataflowClient::with_endpoint_and_token(server.uri(), None::<String>);
+    let job = client.get_job("p", "r", "j").await.unwrap();
+    assert_eq!(job.current_state, "JOB_STATE_RUNNING");
+}
+
+#[tokio::test]
+async fn a_retried_create_sends_the_same_request_id() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(RETRY_JOBS))
+        .respond_with(ResponseTemplate::new(500))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(RETRY_JOBS))
+        .respond_with(running_job("created"))
+        .mount(&server)
+        .await;
+
+    let client = HttpDataflowClient::with_endpoint_and_token(server.uri(), None::<String>);
+    let job: DataflowJob = serde_json::from_value(json!({
+        "projectId": "p", "name": "n", "type": "JOB_TYPE_BATCH", "steps": [],
+        "clientRequestId": "request-1",
+        "environment": {
+            "userAgent": {"name": "t", "version": "1"},
+            "version": {"job_type": "FNAPI_BATCH", "major": "6"},
+            "tempStoragePrefix": "gs://b/t", "experiments": [],
+            "sdkPipelineOptions": {"options": {
+                "pipelineUrl": "gs://b/m", "pipelineProtoHash": "h", "region": "r",
+                "tempLocation": "gs://b/t", "experiments": []
+            }},
+            "workerPools": []
+        }
+    }))
+    .unwrap();
+    assert_eq!(
+        client.create_job("p", "r", &job).await.unwrap().id,
+        "created"
+    );
+
+    let requests = server.received_requests().await.unwrap();
+    let ids: Vec<serde_json::Value> = requests
+        .iter()
+        .map(|request| request.body_json::<serde_json::Value>().unwrap()["clientRequestId"].clone())
+        .collect();
+    assert_eq!(ids, [json!("request-1"), json!("request-1")]);
+}
+
+#[tokio::test]
+async fn a_client_error_is_not_sent_again() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(403))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = HttpDataflowClient::with_endpoint_and_token(server.uri(), None::<String>);
+    let error = client.get_job("p", "r", "j").await.unwrap_err();
+    assert!(
+        matches!(error, ClientError::Api { status: 403, .. }),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_request_stops_after_the_last_attempt() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(503))
+        .expect(u64::from(MAX_REQUEST_ATTEMPTS))
+        .mount(&server)
+        .await;
+
+    let client = HttpDataflowClient::with_endpoint_and_token(server.uri(), None::<String>);
+    let error = client.get_job("p", "r", "j").await.unwrap_err();
+    assert!(
+        matches!(error, ClientError::Api { status: 503, .. }),
+        "{error:?}"
+    );
 }

@@ -94,3 +94,6 @@ pub const JOB_STATE_DRAINED: &str = "JOB_STATE_DRAINED";
 pub const JOB_STATE_PENDING: &str = "JOB_STATE_PENDING";
 pub const JOB_STATE_CANCELLING: &str = "JOB_STATE_CANCELLING";
 pub const JOB_STATE_QUEUED: &str = "JOB_STATE_QUEUED";
+
+/// Error importance level for Dataflow job messages.
+pub const JOB_MESSAGE_ERROR: &str = "JOB_MESSAGE_ERROR";
