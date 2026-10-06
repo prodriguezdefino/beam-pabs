@@ -32,12 +32,21 @@ use crate::pipeline::resources::ResourceHints;
 use crate::pipeline::{Pipeline, URN_PAR_DO};
 use crate::values::{PCollection, POutput};
 
+pub use crate::metrics::scope::process_wide_container;
 pub use crate::transforms::create::create_handler;
 pub use crate::transforms::dofn::context::{
     BundleFinalizerCollector, HandlerContext, PendingFinalizer, ResidualApplication,
     ResidualCollector,
 };
-pub use crate::transforms::dofn::outputs::{Emitter, OutputDeclarer};
+pub use crate::transforms::dofn::outputs::{Emitter, Indexed, OutputDeclarer};
+pub use crate::transforms::dofn::sdf::dynamic_split::{
+    DynamicSplitGuard, DynamicSplitHandler, DynamicSplitRegistrar, DynamicSplitResult,
+    SdfDynamicSplitter,
+};
+pub use crate::transforms::dofn::sdf::splittable_dofn::{
+    SdfPairWithRestrictionHandler, SdfProcessSizedElementsHandler, SdfSplitAndSizeHandler,
+    SdfTruncateSizedRestrictionsHandler, SplittableDoFnHandler,
+};
 pub use crate::transforms::dofn::side_input::{
     ScopedSideInputReader, SideInputElements, SideInputError, SideInputReader,
     extract_side_input_tags, extract_side_inputs,
@@ -64,9 +73,7 @@ pub(crate) type FastHashMap<K, V> = HashMap<K, V, foldhash::fast::RandomState>;
 
 pub use crate::coders::display::ElementFormatter;
 pub use crate::metrics::context::MetricsContainer;
-pub use crate::metrics::scope::{
-    MetricsScope, TransformMetrics, TransformSelection, process_wide_container,
-};
+pub use crate::metrics::scope::{MetricsScope, TransformMetrics, TransformSelection};
 pub use crate::metrics::short_ids::ShortIdCache;
 pub use crate::metrics::system::{
     data_channel_read_index, element_count, finish_bundle_msecs, process_bundle_msecs,

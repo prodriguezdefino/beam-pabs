@@ -27,8 +27,8 @@
 //! cells, common windows and triggers, user metrics and rows.
 //!
 //! This prelude is `apply`-style; the facade's `beam::prelude` adds the fluent methods.
-//! Specialised items stay in their modules: [`crate::pipeline`] (resource hints),
-//! [`crate::metrics`] (query API),
+//! Specialised items stay in their modules: [`crate::transforms::sdf`], [`crate::windowing`]
+//! (watermark estimators), [`crate::pipeline`] (resource hints), [`crate::metrics`] (query API),
 //! [`crate::coders`] and [`crate::internals`].
 
 pub use crate::coders::BeamIterable;
@@ -42,10 +42,10 @@ pub use crate::schema::BeamEnum;
 pub use crate::schema::{BeamRow, Row, Schema};
 pub use crate::time::Instant;
 pub use crate::transforms::{
-    BagState, Create, DoFn, Failure, Filter, FinishBundleContext, FlatMap, Flatten, GroupByKey,
-    Inspect, Map, MapState, NoTimers, OrderedListState, Outputs, PTransform, ParDo, Partition,
-    ProcessContext, SetState, StatefulContext, StatefulDoFn, TryMap, ValueState, Windowed,
-    WithFailures,
+    BagState, Create, DoFn, Failure, Filter, FinishBundleContext, FlatMap, Flatten,
+    GenerateSequence, GroupByKey, Inspect, Map, MapState, NoTimers, OrderedListState, Outputs,
+    PTransform, ParDo, Partition, PeriodicImpulse, ProcessContext, SetState, StatefulContext,
+    StatefulDoFn, TryMap, ValueState, Windowed, WithFailures,
 };
 #[cfg(feature = "derive")]
 pub use crate::transforms::{Register, State, Timers};

@@ -21,3 +21,4 @@
 
 mod after_watermark_trigger_test;
 mod trigger_test;
+mod windowing_test;
