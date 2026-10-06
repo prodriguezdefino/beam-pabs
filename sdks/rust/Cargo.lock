@@ -1741,6 +1741,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
+name = "fold_state_backed"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "apache-beam-test-utils",
+ "clap",
+ "serde",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "foldhash"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1778,6 +1790,17 @@ name = "foreign-types-shared"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
+
+[[package]]
+name = "forest"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "clap",
+ "serde",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "form_urlencoded"
@@ -1890,6 +1913,16 @@ dependencies = [
  "memchr",
  "pin-project-lite",
  "slab",
+]
+
+[[package]]
+name = "gaming"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "clap",
+ "serde",
+ "tokio",
 ]
 
 [[package]]
@@ -3003,6 +3036,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "join"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "clap",
+ "serde",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "js-sys"
 version = "0.3.105"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3034,6 +3078,17 @@ name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
+
+[[package]]
+name = "leaderboard"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "clap",
+ "serde",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "libc"
@@ -3205,6 +3260,14 @@ name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
+
+[[package]]
+name = "minimal_wordcount"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "tokio",
+]
 
 [[package]]
 name = "miniz_oxide"
@@ -3633,6 +3696,15 @@ dependencies = [
  "snap",
  "twox-hash",
  "zstd",
+]
+
+[[package]]
+name = "partition"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -4285,6 +4357,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "row_schemas"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "chrono",
+ "rust_decimal",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "rust_decimal"
 version = "1.43.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4651,6 +4734,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sessions"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "clap",
+ "serde",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4686,6 +4780,16 @@ name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
+
+[[package]]
+name = "side_inputs"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "clap",
+ "serde",
+ "tokio",
+]
 
 [[package]]
 name = "signal-hook-registry"
@@ -4733,6 +4837,17 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
+
+[[package]]
+name = "sliding_window"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "clap",
+ "serde",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "smallvec"
@@ -4786,10 +4901,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
+name = "state_conformance"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "clap",
+ "serde",
+ "tokio",
+]
+
+[[package]]
 name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "streaming"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "apache-beam-test-utils",
+ "clap",
+ "serde",
+ "tempfile",
+ "tokio",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "strsim"
@@ -5753,6 +5891,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
+name = "windowed_wordcount"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "apache-beam-test-utils",
+ "clap",
+ "serde",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "windows-core"
 version = "0.62.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5936,6 +6086,18 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+
+[[package]]
+name = "wordcount"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "apache-beam-test-utils",
+ "clap",
+ "regex",
+ "serde",
+ "tokio",
+]
 
 [[package]]
 name = "writeable"

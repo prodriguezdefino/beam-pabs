@@ -32,6 +32,10 @@ members = [
     "beam/runners/*",
     "beam/testing",
     "beam/runner-tests",
+    "examples/*",
+]
+exclude = [
+    "examples/build",
 ]
 
 [workspace.package]
@@ -88,6 +92,7 @@ sync_wrapper = "1"
 clap = { version = "4.5", features = ["derive", "string"] }
 inventory = "0.3"
 globset = "0.4"
+regex = "1.13"
 foldhash = "0.2"
 serde-saphyr = "1"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
