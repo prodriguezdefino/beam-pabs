@@ -41,6 +41,7 @@ Run builds and tests through Gradle. The rest of the Beam repository uses it too
 # Pipeline Launchers
 ./gradlew :sdks:rust:prism             # Launch on PrismRunner (-Pexample=wordcount|gaming [-Pdocker])
 ./gradlew :sdks:rust:dataflow          # Launch on Google Cloud Dataflow (-Pexample=gaming)
+./gradlew :sdks:rust:profilePrism      # Profile locally on Prism (-Pexample=wordcount [-Pmode=cpu|memory|both] ...)
 
 # Container & Validations
 ./gradlew :sdks:rust:docker                    # Build the SDK base container (apache/beam_rust_sdk)
@@ -52,6 +53,40 @@ Run builds and tests through Gradle. The rest of the Beam repository uses it too
 ./gradlew :sdks:rust:validatesCrossLanguageRunnerPythonPrism     # Python xlang suite on Prism against the Rust test expansion service
 ./gradlew :sdks:rust:validatesCrossLanguageRunnerPythonDataflow  # Python xlang suite on Dataflow against the Rust test expansion service
 ```
+
+## Profiling
+
+The `profilePrism` task runs a pipeline on the local Prism runner and records a CPU
+profile, a memory profile, or both. It runs on the host, so `-Pdocker` does not apply.
+CPU profiles need `samply` (`cargo install --locked samply`). The task writes the profile,
+the `time` output and a summary to `build/reports/profile/<binary>-<timestamp>/`.
+
+```bash
+./gradlew :sdks:rust:profilePrism -Pexample=wordcount -PextraArgs="--input=... --output=..." -Prows=5000000
+```
+
+- `-Pexample=<name>` runs an example. `-Ppkg=<crate> -Pbin=<binary>` runs another
+  binary of the workspace.
+- `-Ppkg=<crate> -PcargoExample=<name>` runs a Cargo example of a crate (a file in its
+  `examples` directory), for example a program that profiles one connector.
+- `-Pmode=cpu` records with samply, `memory` runs `/usr/bin/time` (`-l` on macOS, `-v` on
+  Linux), and `both` (the default) does both. With `both`, the pipeline runs two times.
+- `-PextraArgs="<pipeline flags>"` passes flags to the pipeline.
+- `-Prows=<n>` adds the CPU seconds for each 1M rows to the summary.
+- `-PcargoProfile=worker` (the default) builds with the `worker` Cargo profile: fat LTO and
+  one codegen unit, as the binaries that run on a runner. The inlining then matches the
+  fleet. `-PcargoProfile=release` links faster, but its inlining differs, so use it only to
+  find hot functions, not to compare two builds.
+
+Compare two builds only with profiles from the same session: run them one after the other,
+three times each. Results from different sessions differ by more than most code changes.
+
+The summary splits the CPU time between the Rust process and Prism, and gives the CPU
+share of each stage and the hottest functions of the Rust process. When samply records the
+CPU time of each thread, each sample counts its CPU time. A thread that waits in a system
+call, for example in `poll()`, then counts as idle. To open the profile in the Firefox
+profiler, run `samply load <dir>/profile.json.gz`. Keep `profile.json.syms.json` in the same
+directory: it holds the function names.
 
 ## Public API Changes
 
