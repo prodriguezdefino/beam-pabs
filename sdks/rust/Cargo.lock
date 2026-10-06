@@ -413,6 +413,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "apache-beam-runner-tests"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "apache-beam-expansion",
+ "apache-beam-external",
+ "apache-beam-fluent",
+ "apache-beam-io-file",
+ "apache-beam-io-gcp",
+ "apache-beam-model",
+ "apache-beam-runner-prism",
+ "clap",
+ "inventory",
+ "prost",
+ "serde",
+ "tokio",
+ "tonic",
+ "tracing",
+]
+
+[[package]]
 name = "apache-beam-test-utils"
 version = "2.78.0-SNAPSHOT"
 dependencies = [
