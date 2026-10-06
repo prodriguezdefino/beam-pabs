@@ -1,0 +1,58 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+[package]
+name = "apache-beam-testing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "In-graph assertions (PAssert) and TestStream for testing Apache Beam Rust pipelines"
+
+[lib]
+name = "testing"
+
+[dependencies]
+beam = { package = "apache-beam-core", path = "../core", version = "2.78.0-SNAPSHOT" }
+model = { workspace = true }
+prost = { workspace = true }
+thiserror = { workspace = true }
+# Linked only with the `prism` feature, so that `TestPipeline` can find the Prism
+# runner through the link-time registry. See the `prism` feature below.
+prism = { workspace = true, optional = true }
+harness = { workspace = true, optional = true }
+
+[features]
+# Links the Prism runner (and the worker harness it runs pipelines with), so that a
+# crate whose only test dependency is `testing` can run a `TestPipeline` on Prism,
+# the default runner of `PipelineOptions`:
+#
+#     [dev-dependencies]
+#     testing = { workspace = true, features = ["prism"] }
+#
+# Not on by default: the `apache-beam` facade depends on this crate, and links no
+# runner unless one is asked for.
+prism = ["dep:prism", "dep:harness"]
+
+[dev-dependencies]
+# This crate's own tests run pipelines on Prism.
+testing = { package = "apache-beam-testing", path = ".", features = ["prism"] }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

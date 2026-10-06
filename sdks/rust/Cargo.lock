@@ -96,6 +96,7 @@ dependencies = [
  "apache-beam-io-file",
  "apache-beam-model",
  "apache-beam-runner-prism",
+ "apache-beam-testing",
 ]
 
 [[package]]
@@ -105,6 +106,8 @@ dependencies = [
  "apache-beam",
  "apache-beam-derive",
  "apache-beam-model",
+ "apache-beam-test-utils",
+ "apache-beam-testing",
  "async-trait",
  "bytes",
  "chrono",
@@ -120,7 +123,9 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokio",
+ "tokio-stream",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -162,10 +167,13 @@ dependencies = [
  "apache-beam-io-file",
  "apache-beam-model",
  "apache-beam-test-utils",
+ "apache-beam-testing",
+ "bytes",
  "globset",
  "inventory",
  "sync_wrapper",
  "thiserror",
+ "tokio",
  "tracing",
 ]
 
@@ -210,6 +218,20 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
+]
+
+[[package]]
+name = "apache-beam-testing"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam-core",
+ "apache-beam-harness",
+ "apache-beam-model",
+ "apache-beam-runner-prism",
+ "apache-beam-testing",
+ "prost",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]
