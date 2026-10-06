@@ -93,6 +93,64 @@ class RustPrismTasks {
     task.doLast { provideBinary(binary, goos) }
   }
 
+  /** Registers the {@code fetchPrismLinux} and {@code prism} launch tasks. */
+  void registerLaunchTasks(RustConfig config) {
+    Project project = build.project
+    project.tasks.register('fetchPrismLinux') { Task task ->
+      task.group = 'Build'
+      task.description = prismFromSource
+          ? 'Build a Linux Prism from sdks/go/cmd/prism for containerized execution'
+          : "Download the Linux Prism ${prismVersion} into the shared Beam cache for containerized execution"
+      configureTask(task, prismLinuxBinary, 'linux')
+    }
+
+    project.tasks.register('prism', Exec) { Exec task ->
+      task.group = 'Application'
+      task.description = 'Run a Rust example on the local Prism Runner (-Pexample=wordcount [-Pdocker])'
+      task.workingDir(build.rustDir)
+      task.dependsOn('fetchPrism')
+
+      Object dockerProp = project.findProperty('docker')
+      boolean dockerMode = dockerProp instanceof CharSequence && dockerProp.toString() != 'false'
+      if (dockerMode && config.suppliedWorkerBinary(config.selectedExample) == null) {
+        task.dependsOn('buildWorker')
+      }
+
+      task.doFirst {
+        String example = config.selectedExample
+        String defaultEnv = "${BeamModuleExtras.dockerDefaultRepoRoot(project)}/" +
+            "${BeamModuleExtras.dockerDefaultRepoPrefix(project)}rust_sdk:${build.versions.sdkVersion}"
+        String envConfig = dockerMode ? config.resolveProp(example, 'environmentConfig', null, defaultEnv) : null
+        String supplied = config.suppliedWorkerBinary(example)
+        List<String> workerFlag
+        if (!dockerMode || supplied == 'none') {
+          workerFlag = new ArrayList<String>()
+        } else if (supplied != null) {
+          workerFlag = ["--worker_binary=${supplied}".toString()]
+        } else {
+          workerFlag = ["--worker_binary=${config.workerBinaryFor(example, config.workerArch).absolutePath}".toString()]
+        }
+        String extraRaw = config.resolveProp(example, 'extraArgs') ?: ''
+        List<String> extraArgs = extraRaw.tokenize(' ')
+        String features = (config.resolveProp(example, 'exampleFeatures') ?: '').trim()
+        List<String> featureFlags = features.isEmpty() ? new ArrayList<String>() : ['--features', features]
+        String binName = (build.workspace.crateBinTargets[example]?.find() ?: example).toString()
+        List<String> scopeFlags = featureFlags.isEmpty()
+            ? ['--bin', binName]
+            : ['-p', example, '--bin', binName] + featureFlags
+        List<String> gcpArgs = config.portableGcpArgs(example)
+        List<String> envFlags = dockerMode
+            ? ['--environment_type=DOCKER', "--environment_config=${envConfig}".toString()] + workerFlag
+            : ['--environment_type=LOOPBACK']
+        List<String> cmd = ['cargo', 'run', '--release'] + scopeFlags +
+            ['--', '--runner=PrismRunner'] + envFlags + gcpArgs + extraArgs
+
+        task.environment(config.launchEnvironment())
+        task.commandLine(cmd)
+      }
+    }
+  }
+
   private void registerTasks() {
     Project project = build.project
     project.tasks.register('fetchPrism') { Task task ->

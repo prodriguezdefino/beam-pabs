@@ -35,7 +35,7 @@ path = "src/main.rs"
 test = false
 
 [dependencies]
-beam = { workspace = true, features = ["prism", "dataflow", "fluent", "io-file", "gcp-gcs", "derive", "ml-onnx"] }
+beam = { workspace = true, features = ["prism", "dataflow", "fluent", "io-file", "gcp-gcs", "derive", "ml-onnx", "mimalloc"] }
 tokio = { workspace = true, features = ["full"] }
 clap = { workspace = true }
 serde = { workspace = true }

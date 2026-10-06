@@ -23,12 +23,12 @@
 //!
 //! # Getting Started
 //!
-//! One dependency is enough. Select the runner as a feature. The connectors, the
-//! Fn API worker harness and the schema derive macros come with it:
+//! One dependency is enough. The library name is `beam`, so you do not need to rename it.
+//! Select the runner and connectors as features, and enable `mimalloc` in pipeline binaries:
 //!
 //! ```toml
 //! [dependencies]
-//! beam = { package = "apache-beam", version = "0.1", features = ["prism"] }
+//! apache-beam = { version = "0.1", features = ["prism", "mimalloc"] }
 //! ```
 //!
 //! Writing a pipeline using `beam::prelude::*`:
@@ -49,10 +49,10 @@
 //!
 //! # Link-time registration
 //!
-//! Filesystems and runners register through [`inventory`], which sees only the crates
-//! that the linker keeps. Rust drops an rlib that nothing refers to, so this crate holds
-//! a `use ... as _` for each optional dependency. Then you do not have to name those
-//! crates only to keep them linked.
+//! Filesystems (`gs://`) and runners register through [`inventory`], which sees only
+//! the crates that the linker keeps. Rust drops an rlib that nothing refers to, so this
+//! crate holds a `use ... as _` for each optional dependency. Then you do not have to
+//! name `beam-io-gcp` or `beam-harness` only to keep them linked.
 //!
 //! [`inventory`]: https://docs.rs/inventory
 
@@ -122,7 +122,16 @@ pub mod runners {
     pub use beam_runner_prism as prism;
 }
 
-/// Force-links optional dependencies so that their `inventory` registrations stay.
+/// Process-wide `mimalloc` allocator for binaries that enable the `mimalloc` feature.
+///
+/// This feature is opt-in. Enable `mimalloc` in pipeline binaries for multi-threaded
+/// allocation throughput. Leave it off in libraries so downstream binaries can choose
+/// their own global allocator.
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+/// Force-links optional dependencies so their [`inventory`] registrations stay.
 ///
 /// Downstream crates often import only `beam::prelude::*` and omit direct references
 /// to `beam::io::*`. This module forces the linker to retain the registration symbols

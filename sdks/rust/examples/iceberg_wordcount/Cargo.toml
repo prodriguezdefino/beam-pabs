@@ -36,7 +36,7 @@ test = false
 
 [dependencies]
 # Both runners are linked so `--runner=prism|dataflow` can choose at run time.
-beam = { workspace = true, features = ["prism", "dataflow", "managed"] }
+beam = { workspace = true, features = ["prism", "dataflow", "managed", "mimalloc"] }
 tokio = { workspace = true, features = ["full"] }
 clap = { workspace = true }
 serde = { workspace = true }
