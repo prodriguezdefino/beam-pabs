@@ -1,0 +1,17 @@
+{
+  "name": "Rust WordCount",
+  "description": "Counts the words in a text file with the Apache Beam Rust SDK.",
+  "parameters": [
+    {
+      "name": "input",
+      "label": "Input file",
+      "helpText": "Path of the file to read from. Defaults to gs://apache-beam-samples/shakespeare/kinglear.txt.",
+      "isOptional": true
+    },
+    {
+      "name": "output",
+      "label": "Output file",
+      "helpText": "Path of the file to write to, for example gs://my-bucket/counts.txt."
+    }
+  ]
+}
