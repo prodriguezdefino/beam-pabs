@@ -28,9 +28,10 @@ use super::input::DoFnInput;
 use super::outputs::{OutputDeclarer, Outputs};
 use super::registered::graph_spec;
 use super::state::AnyStateSpec;
-use super::timer::TimerFamilySpec;
+use super::timer::{ON_WINDOW_EXPIRATION_FAMILY, TimerFamilySpec};
 use crate::coders::{DefaultCoder, URN_GLOBAL_WINDOW, URN_TIMER};
 use crate::internals::ParDoRegistration;
+use crate::pipeline::PipelineError;
 use crate::transforms::{
     BundleHandler, DisplayDataBuilder, HandlerInstance, HasDisplayData, PTransform, TransformFn,
     TypedElement,
@@ -163,6 +164,9 @@ pub trait IntoParDoFn<M>: sealed::Sealed<M> + Clone + Send + Sync + 'static {
     /// Whether the function must see the elements of each key in timestamp order.
     const REQUIRES_TIME_SORTED_INPUT: bool;
 
+    /// Whether the runner calls the function once per key and window when the window expires.
+    const ON_WINDOW_EXPIRATION: bool;
+
     /// The user state cells that the transform declares.
     fn state_specs() -> Vec<Arc<dyn AnyStateSpec>>;
 
@@ -187,6 +191,7 @@ impl<T: DoFn> IntoParDoFn<Stateless> for T {
     const REQUIRES_STABLE_INPUT: bool = T::REQUIRES_STABLE_INPUT;
     // Only a stateful function has keys to sort the input of.
     const REQUIRES_TIME_SORTED_INPUT: bool = false;
+    const ON_WINDOW_EXPIRATION: bool = false;
 
     fn state_specs() -> Vec<Arc<dyn AnyStateSpec>> {
         Vec::new()
@@ -316,8 +321,21 @@ impl<M, F: IntoParDoFn<M>> PTransform<PCollection<F::In>> for ParDo<F, M> {
             .cloned()
             .unwrap_or_else(|| input.coder_id().to_string());
 
-        let proto_timer_specs = F::timer_families()
+        let timer_families = F::timer_families();
+        if timer_families
+            .iter()
+            .any(|spec| spec.family_name == ON_WINDOW_EXPIRATION_FAMILY)
+        {
+            pipeline.record_construction_error(PipelineError::InvalidConstruction {
+                transform_id: name.clone(),
+                reason: format!("the timer family id '{ON_WINDOW_EXPIRATION_FAMILY}' is reserved"),
+            });
+        }
+        let expiration = F::ON_WINDOW_EXPIRATION
+            .then(|| TimerFamilySpec::event_time(ON_WINDOW_EXPIRATION_FAMILY));
+        let proto_timer_specs = timer_families
             .into_iter()
+            .chain(expiration)
             .map(|spec| {
                 let timer_coder_id = pipeline.register_coder(
                     URN_TIMER,
@@ -339,6 +357,11 @@ impl<M, F: IntoParDoFn<M>> PTransform<PCollection<F::In>> for ParDo<F, M> {
             .requires_time_sorted_input(F::REQUIRES_TIME_SORTED_INPUT)
             .resource_hints(self.resource_hints.clone())
             .display_data(builder.into_proto());
+        let registration = if F::ON_WINDOW_EXPIRATION {
+            registration.on_window_expiration(ON_WINDOW_EXPIRATION_FAMILY)
+        } else {
+            registration
+        };
 
         // A registered type goes into the spec, so the worker needs no rebuilt pipeline.
         match spec {

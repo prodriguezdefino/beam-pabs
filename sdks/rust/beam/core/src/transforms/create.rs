@@ -24,6 +24,7 @@ use std::sync::Arc;
 use model::pipeline as proto;
 use prost::Message;
 
+use super::reshuffle::Reshuffle;
 use super::{DisplayDataBuilder, ElementSink, HasDisplayData, PTransform, TransformFn};
 use crate::coders::DefaultCoder;
 use crate::internals::ParDoRegistration;
@@ -95,6 +96,7 @@ impl<T: DefaultCoder> PTransform<PBegin> for Create<T> {
             urn: URN_RUST_DOFN_CREATE.to_string(),
             payload: CreatePayload { elements }.encode_to_vec(),
         };
+
         let impulse = pipeline.apply("Impulse", crate::transforms::Impulse::new());
         pipeline.add_scoped_primitive("Process", |name| {
             ParDoRegistration::new(pipeline, name, impulse.id())
@@ -106,7 +108,12 @@ impl<T: DefaultCoder> PTransform<PBegin> for Create<T> {
         self.populate_display_data(&mut builder);
         pipeline.set_scope_display_data(builder.into_proto());
 
-        out_pcoll
+        // One `Process` call emits every element in one bundle. Without the shuffle, all work
+        // that fuses after `Create` runs on one worker.
+        match self.elements.len() {
+            0 | 1 => out_pcoll,
+            _ => out_pcoll.apply("Reshuffle", Reshuffle::new()),
+        }
     }
 }
 

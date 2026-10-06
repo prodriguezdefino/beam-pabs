@@ -32,10 +32,35 @@ use beam::coders::{
     RowCoder, URN_BOOL, URN_BYTES, URN_DOUBLE, URN_GLOBAL_WINDOW, URN_INTERVAL_WINDOW,
     URN_ITERABLE, URN_KV, URN_LENGTH_PREFIX, URN_NULLABLE, URN_PARAM_WINDOWED_VALUE, URN_ROW,
     URN_STRING_UTF8, URN_TIMER, URN_VARINT, URN_WINDOWED_VALUE, VarIntCoder, extract_kv_key_bytes,
-    extract_row_schema, skip_coder_value, skip_pane_info,
+    extract_row_schema, skip_pane_info, skips_exactly,
 };
 use beam::schema::{Field, FieldType, FieldValue, Row, Schema, TypeInfo, URN_MILLIS_INSTANT};
 use model::pipeline::{Coder as ProtoCoder, FunctionSpec};
+
+/// Skips with [`skip_coder_value`] and with a compiled [`SkipPlan`], and checks that both end
+/// at the same position with the same result. Returns the [`skip_coder_value`] result.
+fn skip_coder_value(
+    cursor: &mut &[u8],
+    coder_id: &str,
+    coders: &HashMap<String, ProtoCoder>,
+    nested: bool,
+) -> Result<(), std::io::Error> {
+    let mut planned = *cursor;
+    let plan_result = beam::coders::SkipPlan::new(coder_id, coders).skip(&mut planned, nested);
+    let result = beam::coders::skip_coder_value(cursor, coder_id, coders, nested);
+    match (&result, &plan_result) {
+        (Ok(()), Ok(())) => assert_eq!(cursor.len(), planned.len(), "{coder_id}"),
+        (Err(a), Err(b)) => {
+            assert_eq!(
+                (a.kind(), a.to_string()),
+                (b.kind(), b.to_string()),
+                "{coder_id}"
+            );
+        }
+        _ => panic!("{coder_id}: skip_coder_value {result:?}, SkipPlan {plan_result:?}"),
+    }
+    result
+}
 
 /// Sentinel byte appended to verify that skip operations stop at the exact boundary.
 const SENTINEL: u8 = 0xAB;
@@ -555,6 +580,59 @@ fn extract_row_schema_terminates_on_a_cyclic_coder_graph() {
     assert!(extract_row_schema("a", &coders).is_none());
 }
 
+#[test]
+fn extract_row_schema_sees_through_kv_and_iterable() {
+    let schema = Schema::builder()
+        .field("id", FieldType::int64())
+        .nullable_field("name", FieldType::string())
+        .build();
+    let mut coders = base_coders();
+    coders.insert(
+        "row".to_string(),
+        coder(URN_ROW, &[], schema.to_proto_bytes()),
+    );
+    coders.insert(
+        "lp_row".to_string(),
+        coder(URN_LENGTH_PREFIX, &["row"], Vec::new()),
+    );
+    coders.insert(
+        "iter_row".to_string(),
+        coder(URN_ITERABLE, &["lp_row"], Vec::new()),
+    );
+    coders.insert(
+        "kv_iter_row".to_string(),
+        coder(URN_KV, &["varint", "iter_row"], Vec::new()),
+    );
+
+    assert_eq!(
+        extract_row_schema("kv_iter_row", &coders).as_deref(),
+        Some(&schema)
+    );
+}
+
+#[test]
+fn extract_row_schema_is_none_for_two_different_row_schemas() {
+    let key = Schema::builder().field("id", FieldType::int64()).build();
+    let value = Schema::builder().field("name", FieldType::string()).build();
+    let mut coders = base_coders();
+    coders.insert("key".to_string(), coder(URN_ROW, &[], key.to_proto_bytes()));
+    coders.insert(
+        "value".to_string(),
+        coder(URN_ROW, &[], value.to_proto_bytes()),
+    );
+    coders.insert(
+        "kv".to_string(),
+        coder(URN_KV, &["key", "value"], Vec::new()),
+    );
+    coders.insert(
+        "same".to_string(),
+        coder(URN_KV, &["key", "key"], Vec::new()),
+    );
+
+    assert!(extract_row_schema("kv", &coders).is_none());
+    assert_eq!(extract_row_schema("same", &coders).as_deref(), Some(&key));
+}
+
 // ---------------------------------------------------------------------------
 // Hostile coder graphs and window counts
 //
@@ -758,4 +836,68 @@ fn a_continuation_token_may_be_empty_but_not_negative() {
     let err = skip_coder_value(&mut &negative.as_slice()[..], "iter", &coders, true)
         .expect_err("a negative token length is malformed");
     assert_invalid_data(&err, "Invalid continuation token length: -1");
+}
+
+#[test]
+fn skips_exactly_holds_only_for_coders_whose_end_the_skip_finds() {
+    let custom = "beam:coder:test:custom:v1";
+    let mut coders = base_coders();
+    coders.extend([
+        ("custom".to_string(), coder(custom, &[], Vec::new())),
+        (
+            "kv".to_string(),
+            coder(URN_KV, &["string", "varint"], Vec::new()),
+        ),
+        (
+            "kv_of_custom".to_string(),
+            coder(URN_KV, &["string", "custom"], Vec::new()),
+        ),
+        (
+            "iterable".to_string(),
+            coder(URN_ITERABLE, &["kv"], Vec::new()),
+        ),
+        (
+            "nullable_custom".to_string(),
+            coder(URN_NULLABLE, &["custom"], Vec::new()),
+        ),
+        (
+            "prefixed_custom".to_string(),
+            coder(URN_LENGTH_PREFIX, &["custom"], Vec::new()),
+        ),
+        (
+            "row".to_string(),
+            coder(URN_ROW, &[], row_schema().to_proto_bytes()),
+        ),
+        ("row_no_schema".to_string(), coder(URN_ROW, &[], Vec::new())),
+        // Refers to itself, so only the depth limit ends the check.
+        (
+            "cycle".to_string(),
+            coder(URN_KV, &["string", "cycle"], Vec::new()),
+        ),
+    ]);
+
+    for id in [
+        "varint",
+        "string",
+        "bool",
+        "double",
+        "gwindow",
+        "iwindow",
+        "kv",
+        "iterable",
+        "prefixed_custom",
+        "row",
+    ] {
+        assert!(skips_exactly(id, &coders), "{id}");
+    }
+    for id in [
+        "custom",
+        "kv_of_custom",
+        "nullable_custom",
+        "row_no_schema",
+        "cycle",
+        "missing",
+    ] {
+        assert!(!skips_exactly(id, &coders), "{id}");
+    }
 }

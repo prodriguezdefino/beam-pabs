@@ -32,7 +32,24 @@ use crate::pipeline::resources::ResourceHints;
 use crate::pipeline::{Pipeline, URN_PAR_DO};
 use crate::values::{PCollection, POutput};
 
-pub use crate::metrics::scope::process_wide_container;
+pub use crate::coders::display::ElementFormatter;
+pub use crate::metrics::context::MetricsContainer;
+pub use crate::metrics::scope::{
+    MetricsScope, TransformMetrics, TransformSelection, process_wide_container,
+    with_running_transform,
+};
+pub use crate::metrics::short_ids::ShortIdCache;
+pub use crate::metrics::system::{
+    data_channel_read_index, element_count, finish_bundle_msecs, process_bundle_msecs,
+    sampled_byte_size, start_bundle_msecs, total_msecs, work_completed, work_remaining,
+};
+pub use crate::pipeline::graph::{PipelineInner, next_id};
+pub use crate::transforms::co_group_by_key::{RawUnionValue, RawUnionValueCoder};
+pub use crate::transforms::combine::combine_internals::Table as CombineTable;
+pub use crate::transforms::combine::registered::{
+    CombineStage, CombineStages, Combining, KeyCoder, UnknownCombineStage,
+    registered_combine_handler,
+};
 pub use crate::transforms::create::create_handler;
 pub use crate::transforms::dofn::context::{
     BundleFinalizerCollector, FinalizationCallback, HandlerContext, PendingFinalizer,
@@ -43,17 +60,18 @@ pub use crate::transforms::dofn::sdf::dynamic_split::{
     DynamicSplitGuard, DynamicSplitHandler, DynamicSplitRegistrar, DynamicSplitResult,
     SdfDynamicSplitter,
 };
-pub use crate::transforms::dofn::sdf::splittable_dofn::{
+pub use crate::transforms::dofn::sdf::handler::SplittableDoFnHandler;
+pub use crate::transforms::dofn::sdf::stages::{
     SdfPairWithRestrictionHandler, SdfProcessSizedElementsHandler, SdfSplitAndSizeHandler,
-    SdfTruncateSizedRestrictionsHandler, SplittableDoFnHandler,
+    SdfTruncateSizedRestrictionsHandler,
 };
 pub use crate::transforms::dofn::side_input::{
     ScopedSideInputReader, SideInputElements, SideInputError, SideInputReader,
     extract_side_input_tags, extract_side_inputs,
 };
-pub use crate::transforms::dofn::state::{AnyStateSpec, UserStateReader};
+pub use crate::transforms::dofn::state::{AnyStateSpec, UserStateBackend, UserStateError};
 pub use crate::transforms::dofn::timer::{
-    TimeDomain, TimerCollector, TimerFamilySpec, TimerMutation,
+    TimeDomain, TimerChange, TimerCollector, TimerFamilySpec,
 };
 pub use crate::transforms::dofn::{
     DoFnHandler, FnRegistration, IntoParDoFn, PerWindow, Registered, RegisteredFn, Splittable,
@@ -71,16 +89,6 @@ pub use inventory;
 /// A foldhash `HashMap` for tables hashed per element. Crate-private, so public APIs
 /// keep the standard `HashMap` and foldhash stays out of the SDK's semver surface.
 pub(crate) type FastHashMap<K, V> = HashMap<K, V, foldhash::fast::RandomState>;
-
-pub use crate::coders::display::ElementFormatter;
-pub use crate::metrics::context::MetricsContainer;
-pub use crate::metrics::scope::{MetricsScope, TransformMetrics, TransformSelection};
-pub use crate::metrics::short_ids::ShortIdCache;
-pub use crate::metrics::system::{
-    data_channel_read_index, element_count, finish_bundle_msecs, process_bundle_msecs,
-    sampled_byte_size, start_bundle_msecs, total_msecs, work_completed, work_remaining,
-};
-pub use crate::pipeline::graph::PipelineInner;
 
 /// Adds one primitive `ParDo` to a pipeline's graph and registers its handler.
 /// Every `ParDo` primitive in the SDK goes through this builder. Only the name from
@@ -123,6 +131,7 @@ pub struct ParDoRegistration<'p> {
     requests_finalization: bool,
     requires_stable_input: bool,
     requires_time_sorted_input: bool,
+    on_window_expiration: String,
     resource_hints: Option<ResourceHints>,
     display_data: Vec<proto::DisplayData>,
 }
@@ -147,6 +156,7 @@ impl<'p> ParDoRegistration<'p> {
             requests_finalization: false,
             requires_stable_input: false,
             requires_time_sorted_input: false,
+            on_window_expiration: String::new(),
             resource_hints: None,
             display_data: Vec::new(),
         }
@@ -219,6 +229,15 @@ impl<'p> ParDoRegistration<'p> {
         self
     }
 
+    /// Names the event-time timer family that the runner fires once per key and window when
+    /// the window expires. Declare the family with
+    /// [`timer_family_specs`](Self::timer_family_specs).
+    /// The pipeline then carries `beam:requirement:pardo:on_window_expiration:v1`.
+    pub fn on_window_expiration(mut self, family: &str) -> Self {
+        self.on_window_expiration = family.to_string();
+        self
+    }
+
     /// Attaches resource hints, merged over any scoped hints. Empty hints are ignored.
     pub fn resource_hints(mut self, hints: ResourceHints) -> Self {
         self.resource_hints = (!hints.is_empty()).then_some(hints);
@@ -274,7 +293,7 @@ impl<'p> ParDoRegistration<'p> {
             requests_finalization: self.requests_finalization,
             requires_stable_input: self.requires_stable_input,
             requires_time_sorted_input: self.requires_time_sorted_input,
-            ..Default::default()
+            on_window_expiration_timer_family_spec: self.on_window_expiration,
         }
         .encode_to_vec();
         graph.add_transform_with_hints_and_display_data(

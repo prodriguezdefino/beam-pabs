@@ -171,6 +171,20 @@ pub fn process_wide_container() -> &'static MetricsContainer {
     &PROCESS_WIDE
 }
 
+/// Runs `f` with the id of the transform that runs on this thread, or `None` outside a
+/// transform. Log entries read it, so a log line in user code names its transform.
+pub fn with_running_transform<R>(f: impl FnOnce(Option<&str>) -> R) -> R {
+    CURRENT.with(|stack| {
+        let stack = stack.borrow();
+        let running = match stack.last() {
+            Some(Frame::Single { transform_id, .. }) => Some(transform_id.as_ref()),
+            Some(Frame::Transforms(metrics)) => metrics.running(),
+            None => None,
+        };
+        f(running.filter(|id| !id.is_empty()))
+    })
+}
+
 /// Runs `f` with the active container and transform, or the process-wide container with an empty
 /// transform name when no scope is active.
 pub(super) fn with_current(f: impl FnOnce(&MetricsContainer, &str)) {

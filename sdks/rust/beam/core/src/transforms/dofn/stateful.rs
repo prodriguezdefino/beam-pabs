@@ -19,16 +19,18 @@
 
 //! Keyed processing with typed user state and timers.
 
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use super::context::{FinishBundleContext, HandlerContext, ProcessContext, StatefulContext};
 use super::pardo::{IntoParDoFn, Stateful, process_each_window, process_value_each_window, sealed};
 use super::state::{
-    AnyStateSpec, BagState, BagStateSpec, MapState, MapStateSpec, OrderedListState,
-    OrderedListStateSpec, SetState, SetStateSpec, UserStateReader, ValueState, ValueStateSpec,
+    AnyStateSpec, BagState, BagStateSpec, MapState, MapStateSpec, MultimapState, MultimapStateSpec,
+    OrderedListState, OrderedListStateSpec, SetState, SetStateSpec, UserStateBackend,
+    UserStateError, ValueState, ValueStateSpec,
 };
-use super::timer::{TimeDomain, TimerFamilySpec};
-use crate::coders::{DefaultCoder, TimerRecord, WindowedHeader};
+use super::timer::{ON_WINDOW_EXPIRATION_FAMILY, TimeDomain, TimerFamilySpec};
+use crate::coders::{DefaultCoder, TimerAction, TimerRecord, WindowedHeader};
 use crate::transforms::{
     BundleHandler, DisplayDataBuilder, HandlerInstance, TransformFn, TypedElement,
 };
@@ -44,7 +46,8 @@ use crate::values::AnySideInput;
 /// [`StatefulContext::window`] (`on_timer` has no element to wrap in `Windowed`).
 ///
 /// The lifecycle is the lifecycle of [`DoFn`](crate::transforms::DoFn), with
-/// [`on_timer`](Self::on_timer) called for each fired timer.
+/// [`on_timer`](Self::on_timer) called for each fired timer and
+/// [`on_window_expiration`](Self::on_window_expiration) for each expired key and window.
 ///
 /// ```
 /// use beam::prelude::*;
@@ -116,6 +119,10 @@ pub trait StatefulDoFn: Clone + Send + Sync + 'static {
     /// The runner buffers and sorts them, so `process_element` can rely on the order.
     const REQUIRES_TIME_SORTED_INPUT: bool = false;
 
+    /// Set to `true` to get [`on_window_expiration`](Self::on_window_expiration) once for each
+    /// key and window that had input, when the window expires.
+    const ON_WINDOW_EXPIRATION: bool = false;
+
     /// Called once on each copy, when the bundle processor that owns it is created.
     fn setup(&mut self) -> crate::Result {
         Ok(())
@@ -135,7 +142,8 @@ pub trait StatefulDoFn: Clone + Send + Sync + 'static {
         ctx: &mut StatefulContext<'_, Self>,
     ) -> crate::Result;
 
-    /// Called when `timer` fires for `key`. `ctx.timestamp()` is the fire time.
+    /// Called when `timer` fires for `key`. `ctx.timestamp()` is the hold of the timer, and
+    /// outputs carry it. [`StatefulContext::fire_timestamp`] is the firing time.
     fn on_timer(
         &mut self,
         timer: Self::Timer,
@@ -144,6 +152,20 @@ pub trait StatefulDoFn: Clone + Send + Sync + 'static {
         ctx: &mut StatefulContext<'_, Self>,
     ) -> crate::Result {
         let _ = (timer, key, state, ctx);
+        Ok(())
+    }
+
+    /// Called once for `key` and the window of `ctx` when the input watermark passes the end
+    /// of the window plus the allowed lateness. Read the state here to emit what it buffers.
+    /// `ctx.timestamp()` is the output timestamp. It is in the window. Called only if
+    /// [`ON_WINDOW_EXPIRATION`](Self::ON_WINDOW_EXPIRATION) is `true`.
+    fn on_window_expiration(
+        &mut self,
+        key: &Self::Key,
+        state: &mut Self::State,
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> crate::Result {
+        let _ = (key, state, ctx);
         Ok(())
     }
 
@@ -171,44 +193,50 @@ pub trait StatefulDoFn: Clone + Send + Sync + 'static {
     }
 }
 
-/// Where state cells read and write: the state reader, the window and the encoded key.
+/// Where state cells read and write: the state backend, the window and the encoded key.
 pub struct StateBinding<'a> {
-    reader: Option<Arc<dyn UserStateReader>>,
-    window: &'a [u8],
-    key: &'a [u8],
+    backend: Option<Arc<dyn UserStateBackend>>,
+    window: Arc<[u8]>,
+    key: Arc<[u8]>,
+    _marker: PhantomData<&'a ()>,
 }
 
 impl<'a> StateBinding<'a> {
-    /// Binds to `window` and `key`. Without a reader, a cell fails to bind; `()` state does
+    /// Binds to `window` and `key`. Without a backend, a cell fails to bind; `()` state does
     /// not need one.
-    pub fn new(reader: Option<Arc<dyn UserStateReader>>, window: &'a [u8], key: &'a [u8]) -> Self {
+    pub fn new(
+        backend: Option<Arc<dyn UserStateBackend>>,
+        window: &'a [u8],
+        key: &'a [u8],
+    ) -> Self {
         Self {
-            reader,
-            window,
-            key,
+            backend,
+            window: Arc::from(window),
+            key: Arc::from(key),
+            _marker: PhantomData,
         }
     }
 
     fn parts(&self, id: &str) -> crate::Result<CellParts> {
-        let reader = self
-            .reader
+        let backend = self
+            .backend
             .as_ref()
-            .ok_or_else(|| format!("No active UserStateReader for state '{id}'"))?;
+            .ok_or_else(|| UserStateError::MissingBackend(id.to_string()))?;
         Ok(CellParts {
-            reader: Arc::clone(reader),
-            id: id.to_string(),
-            window: self.window.to_vec(),
-            key: self.key.to_vec(),
+            backend: Arc::clone(backend),
+            id: Arc::from(id),
+            window: Arc::clone(&self.window),
+            key: Arc::clone(&self.key),
         })
     }
 }
 
-/// What one state cell holds: where it reads, its state id, its window and its key.
+/// What one state cell holds: where it reads and writes, its state id, its window and its key.
 struct CellParts {
-    reader: Arc<dyn UserStateReader>,
-    id: String,
-    window: Vec<u8>,
-    key: Vec<u8>,
+    backend: Arc<dyn UserStateBackend>,
+    id: Arc<str>,
+    window: Arc<[u8]>,
+    key: Arc<[u8]>,
 }
 
 /// A struct of state cells. `#[derive(State)]` implements it; `()` has no cells.
@@ -246,12 +274,12 @@ impl<V: DefaultCoder> StateCell for BagState<V> {
 
     fn bind(id: &str, binding: &StateBinding<'_>) -> crate::Result<Self> {
         let CellParts {
-            reader,
+            backend,
             id,
             window,
             key,
         } = binding.parts(id)?;
-        Ok(BagState::new(reader, id, window, key))
+        Ok(BagState::new(backend, id, window, key))
     }
 }
 
@@ -272,12 +300,12 @@ impl<K: DefaultCoder, V: DefaultCoder> StateCell for MapState<K, V> {
 
     fn bind(id: &str, binding: &StateBinding<'_>) -> crate::Result<Self> {
         let CellParts {
-            reader,
+            backend,
             id,
             window,
             key,
         } = binding.parts(id)?;
-        Ok(MapState::new(reader, id, window, key))
+        Ok(MapState::new(backend, id, window, key))
     }
 }
 
@@ -291,6 +319,22 @@ impl<T: DefaultCoder> StateCell for SetState<T> {
     }
 }
 
+impl<K: DefaultCoder, V: DefaultCoder> StateCell for MultimapState<K, V> {
+    fn spec(id: &str) -> Arc<dyn AnyStateSpec> {
+        Arc::new(MultimapStateSpec::<K, V>::new(id))
+    }
+
+    fn bind(id: &str, binding: &StateBinding<'_>) -> crate::Result<Self> {
+        let CellParts {
+            backend,
+            id,
+            window,
+            key,
+        } = binding.parts(id)?;
+        Ok(MultimapState::new(backend, id, window, key))
+    }
+}
+
 impl<T: DefaultCoder> StateCell for OrderedListState<T> {
     fn spec(id: &str) -> Arc<dyn AnyStateSpec> {
         Arc::new(OrderedListStateSpec::<T>::new(id))
@@ -298,12 +342,12 @@ impl<T: DefaultCoder> StateCell for OrderedListState<T> {
 
     fn bind(id: &str, binding: &StateBinding<'_>) -> crate::Result<Self> {
         let CellParts {
-            reader,
+            backend,
             id,
             window,
             key,
         } = binding.parts(id)?;
-        Ok(OrderedListState::new(reader, id, window, key))
+        Ok(OrderedListState::new(backend, id, window, key))
     }
 }
 
@@ -358,6 +402,7 @@ impl<T: StatefulDoFn> IntoParDoFn<Stateful> for T {
     type Out = T::Out;
     const REQUIRES_STABLE_INPUT: bool = T::REQUIRES_STABLE_INPUT;
     const REQUIRES_TIME_SORTED_INPUT: bool = T::REQUIRES_TIME_SORTED_INPUT;
+    const ON_WINDOW_EXPIRATION: bool = T::ON_WINDOW_EXPIRATION;
 
     fn state_specs() -> Vec<Arc<dyn AnyStateSpec>> {
         T::State::specs()
@@ -393,6 +438,7 @@ impl<F: StatefulDoFn> StatefulDoFnHandler<F> {
         (key, value): (F::Key, F::Value),
         ctx: ProcessContext<'_, F::Out>,
     ) -> crate::Result {
+        // Encode the key once to scope user state cells and timers for this element.
         let key_bytes = key.encode()?;
         let mut state = F::State::bind(&ctx.state_binding(&key_bytes))?;
         let mut ctx = StatefulContext::new(ctx, key_bytes);
@@ -427,21 +473,39 @@ impl<F: StatefulDoFn> BundleHandler for StatefulDoFnHandler<F> {
         record: &TimerRecord,
         ctx: &mut HandlerContext<'_>,
     ) -> Result<(), String> {
-        if record.clear {
+        let TimerAction::Set {
+            fire_timestamp,
+            hold_timestamp,
+            pane,
+        } = record.action
+        else {
             return Ok(());
-        }
-        let timer = F::Timer::from_fired(family, &record.dynamic_tag)
-            .ok_or_else(|| format!("A timer fired in the undeclared family '{family}'"))?;
+        };
+        let fired = match family {
+            ON_WINDOW_EXPIRATION_FAMILY if F::ON_WINDOW_EXPIRATION => Fired::WindowExpiration,
+            _ => Fired::User(
+                F::Timer::from_fired(family, &record.dynamic_tag)
+                    .ok_or_else(|| format!("A timer fired in the undeclared family '{family}'"))?,
+            ),
+        };
         let key = F::Key::decode(&record.user_key)
             .map_err(|e| format!("Failed to decode the key of a fired timer: {e}"))?;
-        let header = WindowedHeader::new(record.fire_timestamp, &record.windows, record.pane);
+        let header = WindowedHeader::new(hold_timestamp.as_millis(), &record.windows, pane);
         let pctx = ctx
             .as_process_context::<F::Out>()
             .with_key_bytes(record.user_key.as_slice())
             .with_header(&header);
         let mut state = F::State::bind(&pctx.state_binding(&record.user_key))?;
-        let mut ctx = StatefulContext::new(pctx, record.user_key.clone());
-        Ok(self.func.on_timer(timer, &key, &mut state, &mut ctx)?)
+        let domain = match &fired {
+            Fired::User(timer) => timer.time_domain(),
+            Fired::WindowExpiration => TimeDomain::EventTime,
+        };
+        let mut ctx =
+            StatefulContext::new(pctx, record.user_key.clone()).fired(domain, fire_timestamp);
+        Ok(match fired {
+            Fired::User(timer) => self.func.on_timer(timer, &key, &mut state, &mut ctx),
+            Fired::WindowExpiration => self.func.on_window_expiration(&key, &mut state, &mut ctx),
+        }?)
     }
 
     fn finish_bundle(&mut self, ctx: &mut HandlerContext<'_>) -> Result<(), String> {
@@ -456,4 +520,12 @@ impl<F: StatefulDoFn> BundleHandler for StatefulDoFnHandler<F> {
     fn instantiate(&self) -> HandlerInstance {
         Box::new(self.clone())
     }
+}
+
+/// A timer that fired for a [`StatefulDoFn`].
+enum Fired<T> {
+    /// A timer of a family that the user declared.
+    User(T),
+    /// The end of the window plus the allowed lateness.
+    WindowExpiration,
 }

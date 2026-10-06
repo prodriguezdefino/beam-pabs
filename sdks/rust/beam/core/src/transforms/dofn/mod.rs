@@ -48,5 +48,5 @@ pub use registered::{
     FnRegistration, Registered, RegisteredFn, Splittable, build_registered, encode_registered,
     registered_handler,
 };
-pub use state::{BagState, MapState, OrderedListState, SetState, ValueState};
+pub use state::{BagState, MapState, MultimapState, OrderedListState, SetState, ValueState};
 pub use stateful::{NoTimers, StateBinding, StateCell, StateCells, StatefulDoFn, TimerFamilies};

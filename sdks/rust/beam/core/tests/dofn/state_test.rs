@@ -20,32 +20,40 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use beam::internals::{StateCell, UserStateReader};
+use beam::internals::{StateCell, UserStateBackend, UserStateError};
 use beam::pipeline::Pipeline;
-use beam::pipeline::constants::{
+use beam::pipeline::{
     URN_REQUIREMENT_STATEFUL, URN_USER_STATE_BAG, URN_USER_STATE_MULTIMAP,
     URN_USER_STATE_ORDERED_LIST,
 };
 use beam::prelude::*;
-use beam::transforms::{BagState, MapState, OrderedListState, SetState, ValueState};
+use beam::transforms::{BagState, MapState, MultimapState, OrderedListState, SetState, ValueState};
 use beam::transforms::{Create, ParDo};
 
 type StateMapKey = (String, Vec<u8>, Vec<u8>);
 type StateCells = HashMap<StateMapKey, Vec<Vec<u8>>>;
-type MapEntries = HashMap<Vec<u8>, Vec<u8>>;
+type MapEntries = HashMap<Vec<u8>, Vec<Vec<u8>>>;
 type OrderedListEntries = std::collections::BTreeMap<i64, Vec<Vec<u8>>>;
 
 #[derive(Default, Debug)]
-struct TestStateReader {
+struct TestStateBackend {
     cells: Mutex<StateCells>,
     map_cells: Mutex<HashMap<StateMapKey, MapEntries>>,
     ordered_list_cells: Mutex<HashMap<StateMapKey, OrderedListEntries>>,
 }
 
-impl UserStateReader for TestStateReader {
-    fn get_state(&self, state_id: &str, window: &[u8], key: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+impl UserStateBackend for TestStateBackend {
+    fn get_state(
+        &self,
+        state_id: &str,
+        window: &[u8],
+        key: &[u8],
+    ) -> Result<Vec<Vec<u8>>, UserStateError> {
         let map_key = (state_id.to_string(), window.to_vec(), key.to_vec());
-        let guard = self.cells.lock().map_err(|e| format!("Lock error: {e}"))?;
+        let guard = self
+            .cells
+            .lock()
+            .map_err(|e| UserStateError::Other(format!("Lock error: {e}")))?;
         Ok(guard.get(&map_key).cloned().unwrap_or_default())
     }
 
@@ -55,16 +63,22 @@ impl UserStateReader for TestStateReader {
         window: &[u8],
         key: &[u8],
         element: Vec<u8>,
-    ) -> Result<(), String> {
+    ) -> Result<(), UserStateError> {
         let map_key = (state_id.to_string(), window.to_vec(), key.to_vec());
-        let mut guard = self.cells.lock().map_err(|e| format!("Lock error: {e}"))?;
+        let mut guard = self
+            .cells
+            .lock()
+            .map_err(|e| UserStateError::Other(format!("Lock error: {e}")))?;
         guard.entry(map_key).or_default().push(element);
         Ok(())
     }
 
-    fn clear_state(&self, state_id: &str, window: &[u8], key: &[u8]) -> Result<(), String> {
+    fn clear_state(&self, state_id: &str, window: &[u8], key: &[u8]) -> Result<(), UserStateError> {
         let map_key = (state_id.to_string(), window.to_vec(), key.to_vec());
-        let mut guard = self.cells.lock().map_err(|e| format!("Lock error: {e}"))?;
+        let mut guard = self
+            .cells
+            .lock()
+            .map_err(|e| UserStateError::Other(format!("Lock error: {e}")))?;
         guard.remove(&map_key);
         Ok(())
     }
@@ -75,16 +89,16 @@ impl UserStateReader for TestStateReader {
         window: &[u8],
         key: &[u8],
         map_key: &[u8],
-    ) -> Result<Vec<Vec<u8>>, String> {
+    ) -> Result<Vec<Vec<u8>>, UserStateError> {
         let cell_key = (state_id.to_string(), window.to_vec(), key.to_vec());
         let guard = self
             .map_cells
             .lock()
-            .map_err(|e| format!("Lock error: {e}"))?;
+            .map_err(|e| UserStateError::Other(format!("Lock error: {e}")))?;
         if let Some(entries) = guard.get(&cell_key)
-            && let Some(val) = entries.get(map_key)
+            && let Some(values) = entries.get(map_key)
         {
-            return Ok(vec![val.clone()]);
+            return Ok(values.clone());
         }
         Ok(Vec::new())
     }
@@ -94,12 +108,12 @@ impl UserStateReader for TestStateReader {
         state_id: &str,
         window: &[u8],
         key: &[u8],
-    ) -> Result<Vec<Vec<u8>>, String> {
+    ) -> Result<Vec<Vec<u8>>, UserStateError> {
         let cell_key = (state_id.to_string(), window.to_vec(), key.to_vec());
         let guard = self
             .map_cells
             .lock()
-            .map_err(|e| format!("Lock error: {e}"))?;
+            .map_err(|e| UserStateError::Other(format!("Lock error: {e}")))?;
         Ok(guard
             .get(&cell_key)
             .map(|m| m.keys().cloned().collect())
@@ -113,13 +127,38 @@ impl UserStateReader for TestStateReader {
         key: &[u8],
         map_key: Vec<u8>,
         element: Vec<u8>,
-    ) -> Result<(), String> {
+    ) -> Result<(), UserStateError> {
         let cell_key = (state_id.to_string(), window.to_vec(), key.to_vec());
         let mut guard = self
             .map_cells
             .lock()
-            .map_err(|e| format!("Lock error: {e}"))?;
-        guard.entry(cell_key).or_default().insert(map_key, element);
+            .map_err(|e| UserStateError::Other(format!("Lock error: {e}")))?;
+        guard
+            .entry(cell_key)
+            .or_default()
+            .insert(map_key, vec![element]);
+        Ok(())
+    }
+
+    fn append_map_state(
+        &self,
+        state_id: &str,
+        window: &[u8],
+        key: &[u8],
+        map_key: Vec<u8>,
+        element: Vec<u8>,
+    ) -> Result<(), UserStateError> {
+        let cell_key = (state_id.to_string(), window.to_vec(), key.to_vec());
+        let mut guard = self
+            .map_cells
+            .lock()
+            .map_err(|e| UserStateError::Other(format!("Lock error: {e}")))?;
+        guard
+            .entry(cell_key)
+            .or_default()
+            .entry(map_key)
+            .or_default()
+            .push(element);
         Ok(())
     }
 
@@ -129,24 +168,29 @@ impl UserStateReader for TestStateReader {
         window: &[u8],
         key: &[u8],
         map_key: &[u8],
-    ) -> Result<(), String> {
+    ) -> Result<(), UserStateError> {
         let cell_key = (state_id.to_string(), window.to_vec(), key.to_vec());
         let mut guard = self
             .map_cells
             .lock()
-            .map_err(|e| format!("Lock error: {e}"))?;
+            .map_err(|e| UserStateError::Other(format!("Lock error: {e}")))?;
         if let Some(entries) = guard.get_mut(&cell_key) {
             entries.remove(map_key);
         }
         Ok(())
     }
 
-    fn clear_map_state(&self, state_id: &str, window: &[u8], key: &[u8]) -> Result<(), String> {
+    fn clear_map_state(
+        &self,
+        state_id: &str,
+        window: &[u8],
+        key: &[u8],
+    ) -> Result<(), UserStateError> {
         let cell_key = (state_id.to_string(), window.to_vec(), key.to_vec());
         let mut guard = self
             .map_cells
             .lock()
-            .map_err(|e| format!("Lock error: {e}"))?;
+            .map_err(|e| UserStateError::Other(format!("Lock error: {e}")))?;
         guard.remove(&cell_key);
         Ok(())
     }
@@ -158,12 +202,12 @@ impl UserStateReader for TestStateReader {
         key: &[u8],
         from: i64,
         to: i64,
-    ) -> Result<Vec<(i64, Vec<u8>)>, String> {
+    ) -> Result<Vec<(i64, Vec<u8>)>, UserStateError> {
         let cell_key = (state_id.to_string(), window.to_vec(), key.to_vec());
         let guard = self
             .ordered_list_cells
             .lock()
-            .map_err(|e| format!("Lock error: {e}"))?;
+            .map_err(|e| UserStateError::Other(format!("Lock error: {e}")))?;
         let Some(entries) = guard.get(&cell_key) else {
             return Ok(Vec::new());
         };
@@ -183,12 +227,12 @@ impl UserStateReader for TestStateReader {
         key: &[u8],
         timestamp: i64,
         element: Vec<u8>,
-    ) -> Result<(), String> {
+    ) -> Result<(), UserStateError> {
         let cell_key = (state_id.to_string(), window.to_vec(), key.to_vec());
         let mut guard = self
             .ordered_list_cells
             .lock()
-            .map_err(|e| format!("Lock error: {e}"))?;
+            .map_err(|e| UserStateError::Other(format!("Lock error: {e}")))?;
         guard
             .entry(cell_key)
             .or_default()
@@ -205,12 +249,12 @@ impl UserStateReader for TestStateReader {
         key: &[u8],
         from: i64,
         to: i64,
-    ) -> Result<(), String> {
+    ) -> Result<(), UserStateError> {
         let cell_key = (state_id.to_string(), window.to_vec(), key.to_vec());
         let mut guard = self
             .ordered_list_cells
             .lock()
-            .map_err(|e| format!("Lock error: {e}"))?;
+            .map_err(|e| UserStateError::Other(format!("Lock error: {e}")))?;
         if let Some(entries) = guard.get_mut(&cell_key) {
             entries.retain(|&ts, _| ts < from || ts >= to);
         }
@@ -222,12 +266,12 @@ impl UserStateReader for TestStateReader {
         state_id: &str,
         window: &[u8],
         key: &[u8],
-    ) -> Result<(), String> {
+    ) -> Result<(), UserStateError> {
         let cell_key = (state_id.to_string(), window.to_vec(), key.to_vec());
         let mut guard = self
             .ordered_list_cells
             .lock()
-            .map_err(|e| format!("Lock error: {e}"))?;
+            .map_err(|e| UserStateError::Other(format!("Lock error: {e}")))?;
         guard.remove(&cell_key);
         Ok(())
     }
@@ -306,10 +350,10 @@ fn test_stateful_pardo_populates_pipeline_requirements() {
 
 #[test]
 fn test_bag_state_and_value_state_in_memory_lifecycle() {
-    let reader = Arc::new(TestStateReader::default());
+    let backend = Arc::new(TestStateBackend::default());
 
     let mut bag = BagState::<i64>::new(
-        reader.clone(),
+        backend.clone(),
         "my_bag".to_string(),
         vec![],
         b"key1".to_vec(),
@@ -324,7 +368,7 @@ fn test_bag_state_and_value_state_in_memory_lifecycle() {
 
     // Verify key isolation.
     let mut other_bag = BagState::<i64>::new(
-        reader.clone(),
+        backend.clone(),
         "my_bag".to_string(),
         vec![],
         b"key2".to_vec(),
@@ -338,7 +382,7 @@ fn test_bag_state_and_value_state_in_memory_lifecycle() {
     assert_eq!(other_bag.read().unwrap(), vec![999]);
 
     // ValueState wrapping BagState.
-    let val_bag = BagState::<String>::new(reader, "my_val".to_string(), vec![], b"key1".to_vec());
+    let val_bag = BagState::<String>::new(backend, "my_val".to_string(), vec![], b"key1".to_vec());
     let mut val_state = ValueState::new(val_bag);
 
     assert_eq!(val_state.read().unwrap(), None);
@@ -355,8 +399,8 @@ fn test_bag_state_and_value_state_in_memory_lifecycle() {
 
 #[test]
 fn test_state_cell_binding_lifecycle() {
-    let reader: Arc<dyn UserStateReader> = Arc::new(TestStateReader::default());
-    let binding = beam::internals::StateBinding::new(Some(reader), b"win", b"key1");
+    let backend: Arc<dyn UserStateBackend> = Arc::new(TestStateBackend::default());
+    let binding = beam::internals::StateBinding::new(Some(backend), b"win", b"key1");
 
     let mut bag = <BagState<i64> as StateCell>::bind("bag", &binding).expect("bind");
     bag.append(42).unwrap();
@@ -377,13 +421,13 @@ fn test_state_cell_binding_lifecycle() {
 }
 
 #[test]
-fn without_a_state_reader_cells_fail_to_bind_and_no_state_binds() {
+fn without_a_state_backend_cells_fail_to_bind_and_no_state_binds() {
     use beam::internals::StateCells;
 
     let binding = beam::internals::StateBinding::new(None, b"win", b"key1");
     let error = <BagState<i64> as StateCell>::bind("bag", &binding)
         .err()
-        .expect("a cell needs a state reader");
+        .expect("a cell needs a state backend");
     assert!(error.to_string().contains("state 'bag'"), "{error}");
     assert!(<() as StateCells>::bind(&binding).is_ok());
 }
@@ -413,10 +457,10 @@ fn test_map_and_set_state_spec_proto_generation() {
 
 #[test]
 fn test_map_state_and_set_state_in_memory_lifecycle() {
-    let reader = Arc::new(TestStateReader::default());
+    let backend = Arc::new(TestStateBackend::default());
 
     let mut map = MapState::<String, i64>::new(
-        reader.clone(),
+        backend.clone(),
         "scores".to_string(),
         vec![],
         b"team_red".to_vec(),
@@ -454,7 +498,7 @@ fn test_map_state_and_set_state_in_memory_lifecycle() {
 
     // SetState testing
     let map_for_set =
-        MapState::<String, ()>::new(reader, "visited".to_string(), vec![], b"user_123".to_vec());
+        MapState::<String, ()>::new(backend, "visited".to_string(), vec![], b"user_123".to_vec());
     let mut set = SetState::new(map_for_set);
 
     assert!(!set.contains(&"page_a".to_string()).unwrap());
@@ -480,6 +524,68 @@ fn test_map_state_and_set_state_in_memory_lifecycle() {
 }
 
 #[test]
+fn multimap_state_spec_encodes_a_multimap_spec_with_both_coders() {
+    let p = Pipeline::new();
+    let spec = <MultimapState<String, i64> as StateCell>::spec("tags");
+    assert_eq!(spec.name(), "tags");
+    let proto = spec.register_and_encode(&p);
+    assert_eq!(
+        proto.protocol.as_ref().map(|f| f.urn.as_str()),
+        Some(URN_USER_STATE_MULTIMAP)
+    );
+    let Some(model::pipeline::state_spec::Spec::MultimapSpec(multimap)) = proto.spec else {
+        panic!("expected a multimap spec, got {:?}", proto.spec);
+    };
+    assert!(!multimap.key_coder_id.is_empty());
+    assert!(!multimap.value_coder_id.is_empty());
+    assert_ne!(multimap.key_coder_id, multimap.value_coder_id);
+}
+
+#[test]
+fn multimap_state_keeps_every_value_of_a_key() {
+    let backend: Arc<dyn UserStateBackend> = Arc::new(TestStateBackend::default());
+    let binding = beam::internals::StateBinding::new(Some(backend), b"win", b"user");
+    let mut tags = <MultimapState<String, i64> as StateCell>::bind("tags", &binding).expect("bind");
+    let (a, b, c) = ("a".to_string(), "b".to_string(), "c".to_string());
+
+    assert_eq!(tags.get(&a).unwrap(), Vec::<i64>::new());
+    assert!(!tags.contains_key(&a).unwrap());
+    assert_eq!(tags.keys().unwrap(), Vec::<String>::new());
+
+    tags.put(a.clone(), 1).unwrap();
+    tags.put(a.clone(), 2).unwrap();
+    tags.put(a.clone(), 2).unwrap();
+    tags.put(b.clone(), 10).unwrap();
+    assert_eq!(
+        tags.get(&a).unwrap(),
+        vec![1, 2, 2],
+        "put adds, duplicates stay"
+    );
+    assert_eq!(tags.get(&b).unwrap(), vec![10]);
+    assert!(tags.contains_key(&b).unwrap());
+    assert!(!tags.contains_key(&c).unwrap());
+    let mut keys = tags.keys().unwrap();
+    keys.sort();
+    assert_eq!(keys, vec![a.clone(), b.clone()]);
+    let mut entries = tags.entries().unwrap();
+    entries.sort();
+    assert_eq!(
+        entries,
+        vec![(a.clone(), vec![1, 2, 2]), (b.clone(), vec![10])]
+    );
+
+    tags.remove(&a).unwrap();
+    assert_eq!(tags.get(&a).unwrap(), Vec::<i64>::new());
+    assert_eq!(tags.entries().unwrap(), vec![(b, vec![10])]);
+    tags.put(a.clone(), 3).unwrap();
+    assert_eq!(tags.get(&a).unwrap(), vec![3], "a removed key starts empty");
+
+    tags.clear().unwrap();
+    assert_eq!(tags.keys().unwrap(), Vec::<String>::new());
+    assert_eq!(tags.entries().unwrap(), Vec::<(String, Vec<i64>)>::new());
+}
+
+#[test]
 fn test_ordered_list_state_spec_proto_generation() {
     let p = Pipeline::new();
 
@@ -495,10 +601,10 @@ fn test_ordered_list_state_spec_proto_generation() {
 
 #[test]
 fn test_ordered_list_state_in_memory_lifecycle() {
-    let reader = Arc::new(TestStateReader::default());
+    let backend = Arc::new(TestStateBackend::default());
 
     let mut list = OrderedListState::<String>::new(
-        reader,
+        backend,
         "events".to_string(),
         vec![],
         b"device_42".to_vec(),
