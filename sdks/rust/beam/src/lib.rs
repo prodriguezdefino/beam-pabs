@@ -92,6 +92,14 @@ pub mod io {
     /// Avro I/O. The transforms are in `beam::io::avro::avroio`.
     #[cfg(feature = "avro")]
     pub use avro_io as avro;
+
+    /// Cross-language Kafka I/O: `beam::io::kafka::KafkaRead` and `KafkaWrite`.
+    #[cfg(feature = "kafka")]
+    pub use kafka_io as kafka;
+
+    /// Managed I/O: `beam::io::ManagedRead::new("Managed Read(ICEBERG)", managed::ICEBERG)`.
+    #[cfg(feature = "managed")]
+    pub use managed_io as managed;
 }
 
 pub mod runners {

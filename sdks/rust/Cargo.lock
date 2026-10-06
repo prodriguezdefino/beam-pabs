@@ -119,6 +119,8 @@ dependencies = [
  "apache-beam-io-arrow",
  "apache-beam-io-avro",
  "apache-beam-io-file",
+ "apache-beam-io-kafka",
+ "apache-beam-io-managed",
  "apache-beam-io-parquet",
  "apache-beam-model",
  "apache-beam-runner-prism",
@@ -275,6 +277,37 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "apache-beam-io-kafka"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam-core",
+ "apache-beam-external",
+ "apache-beam-io-managed",
+ "apache-beam-model",
+ "prost",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+]
+
+[[package]]
+name = "apache-beam-io-managed"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam-core",
+ "apache-beam-external",
+ "apache-beam-model",
+ "prost",
+ "serde",
+ "serde-saphyr",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tonic",
 ]
 
 [[package]]

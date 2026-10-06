@@ -27,6 +27,8 @@ members = [
     "beam/io/arrow",
     "beam/io/parquet",
     "beam/io/avro",
+    "beam/io/managed",
+    "beam/io/kafka",
     "beam/test-utils",
     "beam/harness",
     "beam/external",
@@ -112,6 +114,8 @@ harness = { package = "apache-beam-harness", path = "beam/harness", version = "2
 external = { package = "apache-beam-external", path = "beam/external", version = "2.78.0-SNAPSHOT" }
 expansion = { package = "apache-beam-expansion", path = "beam/expansion", version = "2.78.0-SNAPSHOT" }
 file = { package = "apache-beam-io-file", path = "beam/io/file", version = "2.78.0-SNAPSHOT" }
+kafka_io = { package = "apache-beam-io-kafka", path = "beam/io/kafka", version = "2.78.0-SNAPSHOT" }
+managed_io = { package = "apache-beam-io-managed", path = "beam/io/managed", version = "2.78.0-SNAPSHOT" }
 arrow_io = { package = "apache-beam-io-arrow", path = "beam/io/arrow", version = "2.78.0-SNAPSHOT" }
 parquet_io = { package = "apache-beam-io-parquet", path = "beam/io/parquet", version = "2.78.0-SNAPSHOT" }
 avro_io = { package = "apache-beam-io-avro", path = "beam/io/avro", version = "2.78.0-SNAPSHOT" }
