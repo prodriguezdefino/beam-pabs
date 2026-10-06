@@ -45,7 +45,9 @@ foldhash = { workspace = true }
 arc-swap = { workspace = true }
 
 [dev-dependencies]
+beam = { package = "apache-beam-core", path = "../core", version = "2.79.0-SNAPSHOT", features = ["derive"] }
 beam_harness = { package = "apache-beam-harness", path = "." }
+serde = { workspace = true }
 beam_test_utils = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 

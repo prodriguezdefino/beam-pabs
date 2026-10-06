@@ -137,21 +137,18 @@ impl Outbound {
         Some(limit.saturating_sub(oldest.elapsed()))
     }
 
+    /// Appends one timer to the buffer of timer family `family` through `write`. `family` is
+    /// the index of the family in the families given to [`DataManager::outbound`]. Fails if
+    /// `family` is unknown.
+    ///
+    /// [`DataManager::outbound`]: super::DataManager::outbound
     pub fn write_timer(
         &mut self,
-        transform_id: &str,
-        family_id: &str,
+        family: usize,
         write: impl FnOnce(&mut Vec<u8>) -> std::io::Result<()>,
     ) -> Result<(), DataError> {
-        let Some((_, _, buf)) = self
-            .timers
-            .iter_mut()
-            .find(|(t, f, _)| t == transform_id && f == family_id)
-        else {
-            return Err(DataError::UnknownTimerFamily {
-                transform: transform_id.to_string(),
-                family: family_id.to_string(),
-            });
+        let Some((_, _, buf)) = self.timers.get_mut(family) else {
+            return Err(DataError::UnknownTimerFamily(family));
         };
         let before = buf.len();
         write(buf)?;

@@ -274,7 +274,7 @@ async fn outbound_streams_timers_and_flushes_at_a_megabyte() {
 
     let mut peak_buffered = 0;
     for _ in 0..2_000_000 {
-        out.write_timer("t_id", "f_id", |buf| {
+        out.write_timer(0, |buf| {
             buf.extend_from_slice(b"t"); // 1 byte timer for test
             Ok(())
         })
@@ -309,7 +309,7 @@ async fn outbound_time_based_flush() {
     let dm = DataManager::new(tx).with_flush_time_limit(Some(Duration::from_millis(50)));
     let mut out = dm.outbound("", "inst", std::iter::empty(), [("t_id", "f_id")]);
 
-    out.write_timer("t_id", "f_id", |buf| {
+    out.write_timer(0, |buf| {
         buf.push(1);
         Ok(())
     })
