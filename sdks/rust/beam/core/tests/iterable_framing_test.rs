@@ -37,10 +37,33 @@
 
 use std::collections::HashMap;
 
-use beam::coders::{
-    Coder, Context, IterableCoder, URN_ITERABLE, URN_VARINT, VarIntCoder, skip_coder_value,
-};
+use beam::coders::{Coder, Context, IterableCoder, URN_ITERABLE, URN_VARINT, VarIntCoder};
 use model::pipeline as proto;
+
+/// Skips with [`skip_coder_value`] and with a compiled [`SkipPlan`], and checks that both end
+/// at the same position with the same result. Returns the [`skip_coder_value`] result.
+fn skip_coder_value(
+    cursor: &mut &[u8],
+    coder_id: &str,
+    coders: &HashMap<String, model::pipeline::Coder>,
+    nested: bool,
+) -> Result<(), std::io::Error> {
+    let mut planned = *cursor;
+    let plan_result = beam::coders::SkipPlan::new(coder_id, coders).skip(&mut planned, nested);
+    let result = beam::coders::skip_coder_value(cursor, coder_id, coders, nested);
+    match (&result, &plan_result) {
+        (Ok(()), Ok(())) => assert_eq!(cursor.len(), planned.len(), "{coder_id}"),
+        (Err(a), Err(b)) => {
+            assert_eq!(
+                (a.kind(), a.to_string()),
+                (b.kind(), b.to_string()),
+                "{coder_id}"
+            );
+        }
+        _ => panic!("{coder_id}: skip_coder_value {result:?}, SkipPlan {plan_result:?}"),
+    }
+    result
+}
 
 /// Builds the inline chunked encoding: `-1`, then `(chunk header, elements)` pairs, then a
 /// `0` header.

@@ -27,7 +27,7 @@ use std::marker::PhantomData;
 
 use super::pvalue::{PInput, POutput};
 use crate::pipeline::Pipeline;
-use crate::transforms::PTransform;
+use crate::transforms::{PTransform, TryPTransform};
 use model::pipeline as proto;
 
 /// Whether a [`PCollection`] is bounded (finite) or unbounded (streaming). Pipeline
@@ -152,6 +152,21 @@ impl<T: 'static> PCollection<T> {
             })
     }
 
+    /// Applies a [`TryPTransform`] to this PCollection under the name `name`.
+    pub fn try_apply<Tform>(
+        &self,
+        name: impl Into<String>,
+        transform: Tform,
+    ) -> Result<Tform::Output, Tform::Error>
+    where
+        Tform: TryPTransform<Self>,
+    {
+        self.pipeline
+            .try_apply_scoped(&name.into(), PInput::pcollection_ids(self), || {
+                transform.try_expand(self)
+            })
+    }
+
     /// Replaces the coder of this PCollection in the pipeline graph. The coder must encode `T`.
     /// Call it only on the output of the transform that is being expanded.
     pub(crate) fn with_coder_id(mut self, coder_id: String) -> Self {
@@ -179,6 +194,24 @@ impl<T: 'static> PCollection<T> {
             .then_some(self.coder_id.as_str())
     }
 
+    /// Gives this PCollection the coder that `derive` builds from the coder of `source`, for a
+    /// transform whose output holds the elements of `source`: a row then keeps its schema.
+    /// Keeps the coder of `T` while `source` has no coder, for example before a cross-language
+    /// expansion replies. Call it only on the output of the transform that is being expanded.
+    pub fn with_coder_derived_from<U: 'static>(
+        self,
+        source: &PCollection<U>,
+        derive: impl FnOnce(&Pipeline, &str) -> String,
+    ) -> Self {
+        match source.registered_coder_id() {
+            Some(coder_id) => {
+                let derived = derive(&self.pipeline, coder_id);
+                self.with_coder_id(derived)
+            }
+            None => self,
+        }
+    }
+
     /// Gives this PCollection the coder of `source`, which has the same element type. A
     /// transform that passes its elements through keeps their coder, so a row keeps its schema.
     pub(crate) fn with_coder_of(self, source: &PCollection<T>) -> Self {
@@ -186,6 +219,28 @@ impl<T: 'static> PCollection<T> {
             Some(coder_id) => self.with_coder_id(coder_id.to_string()),
             None => self,
         }
+    }
+
+    /// Replaces the windowing strategy of this PCollection in the pipeline graph.
+    pub(crate) fn with_windowing_strategy_id(self, windowing_strategy_id: String) -> Self {
+        if let Some(pcoll) = self
+            .pipeline
+            .lock()
+            .components
+            .pcollections
+            .get_mut(&self.id)
+        {
+            pcoll
+                .windowing_strategy_id
+                .clone_from(&windowing_strategy_id);
+        }
+        self
+    }
+
+    /// Gives this PCollection the windowing strategy of `source`.
+    pub(crate) fn with_windowing_strategy_of<U: 'static>(self, source: &PCollection<U>) -> Self {
+        let ws_id = source.windowing_strategy_id();
+        self.with_windowing_strategy_id(ws_id)
     }
 }
 
@@ -281,6 +336,7 @@ impl<T: 'static> PCollectionList<T> {
         &self.pipeline
     }
 
+    /// Creates an empty list in `pipeline`.
     pub fn empty(pipeline: Pipeline) -> Self {
         Self {
             pipeline,
@@ -297,20 +353,48 @@ impl<T: 'static> PCollectionList<T> {
         }
     }
 
+    /// Creates a collection list from `pipeline` and `collections`.
+    ///
+    /// Accepts an empty `collections` vector. Records a construction error if any collection
+    /// belongs to a different pipeline.
     pub fn from_vec(pipeline: Pipeline, collections: Vec<PCollection<T>>) -> Self {
+        for collection in &collections {
+            if !collection.pipeline().same_as(&pipeline) {
+                pipeline.record_construction_error(
+                    crate::pipeline::PipelineError::InvalidConstruction {
+                        transform_id: "PCollectionList".to_string(),
+                        reason:
+                            "all collections in a PCollectionList must belong to the same pipeline"
+                                .to_string(),
+                    },
+                );
+                break;
+            }
+        }
         Self {
             pipeline,
             collections,
         }
     }
 
-    /// Appends `collection` and returns the list, for chaining.
+    /// Appends `collection` and returns the list.
     pub fn and(mut self, collection: PCollection<T>) -> Self {
-        self.collections.push(collection);
+        self.push(collection);
         self
     }
 
+    /// Appends `collection` to the list. Records a construction error if `collection` belongs to
+    /// a different pipeline.
     pub fn push(&mut self, collection: PCollection<T>) {
+        if !collection.pipeline().same_as(&self.pipeline) {
+            self.pipeline.record_construction_error(
+                crate::pipeline::PipelineError::InvalidConstruction {
+                    transform_id: "PCollectionList".to_string(),
+                    reason: "all collections in a PCollectionList must belong to the same pipeline"
+                        .to_string(),
+                },
+            );
+        }
         self.collections.push(collection);
     }
 
@@ -343,6 +427,21 @@ impl<T: 'static> PCollectionList<T> {
         self.pipeline
             .apply_scoped(&name.into(), PInput::pcollection_ids(self), || {
                 transform.expand(self)
+            })
+    }
+
+    /// Applies a [`TryPTransform`] to this collection list under the name `name`.
+    pub fn try_apply<Tform>(
+        &self,
+        name: impl Into<String>,
+        transform: Tform,
+    ) -> Result<Tform::Output, Tform::Error>
+    where
+        Tform: TryPTransform<Self>,
+    {
+        self.pipeline
+            .try_apply_scoped(&name.into(), PInput::pcollection_ids(self), || {
+                transform.try_expand(self)
             })
     }
 

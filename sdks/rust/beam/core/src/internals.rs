@@ -32,7 +32,24 @@ use crate::pipeline::resources::ResourceHints;
 use crate::pipeline::{Pipeline, URN_PAR_DO};
 use crate::values::{PCollection, POutput};
 
-pub use crate::metrics::scope::process_wide_container;
+pub use crate::coders::display::ElementFormatter;
+pub use crate::metrics::context::MetricsContainer;
+pub use crate::metrics::scope::{
+    MetricsScope, TransformMetrics, TransformSelection, process_wide_container,
+    with_running_transform,
+};
+pub use crate::metrics::short_ids::ShortIdCache;
+pub use crate::metrics::system::{
+    data_channel_read_index, element_count, finish_bundle_msecs, process_bundle_msecs,
+    sampled_byte_size, start_bundle_msecs, total_msecs, work_completed, work_remaining,
+};
+pub use crate::pipeline::graph::{PipelineInner, next_id};
+pub use crate::transforms::co_group_by_key::{RawUnionValue, RawUnionValueCoder};
+pub use crate::transforms::combine::combine_internals::Table as CombineTable;
+pub use crate::transforms::combine::registered::{
+    CombineStage, CombineStages, Combining, KeyCoder, UnknownCombineStage,
+    registered_combine_handler,
+};
 pub use crate::transforms::create::create_handler;
 pub use crate::transforms::dofn::context::{
     BundleFinalizerCollector, FinalizationCallback, HandlerContext, PendingFinalizer,
@@ -51,9 +68,9 @@ pub use crate::transforms::dofn::side_input::{
     ScopedSideInputReader, SideInputElements, SideInputError, SideInputReader,
     extract_side_input_tags, extract_side_inputs,
 };
-pub use crate::transforms::dofn::state::{AnyStateSpec, UserStateReader};
+pub use crate::transforms::dofn::state::{AnyStateSpec, UserStateBackend, UserStateError};
 pub use crate::transforms::dofn::timer::{
-    TimeDomain, TimerCollector, TimerFamilySpec, TimerMutation,
+    TimeDomain, TimerChange, TimerCollector, TimerFamilySpec,
 };
 pub use crate::transforms::dofn::{
     DoFnHandler, FnRegistration, IntoParDoFn, PerWindow, Registered, RegisteredFn, Splittable,
@@ -71,16 +88,6 @@ pub use inventory;
 /// A foldhash `HashMap` for tables hashed per element. Crate-private, so public APIs
 /// keep the standard `HashMap` and foldhash stays out of the SDK's semver surface.
 pub(crate) type FastHashMap<K, V> = HashMap<K, V, foldhash::fast::RandomState>;
-
-pub use crate::coders::display::ElementFormatter;
-pub use crate::metrics::context::MetricsContainer;
-pub use crate::metrics::scope::{MetricsScope, TransformMetrics, TransformSelection};
-pub use crate::metrics::short_ids::ShortIdCache;
-pub use crate::metrics::system::{
-    data_channel_read_index, element_count, finish_bundle_msecs, process_bundle_msecs,
-    sampled_byte_size, start_bundle_msecs, total_msecs, work_completed, work_remaining,
-};
-pub use crate::pipeline::graph::PipelineInner;
 
 /// Adds one primitive `ParDo` to a pipeline's graph and registers its handler.
 /// Every `ParDo` primitive in the SDK goes through this builder. Only the name from

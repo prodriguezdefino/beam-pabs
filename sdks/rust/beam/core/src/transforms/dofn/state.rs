@@ -19,17 +19,16 @@
 
 //! User state specifications and handles for stateful DoFns.
 //!
-//! Following the Beam portability model, state is scoped to one key and one window. Writes
-//! and clears are buffered during the bundle and committed when the bundle is finalized.
+//! Under the Beam portability model, state is scoped to one key and one window. Writes
+//! and clears are buffered during the bundle and committed when the bundle completes.
 
-use std::ops::Range;
-
-use crate::Instant;
 use std::marker::PhantomData;
+use std::ops::Range;
 use std::sync::Arc;
 
 use model::pipeline as proto;
 
+use crate::Instant;
 use crate::coders::DefaultCoder;
 use crate::pipeline::Pipeline;
 use crate::pipeline::constants::{
@@ -218,10 +217,32 @@ impl<T: DefaultCoder> AnyStateSpec for OrderedListStateSpec<T> {
     }
 }
 
+/// An error during a user state operation.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum UserStateError {
+    /// Runner returned an error for the state operation.
+    #[error("{0}")]
+    Runner(String),
+    /// State element encoding or decoding failed.
+    #[error("State format error: {0}")]
+    Format(String),
+    /// State cell is missing an active backend.
+    #[error("No active UserStateBackend for state '{0}'")]
+    MissingBackend(String),
+    /// General or internal state failure.
+    #[error("{0}")]
+    Other(String),
+}
+
 /// Interface that reads and changes user state storage.
-pub trait UserStateReader: Send + Sync {
+pub trait UserStateBackend: Send + Sync {
     /// Reads all elements in the state cell for `(state_id, window, key)`.
-    fn get_state(&self, state_id: &str, window: &[u8], key: &[u8]) -> Result<Vec<Vec<u8>>, String>;
+    fn get_state(
+        &self,
+        state_id: &str,
+        window: &[u8],
+        key: &[u8],
+    ) -> Result<Vec<Vec<u8>>, UserStateError>;
 
     /// Appends an encoded element to the state cell for `(state_id, window, key)`.
     fn append_state(
@@ -230,10 +251,10 @@ pub trait UserStateReader: Send + Sync {
         window: &[u8],
         key: &[u8],
         element: Vec<u8>,
-    ) -> Result<(), String>;
+    ) -> Result<(), UserStateError>;
 
     /// Clears the state cell for `(state_id, window, key)`.
-    fn clear_state(&self, state_id: &str, window: &[u8], key: &[u8]) -> Result<(), String>;
+    fn clear_state(&self, state_id: &str, window: &[u8], key: &[u8]) -> Result<(), UserStateError>;
 
     /// Reads all values associated with `map_key` in the multimap state cell.
     fn get_map_state(
@@ -242,7 +263,7 @@ pub trait UserStateReader: Send + Sync {
         window: &[u8],
         key: &[u8],
         map_key: &[u8],
-    ) -> Result<Vec<Vec<u8>>, String>;
+    ) -> Result<Vec<Vec<u8>>, UserStateError>;
 
     /// Reads all distinct keys in the multimap state cell.
     fn get_map_keys(
@@ -250,7 +271,7 @@ pub trait UserStateReader: Send + Sync {
         state_id: &str,
         window: &[u8],
         key: &[u8],
-    ) -> Result<Vec<Vec<u8>>, String>;
+    ) -> Result<Vec<Vec<u8>>, UserStateError>;
 
     /// Puts a key-value entry in the map state cell and replaces any earlier entry.
     fn put_map_state(
@@ -260,7 +281,7 @@ pub trait UserStateReader: Send + Sync {
         key: &[u8],
         map_key: Vec<u8>,
         element: Vec<u8>,
-    ) -> Result<(), String>;
+    ) -> Result<(), UserStateError>;
 
     /// Removes a key and its value from the map state cell.
     fn remove_map_key(
@@ -269,10 +290,15 @@ pub trait UserStateReader: Send + Sync {
         window: &[u8],
         key: &[u8],
         map_key: &[u8],
-    ) -> Result<(), String>;
+    ) -> Result<(), UserStateError>;
 
     /// Clears all entries in the map state cell.
-    fn clear_map_state(&self, state_id: &str, window: &[u8], key: &[u8]) -> Result<(), String>;
+    fn clear_map_state(
+        &self,
+        state_id: &str,
+        window: &[u8],
+        key: &[u8],
+    ) -> Result<(), UserStateError>;
 
     /// Reads sorted timestamp-value pairs within the half-open range `[from, to)`.
     fn get_ordered_list_state(
@@ -282,7 +308,7 @@ pub trait UserStateReader: Send + Sync {
         key: &[u8],
         from: i64,
         to: i64,
-    ) -> Result<Vec<(i64, Vec<u8>)>, String>;
+    ) -> Result<Vec<(i64, Vec<u8>)>, UserStateError>;
 
     /// Appends an encoded element with its timestamp to the ordered list state cell.
     fn append_ordered_list_state(
@@ -292,7 +318,7 @@ pub trait UserStateReader: Send + Sync {
         key: &[u8],
         timestamp: i64,
         element: Vec<u8>,
-    ) -> Result<(), String>;
+    ) -> Result<(), UserStateError>;
 
     /// Clears entries within the half-open range `[from, to)` from the ordered list state cell.
     fn clear_ordered_list_range(
@@ -302,7 +328,7 @@ pub trait UserStateReader: Send + Sync {
         key: &[u8],
         from: i64,
         to: i64,
-    ) -> Result<(), String>;
+    ) -> Result<(), UserStateError>;
 
     /// Clears all entries in the ordered list state cell.
     fn clear_ordered_list_state(
@@ -310,37 +336,39 @@ pub trait UserStateReader: Send + Sync {
         state_id: &str,
         window: &[u8],
         key: &[u8],
-    ) -> Result<(), String>;
+    ) -> Result<(), UserStateError>;
 }
 
 /// A typed handle to a persistent bag state cell for a specific key and window.
+///
+/// State handles own their state identifier, window bytes, and key bytes for independent lifetime.
 pub struct BagState<V> {
-    reader: Arc<dyn UserStateReader>,
-    state_id: String,
-    window: Vec<u8>,
-    key: Vec<u8>,
+    backend: Arc<dyn UserStateBackend>,
+    state_id: Arc<str>,
+    window: Arc<[u8]>,
+    key: Arc<[u8]>,
     _marker: PhantomData<V>,
 }
 
 impl<V: DefaultCoder> BagState<V> {
     pub fn new(
-        reader: Arc<dyn UserStateReader>,
-        state_id: String,
-        window: Vec<u8>,
-        key: Vec<u8>,
+        backend: Arc<dyn UserStateBackend>,
+        state_id: impl Into<Arc<str>>,
+        window: impl Into<Arc<[u8]>>,
+        key: impl Into<Arc<[u8]>>,
     ) -> Self {
         Self {
-            reader,
-            state_id,
-            window,
-            key,
+            backend,
+            state_id: state_id.into(),
+            window: window.into(),
+            key: key.into(),
             _marker: PhantomData,
         }
     }
 
     /// Reads all elements in this bag state cell.
     pub fn read(&self) -> crate::Result<Vec<V>> {
-        self.reader
+        self.backend
             .get_state(&self.state_id, &self.window, &self.key)?
             .into_iter()
             .map(|bytes| {
@@ -363,13 +391,13 @@ impl<V: DefaultCoder> BagState<V> {
             ))
         })?;
         Ok(self
-            .reader
+            .backend
             .append_state(&self.state_id, &self.window, &self.key, bytes)?)
     }
 
     pub fn clear(&mut self) -> crate::Result {
         Ok(self
-            .reader
+            .backend
             .clear_state(&self.state_id, &self.window, &self.key)?)
     }
 }
@@ -405,25 +433,25 @@ impl<V: DefaultCoder> ValueState<V> {
 
 /// A typed handle to a persistent map user state cell for a specific key and window.
 pub struct MapState<K, V> {
-    reader: Arc<dyn UserStateReader>,
-    state_id: String,
-    window: Vec<u8>,
-    key: Vec<u8>,
+    backend: Arc<dyn UserStateBackend>,
+    state_id: Arc<str>,
+    window: Arc<[u8]>,
+    key: Arc<[u8]>,
     _marker: PhantomData<(K, V)>,
 }
 
 impl<K: DefaultCoder, V: DefaultCoder> MapState<K, V> {
     pub fn new(
-        reader: Arc<dyn UserStateReader>,
-        state_id: String,
-        window: Vec<u8>,
-        key: Vec<u8>,
+        backend: Arc<dyn UserStateBackend>,
+        state_id: impl Into<Arc<str>>,
+        window: impl Into<Arc<[u8]>>,
+        key: impl Into<Arc<[u8]>>,
     ) -> Self {
         Self {
-            reader,
-            state_id,
-            window,
-            key,
+            backend,
+            state_id: state_id.into(),
+            window: window.into(),
+            key: key.into(),
             _marker: PhantomData,
         }
     }
@@ -436,7 +464,7 @@ impl<K: DefaultCoder, V: DefaultCoder> MapState<K, V> {
                 .context(format!("Failed to encode map key for '{}'", self.state_id))
         })?;
         let values =
-            self.reader
+            self.backend
                 .get_map_state(&self.state_id, &self.window, &self.key, &key_bytes)?;
         values
             .into_iter()
@@ -464,7 +492,7 @@ impl<K: DefaultCoder, V: DefaultCoder> MapState<K, V> {
                 self.state_id
             ))
         })?;
-        Ok(self.reader.put_map_state(
+        Ok(self.backend.put_map_state(
             &self.state_id,
             &self.window,
             &self.key,
@@ -480,20 +508,20 @@ impl<K: DefaultCoder, V: DefaultCoder> MapState<K, V> {
                 .context(format!("Failed to encode map key for '{}'", self.state_id))
         })?;
         Ok(self
-            .reader
+            .backend
             .remove_map_key(&self.state_id, &self.window, &self.key, &key_bytes)?)
     }
 
     pub fn clear(&mut self) -> crate::Result {
         Ok(self
-            .reader
+            .backend
             .clear_map_state(&self.state_id, &self.window, &self.key)?)
     }
 
     /// Returns all keys in this map state cell.
     pub fn keys(&self) -> crate::Result<Vec<K>> {
         let raw_keys = self
-            .reader
+            .backend
             .get_map_keys(&self.state_id, &self.window, &self.key)?;
         raw_keys
             .into_iter()
@@ -509,6 +537,8 @@ impl<K: DefaultCoder, V: DefaultCoder> MapState<K, V> {
     }
 
     /// Returns all key-value entries in this map state cell.
+    ///
+    /// Fetches all keys from the state reader and queries the value for each key sequentially.
     pub fn entries(&self) -> crate::Result<Vec<(K, V)>> {
         self.keys()?
             .into_iter()
@@ -557,25 +587,25 @@ impl<T: DefaultCoder> SetState<T> {
 
 /// A typed handle to a persistent ordered list user state cell for a specific key and window.
 pub struct OrderedListState<T> {
-    reader: Arc<dyn UserStateReader>,
-    state_id: String,
-    window: Vec<u8>,
-    key: Vec<u8>,
+    backend: Arc<dyn UserStateBackend>,
+    state_id: Arc<str>,
+    window: Arc<[u8]>,
+    key: Arc<[u8]>,
     _marker: PhantomData<T>,
 }
 
 impl<T: DefaultCoder> OrderedListState<T> {
     pub fn new(
-        reader: Arc<dyn UserStateReader>,
-        state_id: String,
-        window: Vec<u8>,
-        key: Vec<u8>,
+        backend: Arc<dyn UserStateBackend>,
+        state_id: impl Into<Arc<str>>,
+        window: impl Into<Arc<[u8]>>,
+        key: impl Into<Arc<[u8]>>,
     ) -> Self {
         Self {
-            reader,
-            state_id,
-            window,
-            key,
+            backend,
+            state_id: state_id.into(),
+            window: window.into(),
+            key: key.into(),
             _marker: PhantomData,
         }
     }
@@ -588,7 +618,7 @@ impl<T: DefaultCoder> OrderedListState<T> {
                 self.state_id
             ))
         })?;
-        Ok(self.reader.append_ordered_list_state(
+        Ok(self.backend.append_ordered_list_state(
             &self.state_id,
             &self.window,
             &self.key,
@@ -598,6 +628,8 @@ impl<T: DefaultCoder> OrderedListState<T> {
     }
 
     /// Reads all entries, sorted by timestamp.
+    ///
+    /// Queries the half-open range `[i64::MIN, i64::MAX)`, which excludes elements at `i64::MAX`.
     pub fn read(&self) -> crate::Result<Vec<(Instant, T)>> {
         self.read_millis(i64::MIN, i64::MAX)
     }
@@ -608,7 +640,7 @@ impl<T: DefaultCoder> OrderedListState<T> {
     }
 
     fn read_millis(&self, from: i64, to: i64) -> crate::Result<Vec<(Instant, T)>> {
-        let raw_entries = self.reader.get_ordered_list_state(
+        let raw_entries = self.backend.get_ordered_list_state(
             &self.state_id,
             &self.window,
             &self.key,
@@ -632,7 +664,7 @@ impl<T: DefaultCoder> OrderedListState<T> {
 
     /// Clears the entries with a timestamp in `range`.
     pub fn clear_range(&mut self, range: Range<Instant>) -> crate::Result {
-        Ok(self.reader.clear_ordered_list_range(
+        Ok(self.backend.clear_ordered_list_range(
             &self.state_id,
             &self.window,
             &self.key,
@@ -644,7 +676,7 @@ impl<T: DefaultCoder> OrderedListState<T> {
     /// Clears all entries in this ordered list state cell.
     pub fn clear(&mut self) -> crate::Result {
         Ok(self
-            .reader
+            .backend
             .clear_ordered_list_state(&self.state_id, &self.window, &self.key)?)
     }
 }

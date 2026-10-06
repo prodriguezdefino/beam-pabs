@@ -32,9 +32,34 @@
 use beam::coders::{
     CausedByDrain, Coder, Context, ElementMetadata, GlobalWindow, PaneInfo, StringUtf8Coder,
     Timing, URN_BYTES, URN_GLOBAL_WINDOW, URN_WINDOWED_VALUE, ValueKind, VarIntCoder,
-    WindowedValue, WindowedValueCoder, skip_coder_value, skip_pane_info,
+    WindowedValue, WindowedValueCoder, skip_pane_info,
 };
 use model::pipeline::{Coder as ProtoCoder, FunctionSpec};
+
+/// Skips with [`skip_coder_value`] and with a compiled [`SkipPlan`], and checks that both end
+/// at the same position with the same result. Returns the [`skip_coder_value`] result.
+fn skip_coder_value(
+    cursor: &mut &[u8],
+    coder_id: &str,
+    coders: &std::collections::HashMap<String, ProtoCoder>,
+    nested: bool,
+) -> Result<(), std::io::Error> {
+    let mut planned = *cursor;
+    let plan_result = beam::coders::SkipPlan::new(coder_id, coders).skip(&mut planned, nested);
+    let result = beam::coders::skip_coder_value(cursor, coder_id, coders, nested);
+    match (&result, &plan_result) {
+        (Ok(()), Ok(())) => assert_eq!(cursor.len(), planned.len(), "{coder_id}"),
+        (Err(a), Err(b)) => {
+            assert_eq!(
+                (a.kind(), a.to_string()),
+                (b.kind(), b.to_string()),
+                "{coder_id}"
+            );
+        }
+        _ => panic!("{coder_id}: skip_coder_value {result:?}, SkipPlan {plan_result:?}"),
+    }
+    result
+}
 
 /// Byte appended after an encoding so tests can prove a read stopped there.
 const SENTINEL: u8 = 0xAB;

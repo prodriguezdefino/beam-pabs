@@ -23,7 +23,9 @@
 use std::sync::{Arc, Mutex};
 
 use beam::coders::{DefaultCoder, TimerRecord};
-use beam::internals::{HandlerContext, IntoParDoFn, TypedElement, UserStateReader};
+use beam::internals::{
+    HandlerContext, IntoParDoFn, TypedElement, UserStateBackend, UserStateError,
+};
 use beam::pipeline::Pipeline;
 use beam::prelude::*;
 use beam::transforms::WithFinalizer;
@@ -41,13 +43,15 @@ enum Flush {
 /// A state reader that fails every call. The cells bind to it; the test does not read them.
 struct NoReads;
 
-type Unused<T> = std::result::Result<T, String>;
+type Unused<T> = std::result::Result<T, UserStateError>;
 
 fn unused<T>() -> Unused<T> {
-    Err("the test does not read state".to_string())
+    Err(UserStateError::Other(
+        "the test does not read state".to_string(),
+    ))
 }
 
-impl UserStateReader for NoReads {
+impl UserStateBackend for NoReads {
     fn get_state(&self, _: &str, _: &[u8], _: &[u8]) -> Unused<Vec<Vec<u8>>> {
         unused()
     }
@@ -222,12 +226,12 @@ fn every_lifecycle_call_reaches_the_stateful_dofn() {
     .into_handler()
     .instantiate();
     let mut sink = Vec::<Vec<u8>>::new();
-    let reader: Arc<dyn UserStateReader> = Arc::new(NoReads);
+    let reader: Arc<dyn UserStateBackend> = Arc::new(NoReads);
 
     handler.setup().expect("setup");
     handler.start_bundle().expect("start_bundle");
     {
-        let mut ctx = HandlerContext::new(&mut sink).with_state_reader(Some(&reader));
+        let mut ctx = HandlerContext::new(&mut sink).with_state_backend(Some(&reader));
         let encoded = ("a".to_string(), 1i64).encode().expect("encode");
         handler.process(&encoded, &mut ctx).expect("process");
         let mut fused = Some(("b".to_string(), 2i64));
@@ -237,8 +241,8 @@ fn every_lifecycle_call_reaches_the_stateful_dofn() {
         let fired = TimerRecord::new_set(
             DefaultCoder::encode(&"c".to_string()).expect("encode"),
             "",
-            10,
-            10,
+            Instant::from_millis(10),
+            Instant::from_millis(10),
         );
         handler
             .on_timer("flush", &fired, &mut ctx)
@@ -346,7 +350,8 @@ fn the_default_hooks_succeed_and_an_undeclared_timer_family_fails() {
         handler
             .on_timer("unknown", &cleared, &mut ctx)
             .expect("a cleared timer is ignored");
-        let fired = TimerRecord::new_set(key, "", 10, 10);
+        let fired =
+            TimerRecord::new_set(key, "", Instant::from_millis(10), Instant::from_millis(10));
         let error = handler
             .on_timer("unknown", &fired, &mut ctx)
             .expect_err("Plain declares no timers");

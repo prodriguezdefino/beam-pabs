@@ -48,6 +48,22 @@ pub fn consumed<'a>(start: &'a [u8], rest: &[u8]) -> &'a [u8] {
     &start[..start.len() - rest.len()]
 }
 
+thread_local! {
+    static SCRATCH: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Runs `f` with an empty buffer of this thread, kept between calls so that encoding to
+/// measure or hash a value does not allocate. A nested call gets a new buffer.
+pub(crate) fn with_scratch_buffer<R>(f: impl FnOnce(&mut Vec<u8>) -> R) -> R {
+    SCRATCH.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut buf) => {
+            buf.clear();
+            f(&mut buf)
+        }
+        Err(_) => f(&mut Vec::new()),
+    })
+}
+
 pub(super) fn read_array<const N: usize>(reader: &mut &[u8]) -> Result<[u8; N], std::io::Error> {
     let bytes = take_bytes(reader, N)?;
     let mut buf = [0u8; N];

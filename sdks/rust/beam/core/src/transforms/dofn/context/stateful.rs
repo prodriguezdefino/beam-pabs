@@ -25,6 +25,7 @@ use std::time::Duration;
 
 use super::ProcessContext;
 use crate::Instant;
+use crate::coders::{PaneInfo, TimerAction, TimerRecord};
 use crate::transforms::dofn::input::window_of;
 use crate::transforms::dofn::stateful::{StatefulDoFn, TimerFamilies};
 use crate::transforms::dofn::timer::TimeDomain;
@@ -38,12 +39,31 @@ use crate::windowing::BoundedWindow;
 pub struct StatefulContext<'a, F: StatefulDoFn> {
     inner: ProcessContext<'a, F::Out>,
     key: Vec<u8>,
+    fired: Option<(TimeDomain, Instant)>,
 }
 
 impl<'a, F: StatefulDoFn> StatefulContext<'a, F> {
     /// Creates a stateful context bound to `inner` and `key`.
     pub(crate) fn new(inner: ProcessContext<'a, F::Out>, key: Vec<u8>) -> Self {
-        Self { inner, key }
+        Self {
+            inner,
+            key,
+            fired: None,
+        }
+    }
+
+    /// Binds the context to a timer of `domain` that fired at `fire`.
+    pub(crate) fn fired(self, domain: TimeDomain, fire: Instant) -> Self {
+        Self {
+            fired: Some((domain, fire)),
+            ..self
+        }
+    }
+
+    /// The firing time of the timer in `on_timer`, in the domain of the timer. `None` in
+    /// `process_element`.
+    pub fn fire_timestamp(&self) -> Option<Instant> {
+        self.fired.map(|(_, fire)| fire)
     }
 
     /// The window of the current element or fired timer.
@@ -51,7 +71,7 @@ impl<'a, F: StatefulDoFn> StatefulContext<'a, F> {
         window_of(self.inner.header())
     }
 
-    /// Starts setting or clearing `timer` for the current key and window, as Java's `Timer`.
+    /// Starts setting or clearing `timer` for the current key and window.
     ///
     /// ```ignore
     /// ctx.timer(Flush::EndOfWindow).at(ctx.window()?.max_timestamp())?;
@@ -62,6 +82,14 @@ impl<'a, F: StatefulDoFn> StatefulContext<'a, F> {
             ctx: self,
             timer,
             hold: None,
+        }
+    }
+
+    /// The current event time: the firing time of an event-time timer, else the timestamp.
+    fn event_time(&self) -> Instant {
+        match self.fired {
+            Some((TimeDomain::EventTime, fire)) => fire,
+            Some((TimeDomain::ProcessingTime, _)) | None => self.inner.timestamp(),
         }
     }
 
@@ -77,7 +105,8 @@ impl<'a, F: StatefulDoFn> StatefulContext<'a, F> {
 ///
 /// The firing time is in the domain of the timer: event time, or processing time. By default
 /// the output watermark is held at the firing time of an event-time timer, and at the
-/// timestamp of the current element for a processing-time timer, as in Java.
+/// timestamp of the current element for a processing-time timer. Outputs of `on_timer` carry
+/// the hold as their timestamp.
 #[must_use = "a timer does nothing until `at`, `after` or `clear` is called"]
 pub struct Timer<'c, 'a, F: StatefulDoFn> {
     ctx: &'c StatefulContext<'a, F>,
@@ -86,8 +115,8 @@ pub struct Timer<'c, 'a, F: StatefulDoFn> {
 }
 
 impl<F: StatefulDoFn> Timer<'_, '_, F> {
-    /// Holds the output watermark at `hold` until the timer fires, so outputs of `on_timer`
-    /// at `hold` are not late.
+    /// Holds the output watermark at `hold` until the timer fires. Outputs of `on_timer` carry
+    /// `hold` as their timestamp, so they are not late.
     pub fn hold(mut self, hold: Instant) -> Self {
         self.hold = Some(hold);
         self
@@ -100,22 +129,19 @@ impl<F: StatefulDoFn> Timer<'_, '_, F> {
             TimeDomain::EventTime => time,
             TimeDomain::ProcessingTime => element,
         });
-        self.ctx.collector()?.set_with_context(
-            self.timer.family(),
-            self.timer.tag(),
-            self.ctx.key.clone(),
-            self.ctx.inner.window_bytes().to_vec(),
-            time.as_millis(),
-            hold.as_millis(),
-        );
-        Ok(())
+        self.push(TimerAction::Set {
+            fire_timestamp: time,
+            hold_timestamp: hold,
+            pane: PaneInfo::NO_FIRING,
+        })
     }
 
-    /// Fires the timer `offset` after the current time of its domain: the timestamp of the
-    /// current element for event time, the system clock for processing time.
+    /// Fires the timer `offset` after the current time of its domain. For event time, that is
+    /// the firing time of an event-time timer in `on_timer`, else the current timestamp. For
+    /// processing time, it is the system clock.
     pub fn after(self, offset: Duration) -> crate::Result {
         let now = match self.timer.time_domain() {
-            TimeDomain::EventTime => self.ctx.inner.timestamp(),
+            TimeDomain::EventTime => self.ctx.event_time(),
             TimeDomain::ProcessingTime => Instant::now(),
         };
         self.at(now + offset)
@@ -123,12 +149,21 @@ impl<F: StatefulDoFn> Timer<'_, '_, F> {
 
     /// Clears the timer.
     pub fn clear(self) -> crate::Result {
-        self.ctx.collector()?.clear_with_context(
-            self.timer.family(),
-            self.timer.tag(),
-            self.ctx.key.clone(),
-            self.ctx.inner.window_bytes().to_vec(),
-        );
+        self.push(TimerAction::Clear)
+    }
+
+    /// Records `action` for this timer, its key and its window. The harness sends it after the
+    /// callback returns.
+    fn push(self, action: TimerAction) -> crate::Result {
+        let record = TimerRecord {
+            user_key: self.ctx.key.clone(),
+            dynamic_tag: self.timer.tag().to_string(),
+            windows: vec![self.ctx.inner.window_bytes().to_vec()],
+            action,
+        };
+        self.ctx
+            .collector()?
+            .push(self.ctx.inner.transform_id, self.timer.family(), record);
         Ok(())
     }
 }

@@ -30,22 +30,33 @@ use super::standard::{
     VarIntCoder, consumed, encode_timestamp, read_array, read_be_i32, read_exact_vec,
     read_timestamp,
 };
-use super::traversal::{skip_coder_value, skip_length_prefixed};
+use super::traversal::{SkipPlan, skip_length_prefixed};
+use crate::Instant;
 
 /// One timer event on the Fn API data plane, inbound or outbound. `user_key` and `windows` hold
-/// encoded bytes. A `clear` event ignores the timestamps and the pane.
+/// encoded bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimerRecord {
     pub user_key: Vec<u8>,
     /// Dynamic timer tag. It is an empty string for a static timer.
     pub dynamic_tag: String,
     pub windows: Vec<Vec<u8>>,
-    pub clear: bool,
-    /// Fire timestamp in milliseconds since the Unix epoch.
-    pub fire_timestamp: i64,
-    /// Output watermark hold timestamp in milliseconds.
-    pub hold_timestamp: i64,
-    pub pane: PaneInfo,
+    pub action: TimerAction,
+}
+
+/// What a timer event does. A clear has no timestamps and no pane, so it cannot hold them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimerAction {
+    /// Removes the timer.
+    Clear,
+    /// Sets the timer, or fires it (inbound).
+    Set {
+        /// Fire timestamp in event time.
+        fire_timestamp: Instant,
+        /// Output watermark hold timestamp in event time.
+        hold_timestamp: Instant,
+        pane: PaneInfo,
+    },
 }
 
 impl TimerRecord {
@@ -53,17 +64,18 @@ impl TimerRecord {
     pub fn new_set(
         user_key: Vec<u8>,
         dynamic_tag: impl Into<String>,
-        fire_timestamp: i64,
-        hold_timestamp: i64,
+        fire_timestamp: Instant,
+        hold_timestamp: Instant,
     ) -> Self {
         Self {
             user_key,
             dynamic_tag: dynamic_tag.into(),
             windows: vec![Vec::new()], // One global window, which encodes as 0 bytes.
-            clear: false,
-            fire_timestamp,
-            hold_timestamp,
-            pane: PaneInfo::NO_FIRING,
+            action: TimerAction::Set {
+                fire_timestamp,
+                hold_timestamp,
+                pane: PaneInfo::NO_FIRING,
+            },
         }
     }
 
@@ -73,10 +85,7 @@ impl TimerRecord {
             user_key,
             dynamic_tag: dynamic_tag.into(),
             windows: vec![Vec::new()],
-            clear: true,
-            fire_timestamp: 0,
-            hold_timestamp: 0,
-            pane: PaneInfo::NO_FIRING,
+            action: TimerAction::Clear,
         }
     }
 }
@@ -100,26 +109,44 @@ impl TimerCoder {
             .iter()
             .try_for_each(|win| writer.write_all(win))?;
 
-        writer.write_all(&[if record.clear { 0x01 } else { 0x00 }])?;
-
-        if !record.clear {
-            writer.write_all(&encode_timestamp(record.fire_timestamp))?;
-            writer.write_all(&encode_timestamp(record.hold_timestamp))?;
-            record.pane.encode(false, writer)?;
+        match record.action {
+            TimerAction::Clear => writer.write_all(&[0x01]),
+            TimerAction::Set {
+                fire_timestamp,
+                hold_timestamp,
+                pane,
+            } => {
+                writer.write_all(&[0x00])?;
+                writer.write_all(&encode_timestamp(fire_timestamp.as_millis()))?;
+                writer.write_all(&encode_timestamp(hold_timestamp.as_millis()))?;
+                pane.encode(false, writer)
+            }
         }
-
-        Ok(())
     }
 
-    /// The key and window coders give the length of the key and of each window.
+    /// The key and window coders give the length of the key and of each window. To decode
+    /// many timers, compile the coders once and call [`decode_with`](Self::decode_with).
     pub fn decode(
         cursor: &mut &[u8],
         key_coder_id: &str,
         window_coder_id: &str,
         coders: &HashMap<String, ProtoCoder>,
     ) -> Result<TimerRecord, Error> {
+        Self::decode_with(
+            cursor,
+            &SkipPlan::new(key_coder_id, coders),
+            &SkipPlan::new(window_coder_id, coders),
+        )
+    }
+
+    /// Decodes one timer. `key` and `window` give the length of the key and of each window.
+    pub fn decode_with(
+        cursor: &mut &[u8],
+        key: &SkipPlan,
+        window: &SkipPlan,
+    ) -> Result<TimerRecord, Error> {
         let key_start = *cursor;
-        skip_coder_value(cursor, key_coder_id, coders, true)?;
+        key.skip(cursor, true)?;
         let user_key = consumed(key_start, cursor).to_vec();
 
         // A negative length would wrap to a huge `usize` and reserve that much memory.
@@ -140,35 +167,41 @@ impl TimerCoder {
         let windows: Vec<Vec<u8>> = (0..num_windows)
             .map(|_| {
                 let win_start = *cursor;
-                skip_coder_value(cursor, window_coder_id, coders, true)?;
+                window.skip(cursor, true)?;
                 Ok(consumed(win_start, cursor).to_vec())
             })
             .collect::<Result<Vec<_>, Error>>()?;
 
         let [clear_byte] = read_array(cursor)?;
-        let clear = clear_byte != 0;
-
-        let (fire_timestamp, hold_timestamp, pane) = if clear {
-            (0, 0, PaneInfo::NO_FIRING)
-        } else {
-            let fire_ts = read_timestamp(cursor)?;
-            let hold_ts = read_timestamp(cursor)?;
-            let (pane, element_metadata) = PaneInfo::decode(cursor)?;
-            // A timer has no element metadata, but a flagged blob must still be read past.
-            if element_metadata {
-                skip_length_prefixed(cursor)?;
+        let action = match clear_byte {
+            0x01 => TimerAction::Clear,
+            0x00 => {
+                let fire_timestamp = Instant::from_millis(read_timestamp(cursor)?);
+                let hold_timestamp = Instant::from_millis(read_timestamp(cursor)?);
+                let (pane, element_metadata) = PaneInfo::decode(cursor)?;
+                // A timer has no element metadata, but a flagged blob must still be read past.
+                if element_metadata {
+                    skip_length_prefixed(cursor)?;
+                }
+                TimerAction::Set {
+                    fire_timestamp,
+                    hold_timestamp,
+                    pane,
+                }
             }
-            (fire_ts, hold_ts, pane)
+            other => {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    format!("Invalid timer clear byte: {other}"),
+                ));
+            }
         };
 
         Ok(TimerRecord {
             user_key,
             dynamic_tag,
             windows,
-            clear,
-            fire_timestamp,
-            hold_timestamp,
-            pane,
+            action,
         })
     }
 }

@@ -19,12 +19,11 @@
 
 //! Event-time and processing-time timers for stateful DoFns on keyed elements.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use model::pipeline as proto;
 
-use crate::coders::{PaneInfo, TimerRecord};
+use crate::coders::TimerRecord;
 
 /// Time domain governing when a timer is triggered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -78,175 +77,44 @@ impl TimerFamilySpec {
     }
 }
 
-/// Mutation action recorded against a timer family.
+/// A timer that a handler set or cleared, with the transform that declares its family.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum TimerMutation {
-    Set {
-        family: String,
-        tag: String,
-        user_key: Vec<u8>,
-        windows: Vec<u8>,
-        fire_timestamp: i64,
-        hold_timestamp: i64,
-    },
-    Clear {
-        family: String,
-        tag: String,
-        user_key: Vec<u8>,
-        windows: Vec<u8>,
-    },
+pub struct TimerChange {
+    pub transform_id: String,
+    pub family: String,
+    pub record: TimerRecord,
 }
 
-impl TimerMutation {
-    fn into_family_record(self) -> (String, TimerRecord) {
-        match self {
-            Self::Set {
-                family,
-                tag,
-                user_key,
-                windows,
-                fire_timestamp,
-                hold_timestamp,
-            } => (
-                family,
-                TimerRecord {
-                    user_key,
-                    dynamic_tag: tag,
-                    windows: vec![windows],
-                    clear: false,
-                    fire_timestamp,
-                    hold_timestamp,
-                    pane: PaneInfo::NO_FIRING,
-                },
-            ),
-            Self::Clear {
-                family,
-                tag,
-                user_key,
-                windows,
-            } => (
-                family,
-                TimerRecord {
-                    user_key,
-                    dynamic_tag: tag,
-                    windows: vec![windows],
-                    clear: true,
-                    fire_timestamp: 0,
-                    hold_timestamp: 0,
-                    pane: PaneInfo::NO_FIRING,
-                },
-            ),
-        }
-    }
-}
-
-/// Thread-safe collector for timer mutations generated during element processing.
-#[derive(Default, Clone, Debug)]
+/// Collects the timers that handlers set or clear while a bundle runs.
+#[derive(Default, Debug)]
 pub struct TimerCollector {
-    mutations: Arc<Mutex<Vec<TimerMutation>>>,
+    changes: Mutex<Vec<TimerChange>>,
 }
 
 impl TimerCollector {
     pub fn new() -> Self {
-        Self {
-            mutations: Arc::new(Mutex::new(Vec::new())),
-        }
+        Self::default()
     }
 
-    /// Records a timer set operation.
-    pub fn set(
-        &self,
-        family: impl Into<String>,
-        tag: impl Into<String>,
-        fire_timestamp: i64,
-        hold_timestamp: i64,
-    ) {
-        self.set_with_context(
-            family,
-            tag,
-            Vec::new(),
-            Vec::new(),
-            fire_timestamp,
-            hold_timestamp,
-        );
-    }
-
-    /// Records a timer set operation with explicit user key and window.
-    pub fn set_with_context(
-        &self,
-        family: impl Into<String>,
-        tag: impl Into<String>,
-        user_key: Vec<u8>,
-        windows: Vec<u8>,
-        fire_timestamp: i64,
-        hold_timestamp: i64,
-    ) {
-        if let Ok(mut guard) = self.mutations.lock() {
-            guard.push(TimerMutation::Set {
-                family: family.into(),
-                tag: tag.into(),
-                user_key,
-                windows,
-                fire_timestamp,
-                hold_timestamp,
-            });
-        }
-    }
-
-    /// Records a timer clear operation.
-    pub fn clear(&self, family: impl Into<String>, tag: impl Into<String>) {
-        self.clear_with_context(family, tag, Vec::new(), Vec::new());
-    }
-
-    /// Records a timer clear operation with explicit user key and window.
-    pub fn clear_with_context(
-        &self,
-        family: impl Into<String>,
-        tag: impl Into<String>,
-        user_key: Vec<u8>,
-        windows: Vec<u8>,
-    ) {
-        if let Ok(mut guard) = self.mutations.lock() {
-            guard.push(TimerMutation::Clear {
-                family: family.into(),
-                tag: tag.into(),
-                user_key,
-                windows,
-            });
-        }
-    }
-
-    /// Drains all collected timer mutations grouped by family name.
-    pub fn drain_family_records(&self) -> HashMap<String, Vec<TimerRecord>> {
-        self.mutations
+    /// Records `record` for `family` of the transform `transform_id`.
+    pub fn push(&self, transform_id: &str, family: &str, record: TimerRecord) {
+        self.changes
             .lock()
-            .map(|mut guard| {
-                guard.drain(..).fold(
-                    HashMap::<String, Vec<TimerRecord>>::new(),
-                    |mut map, mutation| {
-                        let (family, record) = mutation.into_family_record();
-                        map.entry(family).or_default().push(record);
-                        map
-                    },
-                )
-            })
-            .unwrap_or_default()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(TimerChange {
+                transform_id: transform_id.to_string(),
+                family: family.to_string(),
+                record,
+            });
     }
 
-    /// Drains all timer mutations. An empty user key becomes `key`; an empty window, `window`.
-    pub fn drain_records(&self, key: &[u8], window: &[u8]) -> Vec<TimerRecord> {
-        self.drain_family_records()
-            .into_values()
-            .flatten()
-            .map(|mut rec| {
-                if rec.user_key.is_empty() && !key.is_empty() {
-                    rec.user_key = key.to_vec();
-                }
-                if (rec.windows.is_empty() || rec.windows[0].is_empty()) && !window.is_empty() {
-                    rec.windows = vec![window.to_vec()];
-                }
-                rec
-            })
-            .collect()
+    /// Takes the recorded changes, in the order that the handlers made them.
+    pub fn drain(&self) -> Vec<TimerChange> {
+        std::mem::take(
+            &mut *self
+                .changes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 }

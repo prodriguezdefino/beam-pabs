@@ -19,10 +19,11 @@
 
 //! The per-element context handed to a [`DoFn`](crate::transforms::DoFn).
 //!
-//! Each sibling module adds one `impl` block of [`ProcessContext`]: `process` (construction,
-//! element facts), `output`, `side_inputs`, `state`, `stateful`, `metrics`, `residuals` (SDF
-//! residual roots) and `finalizer`. `handler` holds the byte-level [`HandlerContext`]. The
-//! struct is declared here so every sibling module can reach its private fields.
+//! Each sibling module adds one `impl` block of [`ProcessContext`]: `process`
+//! (construction, element facts), `output`, `side_inputs`, `state`, `stateful`, `finish`,
+//! `residuals` (SDF residual roots) and `finalizer`. `handler` holds the byte-level
+//! [`HandlerContext`]. The struct is declared here so every sibling module can reach its
+//! private fields.
 
 use std::borrow::Cow;
 use std::marker::PhantomData;
@@ -31,7 +32,7 @@ use std::sync::Arc;
 use crate::coders::WindowedHeader;
 use crate::transforms::ElementSink;
 use crate::transforms::dofn::side_input::SideInputReader;
-use crate::transforms::dofn::state::UserStateReader;
+use crate::transforms::dofn::state::UserStateBackend;
 use crate::transforms::dofn::timer::TimerCollector;
 
 mod finalizer;
@@ -60,9 +61,11 @@ pub use stateful::{StatefulContext, Timer};
 pub struct ProcessContext<'a, T = ()> {
     sink: &'a mut dyn ElementSink,
     reader: Option<&'a dyn SideInputReader>,
-    state_reader: Option<&'a Arc<dyn UserStateReader>>,
+    state_backend: Option<&'a Arc<dyn UserStateBackend>>,
     timer_collector: Option<&'a Arc<TimerCollector>>,
     bundle_finalizer: Option<&'a Arc<BundleFinalizerCollector>>,
+    /// The transform that runs the function. Timers are recorded for it.
+    transform_id: &'a str,
     header: &'a WindowedHeader,
     key_bytes: Option<Cow<'a, [u8]>>,
     _marker: PhantomData<T>,
