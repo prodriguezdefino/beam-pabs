@@ -1,0 +1,102 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Prism, the portable runner used by tests and local launches.
+//
+// A release build uses the Prism published with that release. A SNAPSHOT build has no
+// published Prism to match, so it compiles the one in this tree (sdks/go/cmd/prism) with the
+// repository's pinned Go toolchain, the same choice the Python SDK and the Java Prism runner
+// make for development versions. `-PprismVersion=<release>` downloads that release instead,
+// for example to work without a Go installation.
+
+def hostOs = System.getProperty('os.name').toLowerCase().contains('mac') ? 'darwin' : 'linux'
+def hostArch = System.getProperty('os.arch') in ['aarch64', 'arm64'] ? 'arm64' : 'amd64'
+def prismVersionOverride = project.findProperty('prismVersion')?.toString()
+ext.prismFromSource = !prismVersionOverride && beamVersion.endsWith('-SNAPSHOT')
+ext.prismVersion = prismVersionOverride ?: beamReleaseVersion
+def prismCacheDir = file("${System.getProperty('user.home')}/.apache_beam/cache/prism/bin")
+ext.prismBinaryFor = { String os ->
+  prismFromSource
+      ? file("${buildDir}/prism/prism-${os}-${hostArch}")
+      : new File(prismCacheDir, "apache_beam-v${prismVersion}-prism-${os}-${hostArch}")
+}
+ext.prismHostBinary = prismBinaryFor(hostOs)
+ext.prismLinuxBinary = prismBinaryFor('linux')
+
+def downloadPrism = { File dir, File binary, String version ->
+  dir.mkdirs()
+  def archive = new File(dir, "${binary.name}.zip")
+  project.exec {
+    commandLine 'curl', '-sSLf', '-o', archive.absolutePath,
+        "https://github.com/apache/beam/releases/download/v${version}/${binary.name}.zip"
+  }
+  project.copy {
+    from project.zipTree(archive)
+    into dir
+  }
+  binary.setExecutable(true)
+}
+
+// Compiles sdks/go/cmd/prism for `goos` on the host architecture, the way
+// :runners:prism:build does, using the Go command that project's goPrepare installs.
+def compilePrism = { File binary, String goos ->
+  binary.parentFile.mkdirs()
+  project.exec {
+    workingDir "${rootDir}/sdks"
+    environment 'GOOS', goos
+    environment 'GOARCH', hostArch
+    environment 'CGO_ENABLED', '0'
+    commandLine 'sh', '-c',
+        "${project.project(':runners:prism').ext.goCmd} build -o ${binary.absolutePath} ${rootDir}/sdks/go/cmd/prism"
+  }
+}
+
+ext.providePrism = { File binary, String goos ->
+  if (prismFromSource) {
+    compilePrism(binary, goos)
+  } else {
+    downloadPrism(prismCacheDir, binary, prismVersion)
+  }
+}
+
+// Wires a task that provides the Prism binary for `goos`.
+//
+// Downloads are cached by file name, which carries the version. Source builds always run and
+// leave recompilation to Go's build cache, as :runners:prism:build does, so edits to the Go
+// sources are picked up.
+ext.configurePrismTask = { Task task, File binary, String goos ->
+  task.outputs.file(binary)
+  if (prismFromSource) {
+    task.dependsOn ':runners:prism:goPrepare'
+    task.outputs.upToDateWhen { false }
+  }
+  task.doLast { providePrism(binary, goos) }
+}
+
+tasks.register('fetchPrism') {
+  group = 'Build'
+  description = prismFromSource
+      ? 'Build a host-native Prism from sdks/go/cmd/prism'
+      : "Download the host-native Prism ${prismVersion} into the shared Beam cache"
+  configurePrismTask(it, prismHostBinary, hostOs)
+}
+
+tasks.named('test', Exec).configure {
+  dependsOn 'fetchPrism'
+  environment 'BEAM_PRISM_PATH', prismHostBinary.absolutePath
+}

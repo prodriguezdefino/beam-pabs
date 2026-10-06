@@ -46,6 +46,13 @@ pub mod io {
     pub use file::*;
 }
 
+pub mod runners {
+    pub use core::runners::*;
+
+    #[cfg(feature = "prism")]
+    pub use prism;
+}
+
 /// Force-links optional dependencies so that their `inventory` registrations stay.
 ///
 /// See the crate-level docs. These imports exist only for their link-time effect.
@@ -55,6 +62,9 @@ mod link {
 
     #[cfg(feature = "harness")]
     pub use harness as _;
+
+    #[cfg(feature = "prism")]
+    pub use prism as _;
 }
 
 /// All that an ordinary pipeline needs.
