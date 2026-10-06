@@ -31,6 +31,7 @@ name = "beam_harness"
 beam = { package = "apache-beam-core", path = "../core", version = "2.79.0-SNAPSHOT" }
 beam_model = { workspace = true }
 tonic = { workspace = true }
+prost = { workspace = true }
 prost-types = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
@@ -38,10 +39,14 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 clap = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+foldhash = { workspace = true }
 arc-swap = { workspace = true }
 
 [dev-dependencies]
 beam_harness = { package = "apache-beam-harness", path = "." }
+beam_test_utils = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 
 [[bin]]
