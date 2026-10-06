@@ -17,25 +17,15 @@
  * under the License.
  */
 
-//! Apache Beam Rust worker harness: the worker side of the Fn API (control, data, state and
-//! logging streams, and bundle execution).
+//! Beam Fn State API client and side input materialization for portable runners.
+//!
+//! Two separate concerns live here: [`channel`] owns the Fn API state request/response
+//! transport, and [`side_input_cache`] owns side input materialization and caching.
 
-pub mod data;
-pub mod grpc;
-pub mod logging;
-#[doc(hidden)]
-pub mod provisioning;
-pub mod state;
-pub mod status;
-pub mod user_state;
+pub mod channel;
+pub mod side_input_cache;
+pub(crate) mod tables;
 
-pub use model;
-
-pub use data::DataManager;
-pub use logging::{
-    BeamFnLoggingHandle, BeamFnLoggingLayer, LoggingClient, create_layer, init_logging,
-    set_global_client,
-};
-pub use state::{FnApiSideInputReader, StateChannel};
-pub use status::{WorkerMetrics, WorkerStatusHandler, format_status_info};
-pub use user_state::BundleUserState;
+pub use channel::StateChannel;
+pub use side_input_cache::FnApiSideInputReader;
+pub(crate) use side_input_cache::split_concatenated_elements;
