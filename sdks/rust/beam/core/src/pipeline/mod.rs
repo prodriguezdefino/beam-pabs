@@ -24,19 +24,22 @@
 
 use std::sync::{Arc, Mutex};
 
-pub mod builder;
-pub mod constants;
-pub mod environment;
-pub mod error;
-pub mod graph;
-pub mod resources;
-pub mod roots;
-pub mod validation;
+use graph::PipelineInner;
 
+pub(crate) mod builder;
+pub(crate) mod constants;
+pub(crate) mod environment;
+pub(crate) mod error;
+pub(crate) mod graph;
+pub(crate) mod resources;
+pub(crate) mod roots;
+pub(crate) mod validation;
+
+pub use builder::ResourceHintsScopeGuard;
 pub use constants::*;
 pub use environment::DockerEnvironment;
 pub use error::*;
-pub use graph::{PipelineInner, next_id};
+pub use graph::collect_coder_closure;
 pub use resources::*;
 
 /// How a [`Pipeline`] expands cross-language transforms.
