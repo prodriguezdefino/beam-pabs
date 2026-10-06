@@ -161,6 +161,7 @@ pub(crate) fn expand_timers(input: &DeriveInput) -> syn::Result<TokenStream2> {
         }
     });
     let empty = families.is_empty();
+    let has_timers = !empty;
     let body = |arms: Vec<TokenStream2>| {
         if empty {
             quote!(match *self {})
@@ -171,8 +172,24 @@ pub(crate) fn expand_timers(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let family_body = body(family_arms.collect());
     let tag_body = body(tag_arms.collect());
     let domain_body = body(domain_arms.collect());
+    let fired_body = if empty {
+        quote! {
+            let _ = (family, tag);
+            ::core::option::Option::None
+        }
+    } else {
+        quote! {
+            let _ = tag;
+            match family {
+                #(#fired_arms,)*
+                _ => ::core::option::Option::None,
+            }
+        }
+    };
     Ok(quote! {
         impl #krate::internals::TimerFamilies for #name {
+            const HAS_TIMERS: bool = #has_timers;
+
             fn specs() -> ::std::vec::Vec<#krate::internals::TimerFamilySpec> {
                 ::std::vec![#(#specs),*]
             }
@@ -190,11 +207,7 @@ pub(crate) fn expand_timers(input: &DeriveInput) -> syn::Result<TokenStream2> {
             }
 
             fn from_fired(family: &str, tag: &str) -> ::core::option::Option<Self> {
-                let _ = tag;
-                match family {
-                    #(#fired_arms,)*
-                    _ => ::core::option::Option::None,
-                }
+                #fired_body
             }
         }
     })

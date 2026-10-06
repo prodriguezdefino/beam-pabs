@@ -159,9 +159,11 @@ pub(crate) fn expand_outputs(input: &DeriveInput) -> syn::Result<TokenStream2> {
         let (field, tag) = (&o.field, o.tag());
         quote!(#field: outputs.declare(#tag))
     });
-    let arms = outputs.iter().map(|o| {
+    let mut sorted: Vec<&Output> = outputs.iter().collect();
+    sorted.sort_unstable_by_key(|o| o.tag());
+    let arms = sorted.iter().enumerate().map(|(index, o)| {
         let (variant, tag) = (&o.variant, o.tag());
-        quote!(Self::#variant(value) => emitter.push(::core::option::Option::Some(#tag), value))
+        quote!(Self::#variant(value) => emitter.push_indexed(#index, #tag, value))
     });
     let struct_doc = format!("The outputs of a transform that emits [`{unraw_name}`].");
     Ok(quote! {
