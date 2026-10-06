@@ -35,6 +35,14 @@ pub use crate::transforms::dofn::context::{
     BundleFinalizerCollector, FinalizationCallback, HandlerContext, ResidualApplication,
     ResidualCollector,
 };
+pub use crate::transforms::dofn::sdf::dynamic_split::{
+    DynamicSplitGuard, DynamicSplitHandler, DynamicSplitRegistrar, DynamicSplitResult,
+    SdfDynamicSplitter,
+};
+pub use crate::transforms::dofn::sdf::splittable_dofn::{
+    SdfPairWithRestrictionHandler, SdfProcessSizedElementsHandler, SdfSplitAndSizeHandler,
+    SdfTruncateSizedRestrictionsHandler, SplittableDoFnHandler,
+};
 pub use crate::transforms::dofn::side_input::{
     ScopedSideInputReader, SideInputReader, extract_side_input_tags,
 };

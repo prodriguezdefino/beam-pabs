@@ -26,6 +26,7 @@ mod batch;
 mod closure;
 pub(crate) mod context;
 mod pardo;
+pub mod sdf;
 pub(crate) mod side_input;
 pub(crate) mod state;
 pub(crate) mod timer;

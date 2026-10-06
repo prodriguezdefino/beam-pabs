@@ -17,17 +17,15 @@
  * under the License.
  */
 
-//! Window functions, windowing strategies, triggers and watermark estimators.
+//! Splittable DoFns: restrictions, trackers and [`SplittableParDo`].
 
-pub mod strategy;
-pub mod transform;
-pub mod trigger;
-pub mod watermark;
-pub mod window_fn;
+pub(crate) mod dynamic_split;
+mod offset_range;
+mod process_continuation;
+pub(crate) mod splittable_dofn;
+mod tracker;
 
-pub use crate::coders::{GlobalWindow, IntervalWindow};
-pub use strategy::*;
-pub use transform::*;
-pub use trigger::*;
-pub use watermark::*;
-pub use window_fn::*;
+pub use offset_range::{OffsetRange, OffsetRangeCoder, OffsetRangeTracker};
+pub use process_continuation::ProcessContinuation;
+pub use splittable_dofn::{SplittableDoFn, SplittableParDo};
+pub use tracker::{RestrictionError, RestrictionProgress, RestrictionTracker, WatermarkedTracker};

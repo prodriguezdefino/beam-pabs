@@ -27,8 +27,8 @@
 //! and timer specs, common windows and triggers, user metrics and rows.
 //!
 //! This prelude is `apply`-style; the facade's `beam::prelude` adds the fluent methods.
-//! Specialised items stay in their modules: [`crate::pipeline`] (resource hints),
-//! [`crate::metrics`] (query API),
+//! Specialised items stay in their modules: [`crate::transforms::sdf`], [`crate::windowing`]
+//! (watermark estimators), [`crate::pipeline`] (resource hints), [`crate::metrics`] (query API),
 //! [`crate::coders`], [`ParDoMulti`](crate::transforms::ParDoMulti) and [`crate::internals`].
 
 pub use crate::coders::BeamIterable;
@@ -40,10 +40,10 @@ pub use crate::pipeline::Pipeline;
 pub use crate::schema::BeamEnum;
 pub use crate::schema::{BeamRow, Row, Schema};
 pub use crate::transforms::{
-    BagState, BagStateSpec, Create, DoFn, Failure, Filter, FlatMap, Flatten, GroupByKey, Inspect,
-    Map, MapState, MapStateSpec, PTransform, ParDo, Partition, ProcessContext, SetState,
-    SetStateSpec, TimeDomain, Timer, TimerFamilySpec, TryMap, TryParDo, ValueState, ValueStateSpec,
-    WithFailures,
+    BagState, BagStateSpec, Create, DoFn, Failure, Filter, FlatMap, Flatten, GenerateSequence,
+    GroupByKey, Inspect, Map, MapState, MapStateSpec, PTransform, ParDo, Partition,
+    PeriodicImpulse, ProcessContext, SetState, SetStateSpec, TimeDomain, Timer, TimerFamilySpec,
+    TryMap, TryParDo, ValueState, ValueStateSpec, WithFailures,
 };
 pub use crate::values::{PBegin, PCollection, PCollectionList, PCollectionView, PDone};
 pub use crate::windowing::{

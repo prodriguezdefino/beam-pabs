@@ -35,15 +35,18 @@ pub mod failure;
 mod filter;
 mod flat_map;
 mod flatten;
+mod generate_sequence;
 mod group_by_key;
 pub(crate) mod handler;
 mod inspect;
 mod map;
 mod partition;
+mod periodic_impulse;
 mod try_map;
 
 pub use create::Create;
 use dofn::ClosureFn;
+pub use dofn::sdf;
 pub use dofn::{
     BagState, BagStateSpec, BatchConverter, BatchedDoFn, BatchedDoFnAdapter, DoFn, MapState,
     MapStateSpec, OutputBuilder, OutputTag, ParDo, ParDoMulti, ProcessContext, SetState,
@@ -54,11 +57,13 @@ pub use failure::{ExceptionElement, Failure, FailureCoder, TryParDo, WithFailure
 pub use filter::Filter;
 pub use flat_map::FlatMap;
 pub use flatten::Flatten;
+pub use generate_sequence::{DEFAULT_SEQUENCE_SPLIT_SIZE, GenerateSequence};
 pub use group_by_key::GroupByKey;
 pub(crate) use handler::{BundleHandler, ElementSink, HandlerInstance, TransformFn, TypedElement};
 pub use inspect::Inspect;
 pub use map::Map;
 pub use partition::Partition;
+pub use periodic_impulse::PeriodicImpulse;
 pub use try_map::TryMap;
 
 pub(crate) use display_data::{DisplayDataBuilder, HasDisplayData};
