@@ -44,7 +44,9 @@ bytes = { workspace = true }
 foldhash = { workspace = true }
 
 [dev-dependencies]
+beam = { package = "apache-beam-core", path = "../core", version = "2.78.0-SNAPSHOT", features = ["derive"] }
 harness = { package = "apache-beam-harness", path = "." }
+serde = { workspace = true }
 testutils = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 
