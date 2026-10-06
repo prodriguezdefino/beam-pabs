@@ -27,6 +27,7 @@ pub mod grpc;
 pub mod logging;
 #[doc(hidden)]
 pub mod provisioning;
+pub mod replay;
 pub mod state;
 pub mod status;
 pub mod user_state;

@@ -142,12 +142,13 @@ pub fn artifact_endpoint(args: &HarnessOptions, info: &ProvisionInfo) -> Option<
 }
 
 /// The options the pipeline binary is re-executed with: `args`, with unset endpoints taken
-/// from the provision info and `options_file` set.
+/// from the provision info and `options_file` set. `options_file` is `None` when the job
+/// carries no Rust options snapshot, because a driver of another SDK submitted it.
 #[doc(hidden)]
 pub fn worker_options(
     args: HarnessOptions,
     info: &ProvisionInfo,
-    options_file: PathBuf,
+    options_file: Option<PathBuf>,
 ) -> HarnessOptions {
     let artifact_endpoint = artifact_endpoint(&args, info);
     let status_endpoint = args
@@ -158,7 +159,7 @@ pub fn worker_options(
     HarnessOptions {
         status_endpoint,
         artifact_endpoint,
-        options_file: Some(options_file),
+        options_file,
         ..args
     }
 }

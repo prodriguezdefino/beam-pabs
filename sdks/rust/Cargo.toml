@@ -26,6 +26,8 @@ members = [
     "beam/io/file",
     "beam/test-utils",
     "beam/harness",
+    "beam/external",
+    "beam/expansion",
     "beam/runners/prism",
     "beam/testing",
 ]
@@ -83,12 +85,14 @@ inventory = "0.3"
 globset = "0.4"
 foldhash = "0.2"
 serde-saphyr = "1"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 proc-macro2 = "1.0"
 quote = "1.0"
 syn = { version = "3", features = ["full", "extra-traits"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 rust_decimal = { version = "1", default-features = false, features = ["std"] }
 proptest = "1"
+libc = "0.2"
 
 # Internal workspace crates
 beam = { package = "apache-beam", path = "beam", version = "2.78.0-SNAPSHOT" }
@@ -96,6 +100,8 @@ core = { package = "apache-beam-core", path = "beam/core", version = "2.78.0-SNA
 model = { package = "apache-beam-model", path = "beam/model", version = "2.78.0-SNAPSHOT" }
 fluent = { package = "apache-beam-fluent", path = "beam/fluent", version = "2.78.0-SNAPSHOT" }
 harness = { package = "apache-beam-harness", path = "beam/harness", version = "2.78.0-SNAPSHOT" }
+external = { package = "apache-beam-external", path = "beam/external", version = "2.78.0-SNAPSHOT" }
+expansion = { package = "apache-beam-expansion", path = "beam/expansion", version = "2.78.0-SNAPSHOT" }
 file = { package = "apache-beam-io-file", path = "beam/io/file", version = "2.78.0-SNAPSHOT" }
 prism = { package = "apache-beam-runner-prism", path = "beam/runners/prism", version = "2.78.0-SNAPSHOT" }
 testing = { package = "apache-beam-testing", path = "beam/testing", version = "2.78.0-SNAPSHOT" }

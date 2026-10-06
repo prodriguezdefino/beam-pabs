@@ -254,7 +254,7 @@ fn worker_options_carry_the_options_file_and_flag_or_provisioned_endpoints() {
     };
     let options_file = PathBuf::from("/tmp/beam-rust-worker/pipeline_options.json");
 
-    let options = worker_options(args, &info_with_endpoints(), options_file.clone());
+    let options = worker_options(args, &info_with_endpoints(), Some(options_file.clone()));
 
     assert_eq!(
         options.status_endpoint.as_deref(),
@@ -300,11 +300,29 @@ fn worker_options_carry_the_options_file_and_flag_or_provisioned_endpoints() {
         artifact_endpoint(&args, &info).as_deref(),
         Some("flag-artifact:5")
     );
-    let options = worker_options(args, &info, PathBuf::from("options.json"));
+    let options = worker_options(args, &info, Some(PathBuf::from("options.json")));
     assert_eq!(options.status_endpoint.as_deref(), Some("flag-status:4"));
     assert_eq!(
         options.artifact_endpoint.as_deref(),
         Some("flag-artifact:5")
+    );
+}
+
+#[test]
+fn a_job_without_a_rust_snapshot_starts_the_binary_without_an_options_file() {
+    // A driver of another SDK sends no Rust options snapshot.
+    assert_eq!(sdk_options_from(&info_with_endpoints()), None);
+    let args = HarnessOptions {
+        id: Some("worker-1".to_string()),
+        ..Default::default()
+    };
+    let options = worker_options(args, &info_with_endpoints(), None);
+    assert_eq!(options.options_file, None);
+    let flags = worker_flags(&options);
+    assert_eq!(flags[0], "--worker=true");
+    assert!(
+        !flags.iter().any(|f| f.starts_with("--options_file")),
+        "no options file: {flags:?}"
     );
 }
 

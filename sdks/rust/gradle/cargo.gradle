@@ -56,3 +56,14 @@ cargoTask('cleanSdk', 'Build', 'Remove the cargo target directory',
 build.dependsOn 'buildWorkspace'
 check.dependsOn 'fmtCheck', 'clippy'
 clean.dependsOn 'cleanSdk'
+
+// Some crates test against Java expansion services that start from the JARs of this Beam
+// build (build/libs/<artifact>-<version>.jar). `test` builds the JARs of the crates it runs.
+def testExpansionServiceJars = [
+    'apache-beam-external': ':sdks:java:io:google-cloud-platform:expansion-service:shadowJar',
+]
+testExpansionServiceJars.each { pkg, jar ->
+  if (!selectedPkg || selectedPkg == pkg) {
+    tasks.named('test') { dependsOn jar }
+  }
+}

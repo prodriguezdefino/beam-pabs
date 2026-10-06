@@ -30,6 +30,8 @@
 //! 3. Use the pre-baked binary, or fetch the staged one over `ArtifactRetrievalService`.
 //! 4. Write the driver's options snapshot to a file and re-execute the binary with the
 //!    worker flags plus `--options_file`, so it rebuilds the identical graph and serves it.
+//!    A job from a driver of another SDK has no snapshot, so the binary gets no
+//!    `--options_file`. Only the expansion service binary runs without it.
 
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
@@ -143,13 +145,18 @@ async fn boot(args: HarnessOptions) -> BootResult<()> {
             }
         };
 
-    let encoded = sdk_options_from(&info).ok_or_else(|| {
-        format!(
-            "Provision info carries no '{SDK_OPTIONS_OPTION}'. The pipeline cannot rebuild \
-             the graph its driver submitted without the driver's options."
-        )
-    })?;
-    let options_file = write_options_file(encoded).await?;
+    // Only a Rust driver sends an options snapshot.
+    let options_file = match sdk_options_from(&info) {
+        Some(encoded) => Some(write_options_file(encoded).await?),
+        None => {
+            warn!(
+                "Provision info has no '{SDK_OPTIONS_OPTION}': a driver of another SDK \
+                 submitted the job. Starting the binary without --options_file. Only the \
+                 expansion service binary can run without it."
+            );
+            None
+        }
+    };
 
     let final_args = worker_options(args, &info, options_file);
 

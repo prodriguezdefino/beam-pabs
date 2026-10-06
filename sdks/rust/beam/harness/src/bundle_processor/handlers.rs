@@ -38,6 +38,8 @@ use beam::windowing::window_into_handler_key;
 use model::fn_execution::ProcessBundleDescriptor;
 use model::pipeline::{CombinePayload, FunctionSpec, PTransform, ParDoPayload, WindowIntoPayload};
 
+use crate::replay::{self, URN_RUST_DOFN_EXPANDED};
+
 /// Resolves the handler registered for a transform.
 ///
 /// Resolution reads only the `spec` of the transform, never its id or `unique_name`. A
@@ -48,6 +50,9 @@ use model::pipeline::{CombinePayload, FunctionSpec, PTransform, ParDoPayload, Wi
 ///   [`ParDoRegistration`](beam::internals::ParDoRegistration) sets to the transform's
 ///   unique name.
 /// - Lifted `CombinePerKey` stages: the `combine_fn` payload plus the stage.
+/// - A `do_fn` or `combine_fn` from an expansion service: the key in its
+///   [`ExpandedSpec`](replay::ExpandedSpec). The worker replays the expansion once, then
+///   finds the key in it.
 /// - `WindowInto`: built in for the standard window functions, otherwise the key from
 ///   [`window_into_handler_key`].
 /// - `Flatten`: built in.
@@ -58,22 +63,28 @@ pub fn lookup_handler(
 ) -> Option<TransformFn> {
     let spec = transform.spec.as_ref()?;
     match spec.urn.as_str() {
-        URN_PAR_DO => handlers.get(&do_fn_key(&spec.payload)?).cloned(),
+        URN_PAR_DO => resolve_key_spec(handlers, &do_fn(&spec.payload)?, None),
         URN_SDF_PAIR_WITH_RESTRICTION
         | URN_SDF_SPLIT_AND_SIZE_RESTRICTIONS
-        | URN_SDF_PROCESS_SIZED_ELEMENT_AND_RESTRICTIONS => handlers
-            .get(&do_fn_key(&spec.payload)?)
-            .and_then(|h| h.stage_handler(&spec.urn)),
-        URN_COMBINE_PER_KEY_PRECOMBINE => {
-            lookup_combine_stage(handlers, spec.payload.as_slice(), COMBINE_STAGE_PRECOMBINE)
-                .cloned()
+        | URN_SDF_PROCESS_SIZED_ELEMENT_AND_RESTRICTIONS => {
+            resolve_key_spec(handlers, &do_fn(&spec.payload)?, None)
+                .and_then(|h| h.stage_handler(&spec.urn))
         }
-        URN_COMBINE_PER_KEY_MERGE_ACCUMULATORS => {
-            lookup_combine_stage(handlers, spec.payload.as_slice(), COMBINE_STAGE_MERGE).cloned()
-        }
-        URN_COMBINE_PER_KEY_EXTRACT_OUTPUTS => {
-            lookup_combine_stage(handlers, spec.payload.as_slice(), COMBINE_STAGE_EXTRACT).cloned()
-        }
+        URN_COMBINE_PER_KEY_PRECOMBINE => resolve_key_spec(
+            handlers,
+            &combine_fn(&spec.payload)?,
+            Some(COMBINE_STAGE_PRECOMBINE),
+        ),
+        URN_COMBINE_PER_KEY_MERGE_ACCUMULATORS => resolve_key_spec(
+            handlers,
+            &combine_fn(&spec.payload)?,
+            Some(COMBINE_STAGE_MERGE),
+        ),
+        URN_COMBINE_PER_KEY_EXTRACT_OUTPUTS => resolve_key_spec(
+            handlers,
+            &combine_fn(&spec.payload)?,
+            Some(COMBINE_STAGE_EXTRACT),
+        ),
         URN_WINDOW_INTO => {
             let window_fn_spec = WindowIntoPayload::decode(spec.payload.as_slice())
                 .ok()?
@@ -202,26 +213,38 @@ fn nested_prefix(elem: &[u8]) -> std::io::Result<&[u8]> {
     Ok(&elem[..end])
 }
 
-/// Returns the handler key in the `do_fn` of a `ParDoPayload`, if it has one.
-fn do_fn_key(payload: &[u8]) -> Option<String> {
-    let do_fn = ParDoPayload::decode(payload).ok()?.do_fn?;
-    String::from_utf8(do_fn.payload)
-        .ok()
-        .filter(|key| !key.is_empty())
+fn do_fn(payload: &[u8]) -> Option<FunctionSpec> {
+    ParDoPayload::decode(payload).ok()?.do_fn
 }
 
-/// Resolves a stage of a lifted `CombinePerKey` from its `CombinePayload`.
-fn lookup_combine_stage<'a>(
-    handlers: &'a HashMap<String, TransformFn>,
-    payload: &[u8],
-    stage: &str,
-) -> Option<&'a TransformFn> {
-    let combine_payload = CombinePayload::decode(payload).ok()?;
-    let combine_fn = combine_payload.combine_fn?;
-    let key = std::str::from_utf8(&combine_fn.payload).ok()?;
-    if key.is_empty() {
-        None
-    } else {
-        handlers.get(&combine_stage_key(key, stage))
+fn combine_fn(payload: &[u8]) -> Option<FunctionSpec> {
+    CombinePayload::decode(payload).ok()?.combine_fn
+}
+
+/// Resolves a Rust `FunctionSpec` that holds a handler key, plus a combine `stage` if set.
+///
+/// An expanded spec resolves in the handlers of its replay entry. Every other spec holds a
+/// bare key, which resolves in `handlers`.
+fn resolve_key_spec(
+    handlers: &HashMap<String, TransformFn>,
+    spec: &FunctionSpec,
+    stage: Option<&str>,
+) -> Option<TransformFn> {
+    let find = |map: &HashMap<String, TransformFn>, key: &str| {
+        if key.is_empty() {
+            return None;
+        }
+        match stage {
+            Some(stage) => map.get(&combine_stage_key(key, stage)),
+            None => map.get(key),
+        }
+        .cloned()
+    };
+    match spec.urn.as_str() {
+        URN_RUST_DOFN_EXPANDED => {
+            let (replayed, key) = replay::replayed_handlers(spec)?;
+            find(&replayed, &key)
+        }
+        _ => find(handlers, std::str::from_utf8(&spec.payload).ok()?),
     }
 }
