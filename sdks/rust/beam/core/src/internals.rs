@@ -43,6 +43,9 @@ pub use crate::metrics::system::{
     sampled_byte_size, start_bundle_msecs, total_msecs, work_completed, work_remaining,
 };
 pub use crate::pipeline::graph::{PipelineInner, next_id};
+pub use crate::runtime::{
+    AbortOnDrop, InFlightLimit, block_on_io, io_runtime, recv_blocking, send_blocking,
+};
 pub use crate::transforms::co_group_by_key::RawUnionValue;
 pub use crate::transforms::combine::combine_internals::Table as CombineTable;
 pub use crate::transforms::combine::registered::{
@@ -470,4 +473,15 @@ pub fn map_windowing_strategy<T: 'static>(
         lock.register_windowing_strategy(f(strategy))
     };
     pcoll.with_windowing_strategy_id(mapped)
+}
+
+/// Builds the `(failed_row: ROW<input_schema>, error_message: STRING)` dead-letter schema.
+pub fn failed_row_schema(input_schema: &crate::schema::Schema) -> crate::schema::Schema {
+    crate::schema::Schema::new(vec![
+        crate::schema::Field::new(
+            "failed_row",
+            crate::schema::FieldType::row(input_schema.clone()),
+        ),
+        crate::schema::Field::new("error_message", crate::schema::FieldType::string()),
+    ])
 }
