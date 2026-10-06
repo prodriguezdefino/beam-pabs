@@ -18,6 +18,7 @@
  */
 
 mod follow_job_test;
+mod prism_runner_test;
 mod runner_config_test;
 mod server_test;
 mod staging_test;
