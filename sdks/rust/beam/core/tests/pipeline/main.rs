@@ -20,4 +20,5 @@
 //! Pipeline graph, validation, and element metadata propagation tests.
 
 mod element_metadata_propagation_test;
+mod pcollection_boundedness_test;
 mod pipeline_validation_test;

@@ -21,13 +21,16 @@
 
 use std::marker::PhantomData;
 
-use super::access::{SideInputScope, SideIter, SideMap, decode_side_input};
-use super::{AnySideInput, IterView, MultimapView, PCollectionView, SingletonView, sealed};
+use super::access::{SideDict, SideInputScope, SideIter, SideMap, decode_side_input};
+use super::{
+    AnySideInput, IterView, MapView, MultimapView, PCollectionView, SingletonView, ViewKind, sealed,
+};
 use crate::coders::DefaultCoder;
 
 /// Side input views and the values read from them: [`SingletonView<T>`] gives `T`,
-/// [`IterView<T>`] a [`SideIter`], [`MultimapView<K, V>`] a [`SideMap`]. Tuples of 2 to 6
-/// views, arrays and `Vec`s give their values in the same shape. Sealed.
+/// [`IterView<T>`] a [`SideIter`], [`MultimapView<K, V>`] a [`SideMap`], [`MapView<K, V>`] a
+/// [`SideDict`]. Tuples of 2 to 6 views, arrays and `Vec`s give their values in the same shape.
+/// Sealed.
 pub trait SideInputs: sealed::Sealed + Clone + Send + Sync + 'static {
     /// What the function reads in the current window.
     type Values<'s>
@@ -69,16 +72,22 @@ impl<T: DefaultCoder> SideInputs for SingletonView<T> {
     fn read<'s>(&'s self, scope: SideInputScope<'s>) -> crate::Result<T> {
         let (reader, window) = self.locate(scope)?;
         let mut elements = reader.get_iterable(&self.tag, &window)?;
+        let decode = |bytes: &[u8]| {
+            decode_side_input(bytes, &self.tag, self.row_schema.as_ref(), &self.field_map)
+        };
         let Some(single) = elements.next().transpose()? else {
-            return Err(format!("Empty singleton side input for tag '{}'", self.tag).into());
+            return match &self.default {
+                Some(Ok(default)) => decode(default),
+                Some(Err(reason)) => Err(reason.clone().into()),
+                None => Err(format!(
+                    "Empty singleton side input for tag '{}': set a value with `with_default`",
+                    self.tag
+                )
+                .into()),
+            };
         };
         match elements.next().transpose()? {
-            None => decode_side_input(
-                &single,
-                &self.tag,
-                self.row_schema.as_ref(),
-                &self.field_map,
-            ),
+            None => decode(&single),
             Some(_) => Err(format!(
                 "PCollection with more than one element accessed as a singleton for tag '{}'",
                 self.tag
@@ -119,6 +128,30 @@ where
     }
 
     fn read<'s>(&'s self, scope: SideInputScope<'s>) -> crate::Result<SideMap<'s, K, V>> {
+        self.side_map(scope)
+    }
+}
+
+impl<K: DefaultCoder, V: DefaultCoder> SideInputs for MapView<K, V>
+where
+    (K, V): DefaultCoder,
+{
+    type Values<'s> = SideDict<'s, K, V>;
+
+    fn views(&self) -> Vec<&dyn AnySideInput> {
+        vec![self]
+    }
+
+    fn read<'s>(&'s self, scope: SideInputScope<'s>) -> crate::Result<SideDict<'s, K, V>> {
+        Ok(SideDict {
+            map: self.side_map(scope)?,
+        })
+    }
+}
+
+impl<K, V, Kind: ViewKind> PCollectionView<(K, V), Kind> {
+    /// The keyed lookups of this view in the window of `scope`.
+    fn side_map<'s>(&'s self, scope: SideInputScope<'s>) -> crate::Result<SideMap<'s, K, V>> {
         let (reader, window) = self.locate(scope)?;
         Ok(SideMap {
             reader,
@@ -126,6 +159,8 @@ where
             window,
             row_schema: self.row_schema.as_ref(),
             field_map: &self.field_map,
+            key_row_schema: self.key_row_schema.as_ref(),
+            key_field_map: &self.key_field_map,
             _marker: PhantomData,
         })
     }

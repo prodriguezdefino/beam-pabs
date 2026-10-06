@@ -640,9 +640,7 @@ fn a_window_observing_sdf_runs_every_stage_once_per_window() {
     };
 
     // Pair stage: one (element, restriction) per window, sized from that window.
-    let mut pair = SdfPairWithRestrictionHandler {
-        func: WindowAwareSdf,
-    };
+    let mut pair = SdfPairWithRestrictionHandler::new(WindowAwareSdf);
     let mut sink = Recorder::default();
     let mut ctx = HandlerContext::new(&mut sink).with_header(&header);
     pair.process(&"e".to_string().encode().unwrap(), &mut ctx)

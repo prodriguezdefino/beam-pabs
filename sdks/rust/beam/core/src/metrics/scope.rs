@@ -110,6 +110,10 @@ impl TransformMetrics {
         }
     }
 
+    fn running(&self) -> Option<&str> {
+        self.running_scope().map(|(transform_id, _)| transform_id)
+    }
+
     fn running_scope(&self) -> Option<(&str, ScopeId)> {
         let index = self.current.load(Ordering::Relaxed);
         let transform_id = self.transform_ids.get(index)?;
@@ -214,6 +218,20 @@ static PROCESS_WIDE: LazyLock<MetricsContainer> = LazyLock::new(MetricsContainer
 /// Runners read these metrics with `HarnessMonitoringInfosRequest`.
 pub fn process_wide_container() -> &'static MetricsContainer {
     &PROCESS_WIDE
+}
+
+/// Runs `f` with the id of the transform that runs on this thread, or `None` outside a
+/// transform. Log entries read it, so a log line in user code names its transform.
+pub fn with_running_transform<R>(f: impl FnOnce(Option<&str>) -> R) -> R {
+    CURRENT.with(|stack| {
+        let stack = stack.borrow();
+        let running = match stack.last() {
+            Some(Frame::Single { transform_id, .. }) => Some(transform_id.as_ref()),
+            Some(Frame::Transforms(metrics)) => metrics.running(),
+            None => None,
+        };
+        f(running.filter(|id| !id.is_empty()))
+    })
 }
 
 /// Runs `f` with the active container, transform and scope, or the process-wide container with

@@ -23,7 +23,9 @@
 use std::sync::{Arc, Mutex};
 
 use beam::coders::{DefaultCoder, TimerRecord};
-use beam::internals::{HandlerContext, IntoParDoFn, TypedElement, UserStateReader};
+use beam::internals::{
+    HandlerContext, IntoParDoFn, TypedElement, UserStateBackend, UserStateError,
+};
 use beam::pipeline::Pipeline;
 use beam::prelude::*;
 use beam::transforms::WithFinalizer;
@@ -41,13 +43,15 @@ enum Flush {
 /// A state reader that fails every call. The cells bind to it; the test does not read them.
 struct NoReads;
 
-type Unused<T> = std::result::Result<T, String>;
+type Unused<T> = std::result::Result<T, UserStateError>;
 
 fn unused<T>() -> Unused<T> {
-    Err("the test does not read state".to_string())
+    Err(UserStateError::Other(
+        "the test does not read state".to_string(),
+    ))
 }
 
-impl UserStateReader for NoReads {
+impl UserStateBackend for NoReads {
     fn get_state(&self, _: &str, _: &[u8], _: &[u8]) -> Unused<Vec<Vec<u8>>> {
         unused()
     }
@@ -64,6 +68,9 @@ impl UserStateReader for NoReads {
         unused()
     }
     fn put_map_state(&self, _: &str, _: &[u8], _: &[u8], _: Vec<u8>, _: Vec<u8>) -> Unused<()> {
+        unused()
+    }
+    fn append_map_state(&self, _: &str, _: &[u8], _: &[u8], _: Vec<u8>, _: Vec<u8>) -> Unused<()> {
         unused()
     }
     fn remove_map_key(&self, _: &str, _: &[u8], _: &[u8], _: &[u8]) -> Unused<()> {
@@ -222,12 +229,12 @@ fn every_lifecycle_call_reaches_the_stateful_dofn() {
     .into_handler()
     .instantiate();
     let mut sink = Vec::<Vec<u8>>::new();
-    let reader: Arc<dyn UserStateReader> = Arc::new(NoReads);
+    let reader: Arc<dyn UserStateBackend> = Arc::new(NoReads);
 
     handler.setup().expect("setup");
     handler.start_bundle().expect("start_bundle");
     {
-        let mut ctx = HandlerContext::new(&mut sink).with_state_reader(Some(&reader));
+        let mut ctx = HandlerContext::new(&mut sink).with_state_backend(Some(&reader));
         let encoded = ("a".to_string(), 1i64).encode().expect("encode");
         handler.process(&encoded, &mut ctx).expect("process");
         let mut fused = Some(("b".to_string(), 2i64));
@@ -237,8 +244,8 @@ fn every_lifecycle_call_reaches_the_stateful_dofn() {
         let fired = TimerRecord::new_set(
             DefaultCoder::encode(&"c".to_string()).expect("encode"),
             "",
-            10,
-            10,
+            Instant::from_millis(10),
+            Instant::from_millis(10),
         );
         handler
             .on_timer("flush", &fired, &mut ctx)
@@ -346,7 +353,8 @@ fn the_default_hooks_succeed_and_an_undeclared_timer_family_fails() {
         handler
             .on_timer("unknown", &cleared, &mut ctx)
             .expect("a cleared timer is ignored");
-        let fired = TimerRecord::new_set(key, "", 10, 10);
+        let fired =
+            TimerRecord::new_set(key, "", Instant::from_millis(10), Instant::from_millis(10));
         let error = handler
             .on_timer("unknown", &fired, &mut ctx)
             .expect_err("Plain declares no timers");
@@ -367,4 +375,172 @@ fn setting_a_timer_without_a_timer_collector_fails() {
         .process(&element, &mut ctx)
         .expect_err("no timer collector");
     assert!(error.contains("No active TimerCollector"), "{error}");
+}
+
+/// Emits the key, the firing time and the hold from `on_window_expiration`.
+#[derive(Clone)]
+struct Expiring;
+
+impl StatefulDoFn for Expiring {
+    type Key = String;
+    type Value = i64;
+    type Out = String;
+    type State = ();
+    type Timer = Flush;
+    const ON_WINDOW_EXPIRATION: bool = true;
+
+    fn process_element(
+        &mut self,
+        _key: &String,
+        _value: i64,
+        _state: &mut (),
+        _ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        Ok(())
+    }
+
+    fn on_timer(
+        &mut self,
+        timer: Flush,
+        key: &String,
+        _state: &mut (),
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        match timer {
+            Flush::Now => ctx.emit(format!("timer {key}")),
+        }
+    }
+
+    fn on_window_expiration(
+        &mut self,
+        key: &String,
+        _state: &mut (),
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        let fire = ctx.fire_timestamp().map(|fire| fire.as_millis());
+        let hold = ctx.timestamp().as_millis();
+        ctx.emit(format!("expired {key} fire={fire:?} hold={hold}"))
+    }
+}
+
+#[test]
+fn window_expiration_declares_an_event_time_family_and_the_requirement() {
+    use beam::internals::TimeDomain;
+    use beam::pipeline::URN_REQUIREMENT_ON_WINDOW_EXPIRATION;
+
+    let p = Pipeline::new();
+    let input = p.apply("Create", Create::new(vec![("k".to_string(), 1i64)]));
+    let _ = input.apply("Expiring", ParDo::new(Expiring));
+    let (payload, _) = par_do(&p, "Expiring");
+    let family = &payload.on_window_expiration_timer_family_spec;
+    assert!(!family.is_empty());
+    assert_ne!(family, "flush");
+    let spec = payload
+        .timer_family_specs
+        .get(family)
+        .expect("the expiration family is declared");
+    assert_eq!(
+        spec.time_domain,
+        proto::time_domain::Enum::from(TimeDomain::EventTime) as i32
+    );
+    assert!(payload.timer_family_specs.contains_key("flush"));
+    assert!(
+        p.to_proto()
+            .requirements
+            .iter()
+            .any(|r| r == URN_REQUIREMENT_ON_WINDOW_EXPIRATION)
+    );
+
+    let plain = Pipeline::new();
+    let _ = plain
+        .apply("Create", Create::new(vec![("k".to_string(), 1i64)]))
+        .apply("Plain", ParDo::new(Plain));
+    assert!(
+        par_do(&plain, "Plain")
+            .0
+            .on_window_expiration_timer_family_spec
+            .is_empty()
+    );
+    assert!(
+        !plain
+            .to_proto()
+            .requirements
+            .iter()
+            .any(|r| r == URN_REQUIREMENT_ON_WINDOW_EXPIRATION)
+    );
+}
+
+#[test]
+fn the_expiration_family_reaches_on_window_expiration_and_other_families_on_timer() {
+    let p = Pipeline::new();
+    let _ = p
+        .apply("Create", Create::new(vec![("k".to_string(), 1i64)]))
+        .apply("Expiring", ParDo::new(Expiring));
+    let family = par_do(&p, "Expiring")
+        .0
+        .on_window_expiration_timer_family_spec;
+
+    let mut handler = Expiring.into_handler().instantiate();
+    let mut sink = Vec::<Vec<u8>>::new();
+    {
+        let mut ctx = HandlerContext::new(&mut sink);
+        let key = DefaultCoder::encode(&"k".to_string()).expect("encode");
+        let fired = TimerRecord::new_set(
+            key.clone(),
+            "",
+            Instant::from_millis(9_999),
+            Instant::from_millis(9_999),
+        );
+        handler
+            .on_timer(&family, &fired, &mut ctx)
+            .expect("on_window_expiration");
+        let flush = TimerRecord::new_set(key, "", Instant::from_millis(5), Instant::from_millis(5));
+        handler
+            .on_timer("flush", &flush, &mut ctx)
+            .expect("on_timer");
+    }
+    let emitted = sink
+        .iter()
+        .map(|bytes| <String as DefaultCoder>::decode(bytes).expect("decode"))
+        .collect::<Vec<_>>();
+    assert_eq!(emitted, ["expired k fire=Some(9999) hold=9999", "timer k"]);
+}
+
+#[derive(Timers)]
+enum Reserved {
+    #[timer(event_time, id = "__on_window_expiration")]
+    Clash,
+}
+
+/// Declares a user timer family with the reserved id.
+#[derive(Clone)]
+struct ReservedFamily;
+
+impl StatefulDoFn for ReservedFamily {
+    type Key = String;
+    type Value = i64;
+    type Out = i64;
+    type State = ();
+    type Timer = Reserved;
+
+    fn process_element(
+        &mut self,
+        _key: &String,
+        value: i64,
+        _state: &mut (),
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        ctx.emit(value)
+    }
+}
+
+#[test]
+fn a_user_timer_family_with_the_reserved_id_fails_validation() {
+    let p = Pipeline::new();
+    let _ = p
+        .apply("Create", Create::new(vec![("k".to_string(), 1i64)]))
+        .apply("Reserved", ParDo::new(ReservedFamily));
+    let error = p.validate().expect_err("the id is reserved");
+    assert!(error.to_string().contains("is reserved"), "{error}");
+    let _ = Reserved::Clash;
 }
