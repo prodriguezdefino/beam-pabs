@@ -32,7 +32,15 @@ chrono = { workspace = true }
 rust_decimal = { workspace = true }
 prost = { workspace = true }
 thiserror = { workspace = true }
+async-trait = { workspace = true }
+clap = { workspace = true }
+inventory = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+prost-types = { workspace = true }
 tracing = { workspace = true }
+tokio = { workspace = true }
+foldhash = { workspace = true }
 
 [features]
 # Opt-in, mirroring `serde`'s `derive` feature.
@@ -44,7 +52,6 @@ model = { workspace = true }
 proptest = { workspace = true }
 serde = { workspace = true }
 serde-saphyr = { workspace = true }
-serde_json = { workspace = true }
 
 [lints]
 workspace = true
