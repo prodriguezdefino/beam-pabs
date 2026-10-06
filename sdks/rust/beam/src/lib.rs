@@ -113,6 +113,8 @@ pub mod io {
 pub mod runners {
     pub use beam_core::runners::*;
 
+    #[cfg(feature = "dataflow")]
+    pub use beam_runner_dataflow as dataflow;
     #[cfg(feature = "prism")]
     pub use beam_runner_prism as prism;
 }
@@ -136,6 +138,9 @@ mod link {
 
     #[cfg(feature = "harness")]
     pub use beam_harness as _;
+
+    #[cfg(feature = "dataflow")]
+    pub use beam_runner_dataflow as _;
 
     #[cfg(feature = "prism")]
     pub use beam_runner_prism as _;
