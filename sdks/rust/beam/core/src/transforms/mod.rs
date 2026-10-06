@@ -28,6 +28,10 @@
 
 use crate::values::{PInput, POutput};
 
+mod batch_elements;
+mod co_group_by_key;
+mod combine;
+mod count;
 mod create;
 pub mod display_data;
 pub(crate) mod dofn;
@@ -39,11 +43,19 @@ mod generate_sequence;
 mod group_by_key;
 pub(crate) mod handler;
 mod inspect;
+mod join;
 mod map;
 mod partition;
 mod periodic_impulse;
+mod reshuffle;
 mod try_map;
 
+pub use batch_elements::{BatchElements, ExplodeBatch};
+pub use co_group_by_key::{CoGbkResult, CoGroupByKey, KeyedPCollectionTuple, RawUnionValue};
+#[doc(hidden)]
+pub use combine::combine_internals;
+pub use combine::{CombineFn, CombineGlobally, CombinePerKey, Max, Min, Sum};
+pub use count::{CountGlobally, CountPerElement};
 pub use create::Create;
 use dofn::ClosureFn;
 pub use dofn::sdf;
@@ -61,9 +73,11 @@ pub use generate_sequence::{DEFAULT_SEQUENCE_SPLIT_SIZE, GenerateSequence};
 pub use group_by_key::GroupByKey;
 pub(crate) use handler::{BundleHandler, ElementSink, HandlerInstance, TransformFn, TypedElement};
 pub use inspect::Inspect;
+pub use join::*;
 pub use map::Map;
 pub use partition::Partition;
 pub use periodic_impulse::PeriodicImpulse;
+pub use reshuffle::Reshuffle;
 pub use try_map::TryMap;
 
 pub(crate) use display_data::{DisplayDataBuilder, HasDisplayData};

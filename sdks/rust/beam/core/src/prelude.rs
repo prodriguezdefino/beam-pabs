@@ -23,8 +23,8 @@
 //! use beam::prelude::*;
 //! ```
 //!
-//! Pipeline, options, PValues, built-in transforms, the `PTransform`/`DoFn` traits, state
-//! and timer specs, common windows and triggers, user metrics and rows.
+//! Pipeline, options, PValues, built-in transforms, the `PTransform`/`DoFn`/`CombineFn`
+//! traits, state and timer specs, common windows and triggers, user metrics and rows.
 //!
 //! This prelude is `apply`-style; the facade's `beam::prelude` adds the fluent methods.
 //! Specialised items stay in their modules: [`crate::transforms::sdf`], [`crate::windowing`]
@@ -40,10 +40,13 @@ pub use crate::pipeline::Pipeline;
 pub use crate::schema::BeamEnum;
 pub use crate::schema::{BeamRow, Row, Schema};
 pub use crate::transforms::{
-    BagState, BagStateSpec, Create, DoFn, Failure, Filter, FlatMap, Flatten, GenerateSequence,
-    GroupByKey, Inspect, Map, MapState, MapStateSpec, PTransform, ParDo, Partition,
-    PeriodicImpulse, ProcessContext, SetState, SetStateSpec, TimeDomain, Timer, TimerFamilySpec,
-    TryMap, TryParDo, ValueState, ValueStateSpec, WithFailures,
+    BagState, BagStateSpec, BatchElements, BroadcastInnerJoin, BroadcastLeftJoin, CoGbkResult,
+    CoGroupByKey, CombineFn, CombineGlobally, CombinePerKey, CountGlobally, CountPerElement,
+    Create, DoFn, Failure, Filter, FlatMap, Flatten, FullOuterJoin, GenerateSequence, GroupByKey,
+    InnerJoin, Inspect, KeyedPCollectionTuple, LeftJoin, Map, MapState, MapStateSpec, Max, Min,
+    PTransform, ParDo, Partition, PeriodicImpulse, ProcessContext, Reshuffle, RightJoin, SetState,
+    SetStateSpec, Sum, TimeDomain, Timer, TimerFamilySpec, TryMap, TryParDo, ValueState,
+    ValueStateSpec, WithFailures,
 };
 pub use crate::values::{PBegin, PCollection, PCollectionList, PCollectionView, PDone};
 pub use crate::windowing::{
