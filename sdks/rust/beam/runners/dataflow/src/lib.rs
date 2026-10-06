@@ -59,24 +59,39 @@
 //! command stages the pipeline and writes a classic template instead of
 //! starting a job.
 
-pub mod client;
-pub mod constants;
-pub mod options;
-pub mod staging;
-pub mod translate;
+pub(crate) mod client;
+pub(crate) mod constants;
+pub(crate) mod options;
+pub(crate) mod runner;
+pub(crate) mod staging;
+pub(crate) mod test_runner;
+pub(crate) mod translate;
 
 pub use client::{
     ClientError, DataflowApiClient, HttpDataflowClient, JobMessageItem, JobMetricsResponse,
     JobResponse, JobState, ListJobMessagesResponse, MessageCursor, MetricStructuredName,
     MetricUpdateItem, is_successful_state, is_terminal_state,
 };
-pub use constants::*;
+pub use constants::{
+    AUTOSCALING_ALGORITHM_BASIC, AUTOSCALING_ALGORITHM_NONE, DEFAULT_DATAFLOW_ENDPOINT,
+    DEFAULT_DATAFLOW_MAJOR_VERSION, DEFAULT_JOB_POLL_INTERVAL, DEFAULT_RUST_ENVIRONMENT_ID,
+    EXPERIMENT_USE_RUNNER_V2, FNAPI_BATCH, FNAPI_STREAMING, JOB_STATE_CANCELLED,
+    JOB_STATE_CANCELLING, JOB_STATE_DONE, JOB_STATE_DRAINED, JOB_STATE_DRAINING, JOB_STATE_FAILED,
+    JOB_STATE_PENDING, JOB_STATE_QUEUED, JOB_STATE_RUNNING, JOB_STATE_STOPPED, JOB_STATE_UNKNOWN,
+    JOB_STATE_UPDATED, JOB_TYPE_BATCH, JOB_TYPE_STREAMING, MAX_CONSECUTIVE_JOB_STATUS_ERRORS,
+    STAGED_MODEL_NAME, STAGED_WORKER_NAME, WORKER_IP_PRIVATE, WORKER_IP_UNSPECIFIED,
+    WORKER_POOL_KIND_HARNESS,
+};
 pub use options::{AutoscalingAlgorithm, DataflowJobOptions, DataflowOptions};
+pub use runner::{DataflowRunner, DataflowRunnerError};
+#[doc(hidden)]
+pub use runner::{generate_job_name, job_name_prefix};
 #[doc(hidden)]
 pub use staging::{
     compute_sha256, stage_and_resolve_environment_artifacts, stage_pipeline_model,
     stage_worker_binary,
 };
+pub use test_runner::TestDataflowRunner;
 pub use translate::{
     DataflowEnvironment, DataflowJob, SdkOptionsPayload, SdkPipelineOptions, StagedArtifacts,
     TranslateError, UserAgent, Version, apply_environment_overrides, resolve_sdk_container_image,
