@@ -22,10 +22,12 @@
 pub mod strategy;
 pub mod transform;
 pub mod trigger;
+pub mod watermark;
 pub mod window_fn;
 
 pub use crate::coders::{GlobalWindow, IntervalWindow};
 pub use strategy::*;
 pub use transform::*;
 pub use trigger::*;
+pub use watermark::*;
 pub use window_fn::*;

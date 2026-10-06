@@ -41,6 +41,8 @@ pub struct HandlerContext<'a> {
     pub residual_collector: Option<&'a Arc<ResidualCollector>>,
     pub metrics_container: Option<&'a Arc<crate::metrics::MetricsContainer>>,
     pub bundle_finalizer: Option<&'a Arc<BundleFinalizerCollector>>,
+    pub dynamic_split_registrar:
+        Option<&'a Arc<crate::transforms::dofn::sdf::dynamic_split::DynamicSplitRegistrar>>,
     pub state_stream_reader: Option<&'a Arc<dyn crate::coders::StateStreamReader>>,
     /// Borrowed from the operator graph on the hot path; owned only when a caller gives a `String`.
     pub transform_id: Cow<'a, str>,
@@ -62,6 +64,7 @@ impl<'a> HandlerContext<'a> {
             residual_collector: None,
             metrics_container: None,
             bundle_finalizer: None,
+            dynamic_split_registrar: None,
             state_stream_reader: None,
             transform_id: Cow::Borrowed(""),
             header: WindowedHeader::EMPTY,
@@ -179,6 +182,27 @@ impl<'a> HandlerContext<'a> {
     ) -> Self {
         self.bundle_finalizer = bundle_finalizer;
         self
+    }
+
+    /// Attaches the registrar for dynamic split callbacks of an active SDF.
+    pub fn with_dynamic_split_registrar(
+        mut self,
+        dynamic_split_registrar: Option<
+            &'a Arc<crate::transforms::dofn::sdf::dynamic_split::DynamicSplitRegistrar>,
+        >,
+    ) -> Self {
+        self.dynamic_split_registrar = dynamic_split_registrar;
+        self
+    }
+
+    /// Registers the dynamic split handler of the active SDF element.
+    pub fn register_dynamic_split(
+        &self,
+        handler: Arc<dyn crate::transforms::dofn::sdf::dynamic_split::DynamicSplitHandler>,
+    ) -> Option<crate::transforms::dofn::sdf::dynamic_split::DynamicSplitGuard> {
+        self.dynamic_split_registrar
+            .as_ref()
+            .map(|r| r.register(handler))
     }
 
     pub fn header(&self) -> &WindowedHeader {

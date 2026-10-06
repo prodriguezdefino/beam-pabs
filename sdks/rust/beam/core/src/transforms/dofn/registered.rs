@@ -19,17 +19,22 @@
 
 //! The link-time registry of function types that `#[derive(Register)]` fills.
 //!
-//! [`ParDo`](crate::transforms::ParDo) finds the type of its function here by [`TypeId`] and
-//! writes the stable id and the serialized fields into the function spec. The worker builds
-//! the function from that spec. A type with no entry stays on the rebuild path.
+//! [`ParDo`](crate::transforms::ParDo) and
+//! [`SplittableParDo`](crate::transforms::sdf::SplittableParDo) find the type of their
+//! function here by [`TypeId`] and write the stable id and the serialized fields into the
+//! function spec. The worker builds the function from that spec. A type with no entry stays
+//! on the rebuild path.
 
 use std::any::{Any, TypeId};
+use std::sync::Arc;
 
 use model::pipeline as proto;
 use prost::Message;
 use serde::de::DeserializeOwned;
 
 use super::pardo::{DoFn, IntoParDoFn, Stateful, Stateless};
+use super::sdf::SplittableDoFn;
+use super::sdf::splittable_dofn::SplittableDoFnHandler;
 use super::stateful::StatefulDoFn;
 use crate::pipeline::constants::URN_RUST_DOFN_REGISTERED;
 use crate::pipeline::{Pipeline, PipelineError};
@@ -49,12 +54,15 @@ inventory::collect!(FnRegistration);
 
 /// What the worker builds from a registered function.
 pub enum Registered {
-    /// The handler of a `DoFn` or `StatefulDoFn`.
+    /// The handler of a `DoFn`, `StatefulDoFn` or `SplittableDoFn`.
     Handler(TransformFn),
 }
 
-/// A function type that `#[derive(Register)]` registers: a [`DoFn`] (`M` = [`Stateless`]) or
-/// a [`StatefulDoFn`] (`M` = [`Stateful`]).
+/// Selects how a registered [`SplittableDoFn`] becomes a handler. The compiler infers it.
+pub struct Splittable;
+
+/// A function type that `#[derive(Register)]` registers: a [`DoFn`] (`M` = [`Stateless`]),
+/// a [`StatefulDoFn`] (`M` = [`Stateful`]) or a [`SplittableDoFn`] (`M` = [`Splittable`]).
 pub trait RegisteredFn<M>: DeserializeOwned {
     /// Wraps the function in what the worker runs.
     fn into_registered(self) -> Registered;
@@ -69,6 +77,12 @@ impl<F: DoFn + DeserializeOwned> RegisteredFn<Stateless> for F {
 impl<F: StatefulDoFn + DeserializeOwned> RegisteredFn<Stateful> for F {
     fn into_registered(self) -> Registered {
         Registered::Handler(IntoParDoFn::<Stateful>::into_handler(self))
+    }
+}
+
+impl<S: SplittableDoFn + DeserializeOwned> RegisteredFn<Splittable> for S {
+    fn into_registered(self) -> Registered {
+        Registered::Handler(Arc::new(SplittableDoFnHandler::new(self)))
     }
 }
 

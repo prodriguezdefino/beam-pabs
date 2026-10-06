@@ -35,19 +35,22 @@ pub mod failure;
 mod filter;
 mod flat_map;
 mod flatten;
+mod generate_sequence;
 mod group_by_key;
 pub(crate) mod handler;
 mod inspect;
 mod map;
 mod partition;
+mod periodic_impulse;
 mod try_map;
 
 pub use create::Create;
-// The derive macros: `Register` for `DoFn` and `StatefulDoFn` types, `State` for the
-// state cells and `Timers` for the timer families of a `StatefulDoFn`.
+// The derive macros: `Register` for `DoFn`, `StatefulDoFn` and `SplittableDoFn` types,
+// `State` for the state cells and `Timers` for the timer families of a `StatefulDoFn`.
 #[cfg(feature = "derive")]
 pub use derive::{Outputs, Register, State, Timers};
 use dofn::ClosureFn;
+pub use dofn::sdf;
 pub use dofn::{
     BagState, BatchConverter, BatchedDoFn, BatchedDoFnAdapter, DEFAULT_FINALIZER_EXPIRY, DoFn,
     DoFnInput, Finalizer, FinishBundleContext, FinishOutput, MapState, NoTimers, OrderedListState,
@@ -58,11 +61,13 @@ pub use failure::{ExceptionElement, Failure, FailureCoder, WithFailures};
 pub use filter::Filter;
 pub use flat_map::FlatMap;
 pub use flatten::Flatten;
+pub use generate_sequence::{DEFAULT_SEQUENCE_SPLIT_SIZE, GenerateSequence};
 pub use group_by_key::GroupByKey;
 pub(crate) use handler::{BundleHandler, ElementSink, HandlerInstance, TransformFn, TypedElement};
 pub use inspect::Inspect;
 pub use map::Map;
 pub use partition::Partition;
+pub use periodic_impulse::PeriodicImpulse;
 pub use try_map::TryMap;
 
 pub(crate) use display_data::{DisplayDataBuilder, HasDisplayData};

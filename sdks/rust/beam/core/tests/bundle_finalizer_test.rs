@@ -28,6 +28,8 @@ use beam::coders::DefaultCoder;
 use beam::internals::{BundleFinalizerCollector, BundleHandler, DoFnHandler, HandlerContext};
 use beam::pipeline::constants::URN_REQUIREMENT_BUNDLE_FINALIZATION;
 use beam::prelude::*;
+use beam::transforms::sdf::{OffsetRange, OffsetRangeTracker, ProcessContinuation};
+use beam::transforms::sdf::{SplittableDoFn, SplittableParDo};
 use beam::transforms::{DEFAULT_FINALIZER_EXPIRY, WithFinalizer};
 use prost::Message;
 
@@ -160,6 +162,42 @@ fn register_fails_when_the_runner_gave_no_finalizer() {
     );
 }
 
+/// Reads offsets `[0, 3)` and registers one callback for the bundle.
+#[derive(Clone)]
+struct CommittingSdf;
+
+impl SplittableDoFn for CommittingSdf {
+    type In = String;
+    type Out = WithFinalizer<i64>;
+    type Restriction = OffsetRange;
+    type Tracker = OffsetRangeTracker;
+
+    fn initial_restriction(&self, _element: &String) -> OffsetRange {
+        OffsetRange::new(0, 3)
+    }
+
+    fn create_tracker(&self, restriction: &OffsetRange) -> OffsetRangeTracker {
+        OffsetRangeTracker::new(*restriction)
+    }
+
+    fn process_element(
+        &mut self,
+        _element: String,
+        tracker: &OffsetRangeTracker,
+        ctx: &mut ProcessContext<'_, Self::Out>,
+    ) -> Result<ProcessContinuation> {
+        let start = tracker.current_restriction().start;
+        let claimed: Vec<i64> = (start..)
+            .take_while(|offset| tracker.try_claim(offset))
+            .collect();
+        claimed
+            .iter()
+            .try_for_each(|offset| ctx.emit((*offset).into()))?;
+        ctx.finalizer(|| Ok(())).register()?;
+        Ok(ProcessContinuation::Stop)
+    }
+}
+
 /// The `requests_finalization` flag of the transform named `name`.
 fn requests_finalization(proto: &model::pipeline::Pipeline, name: &str) -> bool {
     let transform = proto
@@ -188,9 +226,11 @@ fn the_payload_flag_and_the_requirement_follow_the_output_type() {
     let words = p.apply(Create::new("Create", vec!["a".to_string()]));
     let _ = words.apply(ParDo::new("Acknowledging", Acknowledging::default()));
     let _ = words.apply(ParDo::new("Plain", Plain));
+    let _ = words.apply(SplittableParDo::new("CommittingSdf", CommittingSdf));
 
     let proto = p.to_proto();
     assert!(requests_finalization(&proto, "Acknowledging"));
+    assert!(requests_finalization(&proto, "CommittingSdf"));
     assert!(!requests_finalization(&proto, "Plain"));
     assert!(requires_finalization(&proto), "{:?}", proto.requirements);
 }
