@@ -131,19 +131,21 @@ FROM ${BASE_IMAGE} AS worker
 COPY wordcount /opt/apache/beam/worker_binary
 ```
 
-The `prebakedImage` task builds the Linux binary of the example, then the image.
-With `-Ppush-containers`, it also pushes the result:
+The `prebakedImage` task builds the Linux binary of the example, then the image
+`<root>/beam_rust_example_<example>:<tag>`. With `-Ppush-containers`, it also
+pushes the result:
 
 ```bash
 ./gradlew :sdks:rust:prebakedImage -Pexample=wordcount \
-  -PimageName=us-central1-docker.pkg.dev/<project>/<repository>/wordcount:1.0 \
+  -Pdocker-repository-root=us-central1-docker.pkg.dev/<project>/<repository> \
   -Ppush-containers
 ```
 
 | Property | Meaning |
 |---|---|
-| `imageName` | Tag for the new image. Required. |
-| `baseImage` | Image to build on. Defaults to `apache/beam_rust_sdk:<sdk version>`, which must exist locally for the same architecture. |
+| `docker-repository-root` | Registry path of the image. Defaults to `apache`. |
+| `docker-tag` | Tag of the image. Defaults to the SDK version. |
+| `baseImage` | Image to build on. Defaults to `<root>/beam_rust_sdk:<tag>`, which must exist locally for the same architecture. |
 | `exampleArch` | `amd64` (default) or `arm64`, for both the binary and the image. |
 | `flex` | Build the Flex Template stage instead; see [Flex Templates](#flex-templates-experimental). |
 | `workerBinary` | Bake this binary instead of building the example. |
@@ -152,7 +154,7 @@ Launch the job with that image and no binary to stage:
 
 ```bash
 ./gradlew :sdks:rust:dataflow -Pexample=wordcount \
-  -PsdkContainerImage=us-central1-docker.pkg.dev/<project>/<repository>/wordcount:1.0 \
+  -PsdkContainerImage=us-central1-docker.pkg.dev/<project>/<repository>/beam_rust_example_wordcount:<sdk version> \
   -PworkerBinary=none
 ```
 
@@ -171,17 +173,52 @@ COPY <name> /opt/apache/beam/worker_binary
 ENTRYPOINT ["/opt/apache/beam/boot"]
 ```
 
+## Expansion service image
+
+Python, Java and Go pipelines use Rust transforms through the Rust expansion
+service. One binary is both the expansion service and the worker of the
+transforms that it expands. The image is the SDK base image with that binary at
+`/opt/apache/beam/worker_binary`
+([`Dockerfile.expansion`](../container/Dockerfile.expansion)):
+
+```bash
+./gradlew :sdks:rust:expansionServiceImage -PexampleArch=arm64
+```
+
+The image is `<root>/beam_rust_expansion_service:<tag>`.
+
+| Property | Meaning |
+|---|---|
+| `docker-repository-root` | Registry path of the image. Defaults to `apache`. |
+| `docker-tag` | Tag of the image. Defaults to the SDK version. |
+| `baseImage` | Image to build on. Defaults to `<root>/beam_rust_sdk:<tag>`, which must exist locally for the same architecture. |
+| `exampleArch` | `amd64` (default) or `arm64`, for both the binary and the image. |
+| `expansionPackage`, `expansionBin` | The crate and binary to bake. Default: `apache-beam-expansion` and `beam-expansion-service`. |
+
+Start the expansion service from the image. `--docker-image` names the image
+that runners start for the transforms that it expands:
+
+```bash
+docker run -p 8097:8097 --entrypoint /opt/apache/beam/worker_binary \
+  apache/beam_rust_expansion_service:<sdk version> \
+  --port 8097 --docker-image apache/beam_rust_expansion_service:<sdk version>
+```
+
+A runner starts the same image with its default entrypoint, `boot`. A job from
+a driver of another SDK has no Rust options snapshot, so `boot` starts the
+binary without `--options_file`.
+
 ## Classic templates
 
 `--template_location` stages the pipeline and writes the Dataflow job
 description to a `gs://` path or a local path. It does not start a job:
 
 ```bash
-cargo run -p wordcount -- --runner=dataflow \
-  --project=<project> --region=us-central1 --temp_location=gs://<bucket>/temp \
-  --output=gs://<bucket>/counts \
-  --sdk_container_image=us-central1-docker.pkg.dev/<project>/<repository>/wordcount:1.0 \
-  --template_location=gs://<bucket>/templates/wordcount
+./gradlew :sdks:rust:dataflow -Pexample=wordcount \
+  -PgcpProject=<project> -PgcpRegion=us-central1 -PgcpTempLocation=gs://<bucket>/temp \
+  -PsdkContainerImage=us-central1-docker.pkg.dev/<project>/<repository>/beam_rust_example_wordcount:<sdk version> \
+  -PworkerBinary=none \
+  -PextraArgs="--output=gs://<bucket>/counts --template_location=gs://<bucket>/templates/wordcount"
 
 gcloud dataflow jobs run wordcount \
   --gcs-location=gs://<bucket>/templates/wordcount --region=us-central1
@@ -221,10 +258,11 @@ ENV FLEX_TEMPLATE_GO_BINARY=/opt/apache/beam/worker_binary
 Build and push the image, then build the template, then run it:
 
 ```bash
-IMAGE=us-central1-docker.pkg.dev/<project>/<repository>/wordcount-flex:1.0
+ROOT=us-central1-docker.pkg.dev/<project>/<repository>
+IMAGE=$ROOT/beam_rust_example_wordcount_flex:<sdk version>
 
 ./gradlew :sdks:rust:prebakedImage -Pexample=wordcount -Pflex \
-  -PimageName=$IMAGE -Ppush-containers
+  -Pdocker-repository-root=$ROOT -Ppush-containers
 
 gcloud dataflow flex-template build gs://<bucket>/templates/wordcount.json \
   --image=$IMAGE --sdk-language=GO \

@@ -28,18 +28,35 @@ description = "Apache Beam Rust SDK umbrella crate"
 [lib]
 name = "beam"
 
+# A pipeline needs a runner, the Fn API worker harness, the connectors it reads
+# and writes with, and the schema derive. Cargo links transitive crates but does
+# not make them nameable, and link-time registries (`inventory`) only populate
+# for linked crates -- so the facade both depends on them and
+# re-exports them, letting a user declare one dependency:
+#
+#     beam = { package = "apache-beam", version = "0.1", features = ["dataflow"] }
+#
+# No runner is enabled by default. Cargo features are additive, so a default
+# runner could not be turned off by selecting a different one: asking for
+# `dataflow` would silently link Prism too. Runners are large and mutually
+# exclusive in practice, so the choice is left explicit.
 [features]
-default = ["fluent", "io-file", "gcs", "managed", "derive", "external"]
+default = ["fluent", "io-file", "gcs", "managed", "derive", "external", "mimalloc"]
+# Installs mimalloc as the process-wide `#[global_allocator]`. A Beam worker
+# allocates and frees a buffer per element per fused operator from many threads
+# at once, which is where the system (glibc) allocator is weakest. Disable
+# default features to opt out, e.g. to install a different global allocator.
+mimalloc = ["dep:mimalloc"]
 fluent = ["dep:fluent"]
 io-file = ["dep:file"]
 gcs = ["dep:gcp", "io-file"]
-# Columnar formats via arrow-rs. Off by default: they pull in arrow and codec crates.
+# Columnar formats with arrow-rs. Off by default: they pull in arrow and codec crates.
 arrow = ["dep:arrow_io"]
 parquet = ["dep:parquet_io", "arrow", "io-file"]
 avro = ["dep:avro_io", "arrow", "io-file"]
-# Cross-language Kafka via the Java expansion service. Off by default.
+# Cross-language Kafka through the Java expansion service. Off by default.
 kafka = ["dep:kafka_io", "external"]
-# Managed I/O (Iceberg, Kafka, BigQuery, JDBC, Delta Lake) via the Java expansion
+# Managed I/O (Iceberg, Kafka, BigQuery, JDBC, Delta Lake) through the Java expansion
 # service. On by default: it is small and `gcs` and `kafka` build on it anyway.
 managed = ["dep:managed_io", "external"]
 derive = ["core/derive"]
@@ -83,6 +100,7 @@ prism = { workspace = true, optional = true }
 dataflow = { workspace = true, optional = true }
 testing = { workspace = true, optional = true }
 ml = { workspace = true, optional = true }
+mimalloc = { workspace = true, optional = true }
 
 [lints]
 workspace = true

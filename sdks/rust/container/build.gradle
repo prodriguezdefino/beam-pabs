@@ -1,0 +1,134 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+plugins { id 'org.apache.beam.module' }
+applyDockerNature()
+
+description = "Apache Beam :: SDKs :: Rust :: Container"
+
+def rustTargets = [amd64: 'x86_64-unknown-linux-gnu', arm64: 'aarch64-unknown-linux-gnu']
+
+task buildBoot {
+  description = "Build Rust container boot binary"
+  def architectures = project.containerArchitectures()
+
+  // The architecture list decides which binaries end up in the output directory, so it has
+  // to participate in up-to-date checks. Without it, switching architectures leaves the
+  // previous run's binaries in place and `docker { files './build/' }` packages them —
+  // yielding an image whose worker is stale, or built for the wrong architecture, with no
+  // failure until the pipeline runs.
+  inputs.property('containerArchitectures', architectures.join(','))
+  inputs.files(project.fileTree("${rootDir}/sdks/rust") {
+    include '**/*.rs'
+    include '**/Cargo.toml'
+    include 'Cargo.lock'
+    exclude 'target/**'
+    exclude 'container/**'
+  })
+  outputs.dir "${buildDir}/target"
+
+  doFirst {
+    // Start from an empty directory so only binaries produced by this run can be packaged.
+    project.delete file("${buildDir}/target")
+  }
+
+  doLast {
+    architectures.each { arch ->
+      def targetDir = file("${buildDir}/target/linux_${arch}")
+      targetDir.mkdirs()
+
+      if (org.gradle.internal.os.OperatingSystem.current().isLinux() && arch == project.nativeArchitecture()) {
+        project.exec {
+          workingDir "${rootDir}/sdks/rust"
+          commandLine 'cargo', 'build', '--profile', 'worker', '-p', 'apache-beam-harness', '--bin', 'boot'
+        }
+        project.copy {
+          from "${rootDir}/sdks/rust/target/worker/boot"
+          into targetDir
+        }
+      } else {
+        if (project.hasProperty('ensureBuilderImage')) {
+          project.ensureBuilderImage()
+        } else if (project.parent?.hasProperty('ensureBuilderImage')) {
+          project.parent.ensureBuilderImage()
+        }
+
+        def rustTarget = rustTargets[arch] ?: 'x86_64-unknown-linux-gnu'
+        def releaseDir = "/tmp/target/${rustTarget}/worker"
+        def crossTarget = file("${buildDir}/cross-target")
+        crossTarget.mkdirs()
+
+        def compileCmd = """CARGO_TARGET_DIR=/tmp/target cargo build --profile worker -p apache-beam-harness --bin boot --target ${rustTarget} && cp ${releaseDir}/boot /workspace/sdks/rust/container/build/target/linux_${arch}/boot"""
+        project.exec {
+          workingDir "${rootDir}"
+          commandLine 'docker', 'run', '--rm',
+            '-v', "${rootDir}:/workspace",
+            '-v', "${crossTarget}:/tmp/target",
+            '-w', '/workspace/sdks/rust',
+            '-e', "BEAM_SDK_VERSION=${project.sdk_version}",
+            project.rustBuilderImage,
+            'sh', '-c', compileCmd
+        }
+      }
+    }
+
+    // A missing binary must stop the build here. Left to the docker build, it would either
+    // package nothing or silently reuse an unrelated file.
+    architectures.each { arch ->
+      def boot = file("${buildDir}/target/linux_${arch}/boot")
+      if (!boot.exists()) {
+        throw new GradleException(
+            "buildBoot produced no binary for linux_${arch} (expected ${boot}). " +
+            "Check the architecture list: -Pcontainer-architecture-list=amd64,arm64")
+      }
+    }
+  }
+}
+
+def pushContainers = project.rootProject.hasProperty(["isRelease"]) || project.rootProject.hasProperty("push-containers")
+
+docker {
+  name containerImageName(
+          name: project.docker_image_default_repo_prefix + "rust_sdk",
+          root: project.rootProject.hasProperty(["docker-repository-root"]) ?
+              project.rootProject["docker-repository-root"] :
+              project.docker_image_default_repo_root,
+          tag: project.rootProject.hasProperty(["docker-tag"]) ?
+              project.rootProject["docker-tag"] : project.sdk_version)
+  tags containerImageTags()
+  files "./build/"
+  buildx project.useBuildx()
+  platform(*project.containerPlatforms())
+  load project.useBuildx() && !pushContainers
+  push pushContainers
+}
+
+dockerPrepare.dependsOn buildBoot
+
+dockerPrepare {
+  // The plugin's copy leaves files from earlier runs in place, and its destination sits
+  // inside the directory it copies from. Clearing it first keeps binaries for architectures
+  // that are no longer being built out of the build context.
+  doFirst {
+    project.delete file("${buildDir}/docker")
+  }
+}
+
+task pushAll {
+  dependsOn ":sdks:rust:container:docker"
+}

@@ -95,12 +95,16 @@ Count occurrences of words from local files or Google Cloud Storage (`gs://`). F
 ./gradlew :sdks:rust:dataflow -Pexample=wordcount
 ```
 
-The example includes a [`Dockerfile`](wordcount/Dockerfile) to build an image with a pre-baked binary. It also includes a Flex Template launcher described by [`metadata.json`](wordcount/metadata.json):
+The example includes a [`Dockerfile`](wordcount/Dockerfile) to build an image with a pre-baked binary:
 
 ```bash
-./gradlew :sdks:rust:prebakedImage -Pexample=wordcount -PimageName=<registry>/wordcount:1.0 -Ppush-containers
-./gradlew :sdks:rust:dataflow -Pexample=wordcount -PsdkContainerImage=<registry>/wordcount:1.0 -PworkerBinary=none
+./gradlew :sdks:rust:prebakedImage -Pexample=wordcount -Pdocker-repository-root=<registry> -Ppush-containers
+./gradlew :sdks:rust:dataflow -Pexample=wordcount -PsdkContainerImage=<registry>/beam_rust_example_wordcount:<sdk version> -PworkerBinary=none
 ```
+
+Add `-Pflex` to build the `flex` stage instead (`beam_rust_example_wordcount_flex`), which
+also holds the Flex Template launcher. [`metadata.json`](wordcount/metadata.json) describes the
+template parameters. See [Flex Templates](../docs/containers.md#flex-templates-experimental).
 
 ## Streaming (Continuous Ingestion with PeriodicImpulse)
 

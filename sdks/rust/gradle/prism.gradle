@@ -96,7 +96,55 @@ tasks.register('fetchPrism') {
   configurePrismTask(it, prismHostBinary, hostOs)
 }
 
+tasks.register('fetchPrismLinux') {
+  group = 'Build'
+  description = prismFromSource
+      ? 'Build a Linux Prism from sdks/go/cmd/prism for containerized execution'
+      : "Download the Linux Prism ${prismVersion} into the shared Beam cache for containerized execution"
+  configurePrismTask(it, prismLinuxBinary, 'linux')
+}
+
 tasks.named('test', Exec).configure {
   dependsOn 'fetchPrism'
   environment 'BEAM_PRISM_PATH', prismHostBinary.absolutePath
 }
+
+tasks.register('prism', Exec) {
+  group = 'Application'
+  description = 'Run a Rust example on the local Prism Runner (-Pexample=wordcount [-Pdocker])'
+  workingDir rustDir
+  dependsOn 'fetchPrism'
+
+  def dockerMode = project.hasProperty('docker') && project.property('docker').toString() != 'false'
+  if (dockerMode && !suppliedWorkerBinary(selectedExample)) {
+    dependsOn 'buildWorker'
+  }
+
+  doFirst {
+    def resolve = propsFor(selectedExample)
+    def defaultEnv = "${project.docker_image_default_repo_root}/${project.docker_image_default_repo_prefix}rust_sdk:${beamSdkVersion}".toString()
+    def envConfig = dockerMode ? resolve('environmentConfig', null, defaultEnv) : null
+    def supplied = suppliedWorkerBinary(selectedExample)
+    def workerFlag = !dockerMode ? []
+        : supplied == 'none' ? []
+        : supplied ? ["--worker_binary=${supplied}"]
+        : ["--worker_binary=${workerBinaryFor(selectedExample, workerArch).absolutePath}"]
+    def extraArgs = (resolve('extraArgs') ?: resolve('exampleArgs') ?: '').toString().tokenize(' ')
+    def features = (resolve('exampleFeatures') ?: '').toString().trim()
+    def featureFlags = features ? ['--features', features] : []
+    def gcpArgs = portableGcpArgs(resolve)
+    def cmd = [
+      'cargo', 'run', '--release', '-p', selectedExample, *featureFlags, '--',
+      '--runner=PrismRunner',
+      *(dockerMode
+          ? ['--environment_type=DOCKER', "--environment_config=${envConfig}"] + workerFlag
+          : ['--environment_type=LOOPBACK']),
+      *gcpArgs,
+      *extraArgs,
+    ].collect { it.toString() }
+
+    environment launchEnvironment()
+    commandLine cmd
+  }
+}
+
