@@ -26,3 +26,4 @@ description = "Apache Beam :: SDKs :: Rust"
 
 apply from: 'gradle/versions.gradle'
 apply from: 'gradle/cargo.gradle'
+apply from: 'gradle/prism.gradle'
