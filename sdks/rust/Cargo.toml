@@ -23,12 +23,7 @@ members = [
     "beam/derive",
     "beam/core",
     "beam/fluent",
-    "beam/io/file",
-    "beam/io/arrow",
-    "beam/io/parquet",
-    "beam/io/avro",
-    "beam/io/managed",
-    "beam/io/kafka",
+    "beam/io/*",
     "beam/test-utils",
     "beam/harness",
     "beam/external",
@@ -78,9 +73,11 @@ tonic-prost-build = "0.14"
 tokio = { version = "1.40", features = ["full"] }
 tokio-stream = "0.1"
 async-trait = "0.1"
+futures = "0.3"
 bytes = "1.7"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+base64 = "0.22"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 thiserror = "2"
@@ -91,6 +88,11 @@ globset = "0.4"
 foldhash = "0.2"
 serde-saphyr = "1"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
+google-cloud-storage = "1.18.0"
+google-cloud-gax = "1.14.0"
+google-cloud-auth = "1.16.0"
+google-cloud-secretmanager-v1 = "1.14.0"
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 proc-macro2 = "1.0"
 quote = "1.0"
 syn = { version = "3", features = ["full", "extra-traits"] }
@@ -114,6 +116,7 @@ harness = { package = "apache-beam-harness", path = "beam/harness", version = "2
 external = { package = "apache-beam-external", path = "beam/external", version = "2.78.0-SNAPSHOT" }
 expansion = { package = "apache-beam-expansion", path = "beam/expansion", version = "2.78.0-SNAPSHOT" }
 file = { package = "apache-beam-io-file", path = "beam/io/file", version = "2.78.0-SNAPSHOT" }
+gcp = { package = "apache-beam-io-gcp", path = "beam/io/gcp", version = "2.78.0-SNAPSHOT" }
 kafka_io = { package = "apache-beam-io-kafka", path = "beam/io/kafka", version = "2.78.0-SNAPSHOT" }
 managed_io = { package = "apache-beam-io-managed", path = "beam/io/managed", version = "2.78.0-SNAPSHOT" }
 arrow_io = { package = "apache-beam-io-arrow", path = "beam/io/arrow", version = "2.78.0-SNAPSHOT" }
