@@ -35,6 +35,19 @@ default = []
 dynamic-refresh = ["dep:arc-swap"]
 remote = ["dep:reqwest", "dep:tokio", "dep:futures", "dep:bytes"]
 
+# Hugging Face Candle (Pure Rust)
+candle = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers", "dep:file"]
+candle-cpu = ["candle"]
+candle-cuda = ["candle", "candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
+candle-metal = ["candle", "candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
+# ONNX Runtime (Universal Cross-Framework)
+onnx = ["dep:ort", "dep:file"]
+onnx-dynamic = ["onnx", "ort/load-dynamic"]
+onnx-cuda = ["onnx", "ort/cuda"]
+onnx-tensorrt = ["onnx", "ort/tensorrt"]
+onnx-coreml = ["onnx", "ort/coreml"]
+onnx-download-binaries = ["onnx", "ort/download-binaries", "ort/copy-dylibs", "ort/tls-rustls"]
+
 [dependencies]
 beam = { package = "apache-beam-core", path = "../core", version = "2.78.0-SNAPSHOT" }
 clap = { workspace = true }
@@ -47,6 +60,12 @@ reqwest = { version = "0.12", optional = true, default-features = false, feature
 tokio = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
+candle-core = { version = "0.11.0", optional = true }
+candle-nn = { version = "0.11.0", optional = true }
+candle-transformers = { version = "0.11.0", optional = true }
+tokenizers = { version = "0.21.0", default-features = false, features = ["fancy-regex"], optional = true }
+file = { workspace = true, optional = true }
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "load-dynamic"], optional = true }
 
 [dev-dependencies]
 fluent = { package = "apache-beam-fluent", path = "../fluent" }
