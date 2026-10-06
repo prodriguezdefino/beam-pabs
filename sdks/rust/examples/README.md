@@ -20,10 +20,12 @@
 # Rust SDK Examples
 
 Each example below is a standalone crate under `sdks/rust/examples/`. The Cargo package name
-matches the directory name. Run each example on the portable Prism runner.
+matches the directory name. Run each example on the portable Prism runner or submit it to
+Google Cloud Dataflow. Dataflow launches require a worker container image, provided by
+`-PsdkContainerImage` or `sdkContainerImage` in `sdks/rust/.local/sdk.properties`.
 
 The Gradle launch tasks run `cargo run --release -p <example> -- <runner flags> <extraArgs>`
-(see [`prism.gradle`](../gradle/prism.gradle)):
+(see [`prism.gradle`](../gradle/prism.gradle) and [`dataflow.gradle`](../gradle/dataflow.gradle)):
 
 - `-Pexample=<name>` selects the package (default `wordcount`).
 - `-PextraArgs="..."` appends pipeline flags. Values are split on spaces.
@@ -88,12 +90,16 @@ Count occurrences of words from local files or Google Cloud Storage (`gs://`). F
 
 # Custom input/output with extraArgs
 ./gradlew :sdks:rust:prism -Pexample=wordcount -PextraArgs="--input=/path/to/input.txt --output=/tmp/counts.txt"
+
+# Google Cloud Dataflow
+./gradlew :sdks:rust:dataflow -Pexample=wordcount
 ```
 
 The example includes a [`Dockerfile`](wordcount/Dockerfile) to build an image with a pre-baked binary:
 
 ```bash
 ./gradlew :sdks:rust:prebakedImage -Pexample=wordcount -Pdocker-repository-root=<registry> -Ppush-containers
+./gradlew :sdks:rust:dataflow -Pexample=wordcount -PsdkContainerImage=<registry>/beam_rust_example_wordcount:<sdk version> -PworkerBinary=none
 ```
 
 Add `-Pflex` to build the `flex` stage instead (`beam_rust_example_wordcount_flex`), which
@@ -113,6 +119,11 @@ Flags: `--impulse_interval_ms` (default `500`), `--window_size_secs` (default `5
 ./gradlew :sdks:rust:prism \
   -Pexample=streaming \
   -PextraArgs="--streaming --max_read_time_secs=300 --impulse_interval_ms=1000 --window_size_secs=10 --output=/tmp/streaming_output.txt"
+
+# Google Cloud Dataflow (Streaming Engine)
+./gradlew :sdks:rust:dataflow \
+  -Pexample=streaming \
+  -PextraArgs="--streaming --max_read_time_secs=600 --impulse_interval_ms=1000 --window_size_secs=10"
 ```
 
 ## Side Inputs & Broadcast Joins
@@ -122,6 +133,9 @@ This pipeline filters Shakespeare word counts with two side inputs: a singleton 
 ```bash
 # Portable Prism Runner
 ./gradlew :sdks:rust:prism -Pexample=side_inputs
+
+# Google Cloud Dataflow
+./gradlew :sdks:rust:dataflow -Pexample=side_inputs
 ```
 
 The `apache-beam-runner-tests` suite tests multimap side inputs (`as_multimap`).
@@ -135,6 +149,9 @@ optional:
 ```bash
 # Portable Prism Runner
 ./gradlew :sdks:rust:prism -Pexample=join
+
+# Google Cloud Dataflow
+./gradlew :sdks:rust:dataflow -Pexample=join
 ```
 
 ## Mobile Gaming (Stateful Processing & Metrics)
@@ -144,6 +161,9 @@ This pipeline parses gaming events from Google Cloud Storage, tracks user metric
 ```bash
 # Portable Prism Runner
 ./gradlew :sdks:rust:prism -Pexample=gaming -PextraArgs="--output=/tmp/gaming_output.txt"
+
+# Google Cloud Dataflow
+./gradlew :sdks:rust:dataflow -Pexample=gaming
 ```
 
 ## Partition & Flatten
@@ -172,6 +192,10 @@ This pipeline mixes native Rust processing with Java cross-language I/O transfor
 ./gradlew :sdks:rust:prism \
   -Pexample=bigquery_tornadoes \
   -PextraArgs="--output=<project>:<dataset>.tornadoes"
+
+# Run on Google Cloud Dataflow:
+./gradlew :sdks:rust:dataflow -Pexample=bigquery_tornadoes \
+  -PextraArgs="--output=<project>:<dataset>.tornadoes"
 ```
 
 ## Bigtable WordCount (Cross-Language, `bigtable_wordcount`)
@@ -185,6 +209,12 @@ This pipeline transfers word counts to and from Cloud Bigtable using the Java `b
 
 ```bash
 gcloud bigtable instances tables create <table> --instance=<instance> --column-families=counts
+
+# Google Cloud Dataflow: write, then read back
+./gradlew :sdks:rust:dataflow -Pexample=bigtable_wordcount \
+  -PextraArgs="--bigtable_project=<project> --bigtable_instance=<instance> --bigtable_table=<table>"
+./gradlew :sdks:rust:dataflow -Pexample=bigtable_wordcount \
+  -PextraArgs="--bigtable_project=<project> --bigtable_instance=<instance> --bigtable_table=<table> --mode=read --output=gs://<bucket>/counts"
 ```
 
 ## Kafka Ouroboros (Cross-Language Streaming, `kafka_ouroboros`)
@@ -197,6 +227,16 @@ This streaming pipeline reads from and writes to the same Kafka topic:
 4. Writes messages with remaining cycles back to the same topic with `KafkaWrite`. After `--max_cycles` hops (default `5`), messages exit the loop.
 
 Progress appears in `ouroboros` user counters (`seeded`, `evolved`, `ascended`, `malformed`). Both Kafka transforms use Managed error handling (`with_error_handling`, expanded with `to_managed()?.with_all_outputs()` or `with_outputs()`): records that Java cannot decode or serialize increment `kafka_read_errors` or `kafka_write_errors` instead of failing the bundle. The job runs until cancelled.
+
+```bash
+# Google Cloud Dataflow (streaming)
+./gradlew :sdks:rust:dataflow -Pexample=kafka_ouroboros \
+  -PextraArgs="--bootstrap_servers=<broker>:9092 --loop_topic=<topic> --num_seeds=3 --streaming=true"
+
+# Against a Google Cloud Managed Service for Apache Kafka cluster (workers need roles/managedkafka.client)
+./gradlew :sdks:rust:dataflow -Pexample=kafka_ouroboros \
+  -PextraArgs="--bootstrap_servers=<bootstrap-host>:9092 --gmk=true --loop_topic=<topic> --num_seeds=3 --streaming=true"
+```
 
 `--gmk` applies `KafkaRead`/`KafkaWrite::with_google_managed_kafka_auth()` (SASL_SSL and OAUTHBEARER with worker Google credentials). Run workers on a network attached to the cluster (`--network` and `--subnetwork`). Use the `bootstrap-*` host from the private Cloud DNS zone created by Google Cloud Managed Service for Apache Kafka (`gcloud dns record-sets list --zone=gmk-...`).
 
@@ -211,7 +251,12 @@ SchemaTransforms (`PubsubRead`, `PubsubWrite`, RAW format):
 4. Writes messages with remaining cycles to `--loop_topic` (or `--input_topic` if
    `--loop_topic` is not set). After `--max_cycles` (default `5`), messages exit the loop.
 
-`--expansion_service` defaults to the GCP expansion service of `beam::io::gcp::pubsub`.
+`--expansion_service` defaults to the GCP expansion service of `beam::io::gcp::pubsub`:
+
+```bash
+./gradlew :sdks:rust:dataflow -Pexample=pubsub_ouroboros \
+  -PextraArgs="--input_subscription=projects/<project>/subscriptions/<sub> --loop_topic=projects/<project>/topics/<topic> --streaming"
+```
 
 ## Iceberg WordCount (Managed I/O, `iceberg_wordcount`)
 
@@ -222,6 +267,13 @@ This pipeline transfers word counts to and from an Apache Iceberg table using `M
 
 `--warehouse` is required. `--table` defaults to `rust_sdk.wordcount` and `--catalog_name` to
 `rust_sdk`. The catalog defaults to a Hadoop catalog (`--catalog_type=hadoop`) at `--warehouse`. To configure another catalog (such as an Iceberg REST catalog), pass `--catalog_type` plus one `--catalog_property=key=value` per catalog property (endpoint, auth manager, `FileIO`, headers...).
+
+```bash
+./gradlew :sdks:rust:dataflow -Pexample=iceberg_wordcount \
+  -PextraArgs="--warehouse=gs://<bucket>/warehouse"
+./gradlew :sdks:rust:dataflow -Pexample=iceberg_wordcount \
+  -PextraArgs="--warehouse=gs://<bucket>/warehouse --mode=read --output=gs://<bucket>/iceberg_counts"
+```
 
 ## Windowed WordCount (Fixed Tumbling Windows)
 
@@ -243,6 +295,9 @@ This pipeline processes game activity logs with triggers and lateness:
 ```bash
 # Portable Prism Runner
 ./gradlew :sdks:rust:prism -Pexample=leaderboard
+
+# Google Cloud Dataflow
+./gradlew :sdks:rust:dataflow -Pexample=leaderboard
 ```
 
 ## User Session Analytics (Dynamic Sessionization & Window Merging)
@@ -252,6 +307,9 @@ This pipeline groups user interactions into dynamic sessions (`Sessions::with_ga
 ```bash
 # Portable Prism Runner
 ./gradlew :sdks:rust:prism -Pexample=sessions
+
+# Google Cloud Dataflow
+./gradlew :sdks:rust:dataflow -Pexample=sessions
 ```
 
 ## Sliding Window Moving Average (Overlapping Hopping Windows)
@@ -261,6 +319,9 @@ This pipeline partitions time-series readings into overlapping sliding windows (
 ```bash
 # Portable Prism Runner
 ./gradlew :sdks:rust:prism -Pexample=sliding_window
+
+# Google Cloud Dataflow
+./gradlew :sdks:rust:dataflow -Pexample=sliding_window
 ```
 
 ## Type-Driven Row Schemas & Logical Types (`row_schemas`)
@@ -270,6 +331,9 @@ This pipeline demonstrates type-driven Beam Row Schemas with `#[derive(BeamRow)]
 ```bash
 # Portable Prism Runner (zero network, self-contained)
 ./gradlew :sdks:rust:prism -Pexample=row_schemas
+
+# Google Cloud Dataflow
+./gradlew :sdks:rust:dataflow -Pexample=row_schemas
 ```
 
 ## Cross-Bundle State Conformance (`state_conformance`)
@@ -279,6 +343,9 @@ This pipeline verifies that `MapState` and `SetState` mutations (`clear`, `remov
 ```bash
 # Portable Prism Runner
 ./gradlew :sdks:rust:prism -Pexample=state_conformance
+
+# Google Cloud Dataflow
+./gradlew :sdks:rust:dataflow -Pexample=state_conformance
 ```
 
 ## Fold Combinators & State-Backed Iterables (`fold_state_backed`)
@@ -288,6 +355,9 @@ This pipeline contrasts a combiner-backed fold (`fold_per_key` with combiner lif
 ```bash
 # Portable Prism Runner
 ./gradlew :sdks:rust:prism -Pexample=fold_state_backed
+
+# Google Cloud Dataflow (validating State API continuation tokens)
+./gradlew :sdks:rust:dataflow -Pexample=fold_state_backed -PextraArgs="--num_elements=50000"
 ```
 
 ## NYC Taxi & Rideshare Analytics (`nyc_taxi`)
@@ -306,6 +376,11 @@ This pipeline demonstrates columnar data processing on Apache Parquet datasets:
 ./gradlew :sdks:rust:prism \
   -Pexample=nyc_taxi \
   -PextraArgs="--output=/tmp/nyc_taxi_stats"
+
+# Google Cloud Dataflow
+./gradlew :sdks:rust:dataflow \
+  -Pexample=nyc_taxi \
+  -PextraArgs="--output=gs://<YOUR_BUCKET>/output/nyc_taxi_stats"
 ```
 
 ## Traffic Routes Avro Analytics (`traffic_routes`)
@@ -324,6 +399,11 @@ This pipeline demonstrates batch event processing reading CSV telemetry and writ
 ./gradlew :sdks:rust:prism \
   -Pexample=traffic_routes \
   -PextraArgs="--output=/tmp/traffic_stats"
+
+# Google Cloud Dataflow
+./gradlew :sdks:rust:dataflow \
+  -Pexample=traffic_routes \
+  -PextraArgs="--output=gs://<YOUR_BUCKET>/output/traffic_stats"
 ```
 
 ## Machine Learning Inference
@@ -466,6 +546,10 @@ binary into an image and sets `ORT_DYLIB_PATH`:
 ```bash
 ./gradlew :sdks:rust:prebakedImage -Pexample=columnar_feature_engineering \
   -Pdocker-repository-root=us-central1-docker.pkg.dev/<project>/<repo> -Ppush-containers
+./gradlew :sdks:rust:dataflow -Pexample=columnar_feature_engineering \
+  -PsdkContainerImage=us-central1-docker.pkg.dev/<project>/<repo>/beam_rust_example_columnar_feature_engineering:<sdk version> \
+  -PworkerBinary=none -PworkerMachineType=n1-standard-4 -PnumWorkers=10 -PmaxNumWorkers=10 \
+  "-PextraArgs=--input_expand_factor=100 --model_path=gs://<bucket>/models/table_row_rf.onnx --output=gs://<bucket>/output/rs_table_rows"
 ```
 
 The ignored test runs the whole pipeline with ONNX Runtime and compares it with the Python output
@@ -479,4 +563,4 @@ ORT_DYLIB_PATH=/path/to/libonnxruntime.dylib TABLE_ROW_ONNX_MODEL=/path/to/table
 
 ## Building worker binaries
 
-Running in Docker requires a Linux build of the pipeline binary. See [Running Rust Pipelines](../docs/runners.md#building-linux-worker-binaries).
+Submitting to Dataflow or Docker requires a Linux build of the pipeline binary. See [Running Rust Pipelines](../docs/runners.md#building-linux-worker-binaries).

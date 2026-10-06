@@ -122,22 +122,52 @@ Dataflow tests carry `#[ignore]`, so `cargo test` and `:sdks:rust:test` do not s
 ./gradlew :sdks:rust:validatesRunnerDataflowStreaming -PtestThreads=4
 ```
 
+### Cross-language Suites
+
+[`sdks/rust/gradle/xlang.gradle`](../gradle/xlang.gradle) runs the Python cross-language suite (`validate_runner_xlang_test.py`) on Prism and on Dataflow against the Rust test expansion service in [`beam/runner-tests/src/xlang_transforms.rs`](../beam/runner-tests/src/xlang_transforms.rs). That service serves the `beam:transforms:xlang:test:*` URNs, as the Java and Python test expansion services do. Its image is `beam_rust_testing_expansion_service`.
+
+```bash
+./gradlew :sdks:rust:validatesCrossLanguageRunnerPythonPrism -PpythonVersion=3.12
+./gradlew :sdks:rust:validatesCrossLanguageRunnerPythonPrism -Ptests=prefix,group_by_key
+./gradlew :sdks:rust:validatesCrossLanguageRunnerPythonDataflow -PpythonVersion=3.12
+```
+
+- The tasks build the service image for the host architecture, start it on a free port and remove it at the end. Prism starts the Rust worker from the same image.
+- `setupXlangPythonEnv` makes a virtualenv in `sdks/rust/build/xlang-venv` with the Python SDK of this tree and its `gcp` and `test` extras. The suite imports `apache_beam` from `sdks/python`, so the task builds the virtualenv once; `-PrefreshXlangPythonEnv` builds it again. `-PpythonVersion` selects the interpreter (3.11 or later).
+- `-Ptests` selects tests in Python: test method names without the `test_` prefix (e.g. `-Ptests=prefix,group_by_key`).
+- The tasks need Docker. If the Docker API is not on the default socket (for example with Colima), the tasks take the socket from the current Docker context.
+
+The Dataflow tasks also build a linux/amd64 worker image and push it to the registry in `dataflowRepositoryRoot`, for example `us-central1-docker.pkg.dev/<project>/<repository>`. Each test is one Dataflow job, and `-PxlangParallelism` (default `8`) sets how many run at the same time. The tasks read these properties from `sdks/rust/.local/sdk.properties` (with the `example.xlang.` prefix or without it) or from `-P` flags:
+
+| Property | Meaning |
+|---|---|
+| `dataflowRepositoryRoot` | Registry path of the worker images. Required. |
+| `gcpProject`, `gcpTempLocation` | Project and temp location of the jobs. Required. |
+| `gcpRegion` | Region of the jobs. Defaults to `us-central1`. |
+| `network`, `subnetwork`, `workerMachineType` | Optional worker settings. |
+| `pythonSdkImage` | Python SDK container that already holds the SDK of this tree. Optional for Python. |
+
+The SDK base image must be in that registry for linux/amd64 first:
+
+```bash
+./gradlew :sdks:rust:container:docker -Pcontainer-architecture-list=amd64 \
+  -Pdocker-repository-root=<dataflowRepositoryRoot> -Ppush-containers
+```
+
+Without `pythonSdkImage`, each worker builds the staged SDK into a wheel before the Python worker starts, which adds about five minutes to each job. `pythonSdkDataflowImage` builds the Python SDK container of this tree for linux/amd64, pushes it to `dataflowRepositoryRoot` and prints the image tag:
+
+```bash
+./gradlew :sdks:rust:pythonSdkDataflowImage -PpythonVersion=3.12
+```
+
 ---
 
-## 3. Conformance Results
+## Conformance Results
 
 | Runner | Batch | Streaming | Notes |
 |---|:---:|:---:|---|
-| Prism | 41 passed, 1 ignored | 41 passed, 1 ignored | `state_and_timers::map_and_set_state_clear` is skipped on Prism (see below). |
-| Dataflow Runner V2 | 42 / 42 passed | 42 / 42 passed | Streaming jobs cancel automatically when all assertions pass. |
-
-### Why `map_and_set_state_clear` is Skipped on Prism
-
-`state_and_timers::map_and_set_state_clear` tests clearing `MapState` and `SetState` from an event-time `on_timer` callback across three separate bundles (seed in `process_element`, clear in a timer bundle at `t = 100`, verify in a timer bundle at `t = 200`).
-
-On the Rust worker, `MapState::clear()` and `SetState::clear()` issue a `StateCleared` mutation against `StateKey::MultimapKeysUserState` over the Fn API State channel. In Prism's in-memory state engine (`TentativeData.clearState` in `sdks/go/pkg/beam/runners/prism/internal/engine/data.go`), a `MultimapKeysUserState` clear is recorded only if `b.state` for that key is already initialized in the current bundle's tentative write map. When a timer-only bundle calls `clear()` without first writing to that map or set in the same bundle, `b.state` is `nil`, Prism drops the clear, and the next bundle still reads the pre-clear entries.
-
-On Google Cloud Dataflow Runner V2, the Windmill state backend commits `MultimapKeysUserState` clear requests regardless of whether the bundle wrote to the cell first, so `state_and_timers::map_and_set_state_clear` passes in both Batch and Streaming modes.
+| Prism | 48 / 48 passed | 48 / 48 passed | |
+| Dataflow Runner V2 | 48 / 48 passed | 48 / 48 passed | Streaming jobs cancel automatically when all assertions pass. |
 
 ### Coverage by Suite
 
@@ -148,7 +178,7 @@ On Google Cloud Dataflow Runner V2, the Windmill state backend commits `Multimap
 | `schemas` | `#[derive(BeamRow)]` elements (string, integer, list and boolean fields) through `GroupByKey` and `Reshuffle` with the row coder |
 | `registered_functions` | `#[derive(Register)]` types that the worker builds from the graph: a `DoFn` with a field that `setup` builds, a splittable `DoFn`, and a `CombineFn` per key and globally (lifted on Prism, as `ParDo`s on Dataflow) |
 | `side_inputs` | Singleton, iterable and multimap views, empty iterable side input, windowed side inputs |
-| `state_and_timers` | `ValueState`, `BagState`, `MapState`, `SetState`, state clear from a timer, event-time timers, per-window state and timer isolation under `SlidingWindows`, bundle lifecycle batching |
+| `state_and_timers` | `ValueState`, `BagState`, `MapState`, `SetState`, `OrderedListState`, state clear from a timer, event-time timers, per-window state and timer isolation under `SlidingWindows`, bundle lifecycle batching |
 | `windowing` | `FixedWindows`, `SlidingWindows`, `Sessions`, per-window `DoFn` explosion, lifted and unlifted window sums, re-windowing multiplicity |
 | `assertions` | `passert` assertions (`contains_in_any_order`, `contains`, `has_count`, `not_empty`, `all`, `empty`, `that_singleton`) that must all run and pass |
 
