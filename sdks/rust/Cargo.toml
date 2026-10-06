@@ -111,6 +111,8 @@ serde-saphyr = "1"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json"] }
 arc-swap = "1.7"
+# A bounded multi-consumer channel: the session pool of the ONNX model handler.
+crossbeam-channel = "0.5"
 once_cell = "1.21"
 candle-core = "0.11.0"
 candle-nn = "0.11.0"
