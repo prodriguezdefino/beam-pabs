@@ -107,6 +107,14 @@ impl<'v> TypedElement<'v> {
         self.slot.downcast_mut::<Option<T>>()?.take()
     }
 
+    /// Takes the value as a `T`: a value of type `T`, or a value of another type that converts
+    /// into `T` with no encode (see `take_converted`). `None` leaves the value for
+    /// [`encode`](Self::encode).
+    pub fn take_fused<T: 'static>(&mut self) -> Option<T> {
+        self.take::<T>()
+            .or_else(|| take_converted::<T>(&mut *self.slot))
+    }
+
     /// Encodes the value with its default coder. Returns an error if the value was already taken.
     pub fn encode(&self) -> Result<Vec<u8>, String> {
         (self.encode)(&*self.slot)
@@ -117,6 +125,53 @@ impl std::fmt::Debug for TypedElement<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TypedElement").finish_non_exhaustive()
     }
+}
+
+/// Takes the value of `slot`, an `Option` of the type of the step before, as a `T` of another
+/// type, for the pairs that convert with no encode:
+///
+/// - A [`Row`] into a [`RowElement::Row`], so a step that reads row coder bytes, such as a
+///   writer that converts rows into Arrow, also takes the rows of a fused Rust step.
+/// - A [`RowElement::Row`] into its [`Row`]. A [`RowElement::Encoded`] stays in the slot,
+///   because only the schema decodes it: the consumer takes the byte path.
+///
+/// Other pairs return `None`, and the consumer decodes the encoded value.
+///
+/// A generic form can cover more types: a conversion trait for each pair, for example
+/// `FusedFrom<U>` with `fn fused_from(value: U) -> Self`, which a type implements for each
+/// type that it takes with no encode, and a table of these conversions that the harness looks
+/// up by the two type ids. `#[derive(BeamRow)]` types could then take a fused `Row` and give
+/// one, and a consumer of Arrow batches could take rows. This function holds only the two row
+/// pairs until more types need it.
+fn take_converted<T: 'static>(slot: &mut dyn std::any::Any) -> Option<T> {
+    use crate::schema::{Row, RowElement};
+    use std::any::TypeId;
+
+    let target = TypeId::of::<T>();
+    if target == TypeId::of::<RowElement>() {
+        let row = slot.downcast_mut::<Option<Row>>()?.take()?;
+        return as_target(RowElement::Row(row));
+    }
+    if target == TypeId::of::<Row>() {
+        let element = slot.downcast_mut::<Option<RowElement>>()?;
+        return match element.take() {
+            Some(RowElement::Row(row)) => as_target(row),
+            other => {
+                *element = other;
+                None
+            }
+        };
+    }
+    None
+}
+
+/// Returns `value` as a `T`, which is the same type as `V`. Moves the value with no box.
+fn as_target<T: 'static, V: 'static>(value: V) -> Option<T> {
+    let mut target: Option<T> = None;
+    if let Some(slot) = (&mut target as &mut dyn std::any::Any).downcast_mut::<Option<V>>() {
+        *slot = Some(value);
+    }
+    target
 }
 
 fn encode_slot<T: DefaultCoder>(slot: &dyn std::any::Any) -> Result<Vec<u8>, String> {
@@ -140,8 +195,8 @@ impl ElementSink for Vec<Vec<u8>> {
 /// [`instantiate`](Self::instantiate). A copy calls `setup` once; per bundle `start_bundle`,
 /// then `process` and `on_timer`, then `finish_bundle`; and `teardown` at the end. A copy runs
 /// one bundle at a time and no two bundles share a copy, so the lifecycle methods take
-/// `&mut self` and need no locks. Pipeline code implements `DoFn`;
-/// `ParDo` adapts it to this trait.
+/// `&mut self` and need no locks. Pipeline code implements [`DoFn`](crate::transforms::DoFn);
+/// [`ParDo`](crate::transforms::ParDo) adapts it to this trait.
 pub trait BundleHandler: Send + Sync {
     /// Called once when the owning bundle processor is created.
     fn setup(&mut self) -> Result<(), String> {

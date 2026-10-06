@@ -31,20 +31,32 @@ use crate::pipeline::constants::URN_RUST_DOFN;
 use crate::pipeline::resources::ResourceHints;
 use crate::pipeline::{Pipeline, URN_PAR_DO};
 
+pub use crate::transforms::create::create_handler;
 pub use crate::transforms::dofn::context::{
-    BundleFinalizerCollector, FinalizationCallback, HandlerContext, ResidualApplication,
-    ResidualCollector,
+    BundleFinalizerCollector, FinalizationCallback, HandlerContext, PendingFinalizer,
+    ResidualApplication, ResidualCollector,
 };
 pub use crate::transforms::dofn::outputs::{Emitter, OutputDeclarer};
 pub use crate::transforms::dofn::side_input::{
-    ScopedSideInputReader, SideInputReader, extract_side_input_tags,
+    ScopedSideInputReader, SideInputElements, SideInputError, SideInputReader,
+    extract_side_input_tags,
 };
 pub use crate::transforms::dofn::state::{AnyStateSpec, UserStateReader};
-pub use crate::transforms::dofn::timer::{TimerCollector, TimerMutation};
+pub use crate::transforms::dofn::timer::{
+    TimeDomain, TimerCollector, TimerFamilySpec, TimerMutation,
+};
+pub use crate::transforms::dofn::{
+    DoFnHandler, FnRegistration, IntoParDoFn, PerWindow, Registered, RegisteredFn, StateBinding,
+    StateCell, StateCells, Stateful, Stateless, TimerFamilies, build_registered, encode_registered,
+    registered_handler,
+};
 pub use crate::transforms::handler::{
     BundleHandler, ElementSink, HandlerInstance, TransformFn, TypedElement,
 };
-pub use crate::values::SideInputKind;
+pub use crate::windowing::transform::{WindowIntoHandler, window_into_handler_key};
+pub use crate::windowing::window_fn::{MergeStatus, decode_window_fn, duration_to_proto};
+#[doc(hidden)]
+pub use inventory;
 
 /// A foldhash `HashMap` for tables hashed per element. Crate-private, so public APIs
 /// keep the standard `HashMap` and foldhash stays out of the SDK's semver surface.
@@ -62,9 +74,9 @@ pub use crate::metrics::system::{
 };
 pub use crate::pipeline::graph::PipelineInner;
 
-/// Adds one primitive `ParDo` to a pipeline's graph and registers its handler. Every `ParDo` in
-/// the SDK, including `ParDo`, goes through this builder. Only the
-/// name, the main input and the handler are required:
+/// Adds one primitive `ParDo` to a pipeline's graph and registers its handler.
+/// Every `ParDo` primitive in the SDK goes through this builder. Only the name,
+/// the main input and the handler are required:
 ///
 /// ```
 /// use std::sync::Arc;
@@ -81,9 +93,10 @@ pub use crate::pipeline::graph::PipelineInner;
 /// assert_eq!(id, "Echo");
 /// ```
 ///
-/// The handler key is the transform's unique name, which the `ParDoPayload` `do_fn` also
-/// carries. The harness resolves handlers from that payload, so the key survives runners
-/// that rename or fuse transforms.
+/// With [`register`](Self::register), the `ParDoPayload` `do_fn` carries the handler key: the
+/// transform's unique name. The harness resolves handlers from that payload, so the key
+/// survives runners that rename or fuse transforms. With [`register_spec`](Self::register_spec),
+/// the `do_fn` holds all that the worker needs to build the handler.
 #[must_use = "a ParDoRegistration does nothing until `register` is called"]
 pub struct ParDoRegistration<'p> {
     pipeline: &'p Pipeline,
@@ -207,6 +220,20 @@ impl<'p> ParDoRegistration<'p> {
 
     /// Records the `ParDo`, registers `handler` for it, and returns its transform id.
     pub fn register(self, handler: TransformFn) -> String {
+        let pipeline = self.pipeline;
+        let transform_id = self.add(None);
+        pipeline.register_transform_handler(transform_id.clone(), handler);
+        transform_id
+    }
+
+    /// Records the `ParDo` with `do_fn` as its function spec and returns its transform id.
+    /// The worker builds the handler from `do_fn` alone, so no handler is registered.
+    pub fn register_spec(self, do_fn: proto::FunctionSpec) -> String {
+        self.add(Some(do_fn))
+    }
+
+    /// Adds the transform. Without `do_fn`, the spec is the handler key: the unique name.
+    fn add(self, do_fn: Option<proto::FunctionSpec>) -> String {
         use prost::Message;
 
         let (side_input_pcolls, side_input_specs): (HashMap<_, _>, HashMap<_, _>) = self
@@ -218,39 +245,34 @@ impl<'p> ParDoRegistration<'p> {
             .chain(side_input_pcolls)
             .collect();
 
-        let transform_id = {
-            let mut graph = self.pipeline.lock();
-            // The handler key goes into the payload, so it must be the final unique name.
-            let unique_name = graph.unique_transform_name(&self.name);
-            let payload = proto::ParDoPayload {
-                do_fn: Some(proto::FunctionSpec {
-                    urn: URN_RUST_DOFN.to_string(),
-                    payload: unique_name.as_bytes().to_vec(),
-                }),
-                side_inputs: side_input_specs,
-                state_specs: self.state_specs,
-                timer_family_specs: self.timer_family_specs,
-                restriction_coder_id: self.restriction_coder_id,
-                requests_finalization: self.requests_finalization,
-                requires_stable_input: self.requires_stable_input,
-                requires_time_sorted_input: self.requires_time_sorted_input,
-                ..Default::default()
-            }
-            .encode_to_vec();
-            graph.add_transform_with_hints_and_display_data(
-                &unique_name,
-                URN_PAR_DO,
-                payload,
-                inputs,
-                self.outputs,
-                self.resource_hints.as_ref(),
-                self.display_data,
-            )
-        };
-
-        self.pipeline
-            .register_transform_handler(transform_id.clone(), handler);
-        transform_id
+        let mut graph = self.pipeline.lock();
+        // The handler key goes into the payload, so it must be the final unique name.
+        let unique_name = graph.unique_transform_name(&self.name);
+        let do_fn = do_fn.unwrap_or_else(|| proto::FunctionSpec {
+            urn: URN_RUST_DOFN.to_string(),
+            payload: unique_name.as_bytes().to_vec(),
+        });
+        let payload = proto::ParDoPayload {
+            do_fn: Some(do_fn),
+            side_inputs: side_input_specs,
+            state_specs: self.state_specs,
+            timer_family_specs: self.timer_family_specs,
+            restriction_coder_id: self.restriction_coder_id,
+            requests_finalization: self.requests_finalization,
+            requires_stable_input: self.requires_stable_input,
+            requires_time_sorted_input: self.requires_time_sorted_input,
+            ..Default::default()
+        }
+        .encode_to_vec();
+        graph.add_transform_with_hints_and_display_data(
+            &unique_name,
+            URN_PAR_DO,
+            payload,
+            inputs,
+            self.outputs,
+            self.resource_hints.as_ref(),
+            self.display_data,
+        )
     }
 }
 

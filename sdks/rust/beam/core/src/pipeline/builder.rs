@@ -141,6 +141,24 @@ impl Pipeline {
             .unwrap_or_default()
     }
 
+    /// Registers a `beam:coder:kv:v1` coder of `key` and `value`.
+    pub(crate) fn register_kv_coder(&self, key: String, value: String) -> String {
+        self.register_coder(crate::coders::URN_KV, vec![key, value])
+    }
+
+    /// Returns the key and value coders of the registered `beam:coder:kv:v1` coder `coder_id`.
+    pub(crate) fn kv_coder_parts(&self, coder_id: &str) -> Option<(String, String)> {
+        let inner = self.lock();
+        let coder = inner.components.coders.get(coder_id)?;
+        match (
+            crate::coders::coder_urn(coder),
+            coder.component_coder_ids.as_slice(),
+        ) {
+            (crate::coders::URN_KV, [key, value]) => Some((key.clone(), value.clone())),
+            _ => None,
+        }
+    }
+
     /// Registers a `WindowingStrategy` and returns its id, reusing an identical registered one.
     pub fn register_windowing_strategy(&self, strategy: proto::WindowingStrategy) -> String {
         self.lock().register_windowing_strategy(strategy)

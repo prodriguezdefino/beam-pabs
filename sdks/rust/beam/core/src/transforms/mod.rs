@@ -19,8 +19,8 @@
 
 //! Transforms: the operations that build a pipeline's graph.
 //!
-//! A [`PTransform`] expands a [`PInput`] into a [`POutput`]. The byte-level handlers that a
-//! runner executes are in [`crate::internals`].
+//! A [`PTransform`] expands a [`PInput`] into a [`POutput`]; [`ParDo`] lifts a [`DoFn`]
+//! into one. The byte-level handlers that a runner executes are in [`crate::internals`].
 //!
 //! This crate is `apply`-style: `pcoll.apply(Map::new("Name", f))`. Method syntax
 //! (`.map(..)`) comes from extension traits in `apache-beam-fluent`; `beam::prelude`
@@ -29,16 +29,44 @@
 use crate::pipeline::ResourceHints;
 use crate::values::{PInput, POutput};
 
+pub(crate) mod create;
 pub mod display_data;
 pub(crate) mod dofn;
+pub(crate) mod failure;
+mod filter;
+mod flat_map;
+mod flatten;
+mod group_by_key;
 pub(crate) mod handler;
+mod inspect;
+mod map;
+mod partition;
+mod try_map;
 
+pub use create::Create;
+// The derive macros: `Register` for `DoFn` and `StatefulDoFn` types, `State` for the
+// state cells and `Timers` for the timer families of a `StatefulDoFn`.
+#[cfg(feature = "derive")]
+pub use derive::{Outputs, Register, State, Timers};
+use dofn::ClosureFn;
 pub use dofn::{
-    BagState, BagStateSpec, FinishBundleContext, FinishOutput, MapState, MapStateSpec,
-    OrderedListState, OrderedListStateSpec, OutputBuilder, Outputs, ProcessContext, SetState,
-    SetStateSpec, TimeDomain, TimerFamilySpec, ValueState, ValueStateSpec,
+    BagState, BatchConverter, BatchedDoFn, BatchedDoFnAdapter, DEFAULT_FINALIZER_EXPIRY, DoFn,
+    DoFnInput, Finalizer, FinishBundleContext, FinishOutput, MapState, NoTimers, OrderedListState,
+    OutputBuilder, Outputs, ParDo, ProcessContext, SetState, StatefulContext, StatefulDoFn, Timer,
+    ValueState, VecBatchConverter, Windowed, WithFinalizer,
 };
+pub use failure::{ExceptionElement, Failure, FailureCoder, WithFailures};
+pub use filter::Filter;
+pub use flat_map::FlatMap;
+pub use flatten::Flatten;
+pub use group_by_key::GroupByKey;
 pub(crate) use handler::{BundleHandler, ElementSink, HandlerInstance, TransformFn, TypedElement};
+pub use inspect::Inspect;
+pub use map::Map;
+pub use partition::Partition;
+pub use try_map::TryMap;
+
+pub(crate) use display_data::{DisplayDataBuilder, HasDisplayData};
 
 /// A composite or primitive transform converting a [`PInput`] into a [`POutput`].
 pub trait PTransform<Input: PInput> {
