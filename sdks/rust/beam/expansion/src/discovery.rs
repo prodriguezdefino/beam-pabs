@@ -21,10 +21,36 @@
 
 use crate::{SchemaTransformProvider, SchemaTransformRegistration};
 
-/// Returns the linked provider with the URN `identifier`.
-pub(super) fn find_provider(identifier: &str) -> Option<Box<dyn SchemaTransformProvider>> {
+fn providers() -> impl Iterator<Item = Box<dyn SchemaTransformProvider>> {
     inventory::iter::<SchemaTransformRegistration>
         .into_iter()
         .map(|reg| (reg.provider)())
-        .find(|provider| provider.identifier() == identifier)
+}
+
+/// Returns the linked provider with the URN `identifier`.
+pub(super) fn find_provider(identifier: &str) -> Option<Box<dyn SchemaTransformProvider>> {
+    providers().find(|provider| provider.identifier() == identifier)
+}
+
+/// Returns the provider of the Managed transform `identifier`: the provider with this URN, or
+/// else the one provider that lists it in its Managed identifiers.
+pub(super) fn find_managed_provider(
+    identifier: &str,
+) -> Result<Box<dyn SchemaTransformProvider>, String> {
+    if let Some(provider) = find_provider(identifier) {
+        return Ok(provider);
+    }
+    let mut claims =
+        providers().filter(|provider| provider.managed_identifiers().contains(&identifier));
+    match (claims.next(), claims.next()) {
+        (Some(provider), None) => Ok(provider),
+        (None, _) => Err(format!(
+            "No SchemaTransformProvider found for the Managed identifier '{identifier}'"
+        )),
+        (Some(first), Some(second)) => Err(format!(
+            "The Managed identifier '{identifier}' has two providers: '{}' and '{}'",
+            first.identifier(),
+            second.identifier()
+        )),
+    }
 }

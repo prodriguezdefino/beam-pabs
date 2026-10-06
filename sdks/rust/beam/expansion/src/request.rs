@@ -21,23 +21,33 @@
 
 use crate::PCollectionId;
 use crate::discovery::find_provider;
-use crate::{SchemaTransformProvider, config::decode_config};
+use crate::{SchemaTransformProvider, config::decode_config, managed};
 use beam::pipeline::URN_EXPANSION_SCHEMA_TRANSFORM;
 use beam::schema::Row;
+use beam_io_managed::URN_MANAGED;
 use beam_model::pipeline as proto;
 use std::collections::HashMap;
+
+/// The provider of a request, its config row, and the annotations of the expanded transform.
+pub(super) struct Resolved {
+    pub(super) provider: Box<dyn SchemaTransformProvider>,
+    pub(super) config: Row,
+    pub(super) annotations: HashMap<String, Vec<u8>>,
+}
 
 /// Finds the provider and its config row for a request.
 ///
 /// Callers send a `SchemaTransformPayload` under the generic SchemaTransform URN, or an
-/// `ExternalConfigurationPayload` under the provider identifier. Errors are response messages.
-pub(super) fn resolve_request(
-    spec: &proto::FunctionSpec,
-) -> Result<(Box<dyn SchemaTransformProvider>, Row), String> {
+/// `ExternalConfigurationPayload` under the provider identifier. A `SchemaTransformPayload`
+/// for the Managed URN carries a YAML config. Errors are response messages.
+pub(super) fn resolve_request(spec: &proto::FunctionSpec) -> Result<Resolved, String> {
     use prost::Message;
     let (identifier, caller_schema, row_bytes) = if spec.urn == URN_EXPANSION_SCHEMA_TRANSFORM {
         let payload = proto::SchemaTransformPayload::decode(spec.payload.as_slice())
             .map_err(|e| format!("Failed to decode SchemaTransformPayload: {e}"))?;
+        if payload.identifier == URN_MANAGED {
+            return managed::resolve(payload.configuration_schema, &payload.configuration_row);
+        }
         (
             payload.identifier,
             payload.configuration_schema,
@@ -57,7 +67,11 @@ pub(super) fn resolve_request(
         .ok_or_else(|| format!("No SchemaTransformProvider found for URN '{identifier}'"))?;
     let config = decode_config(provider.config_schema(), caller_schema, &row_bytes)
         .map_err(|e| format!("Failed to decode config row for '{identifier}': {e}"))?;
-    Ok((provider, config))
+    Ok(Resolved {
+        provider,
+        config,
+        annotations: HashMap::new(),
+    })
 }
 
 /// Gives the input map that the provider receives for the request inputs.

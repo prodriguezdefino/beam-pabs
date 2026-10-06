@@ -19,3 +19,4 @@
 
 mod config_test;
 mod expansion_service_test;
+mod managed_test;

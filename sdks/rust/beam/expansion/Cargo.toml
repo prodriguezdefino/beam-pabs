@@ -37,8 +37,11 @@ path = "src/main.rs"
 test = false
 
 [dependencies]
+base64 = { workspace = true }
 beam = { package = "apache-beam-core", path = "../core", version = "2.79.0-SNAPSHOT" }
 beam_harness = { workspace = true }
+beam_io_file = { workspace = true }
+beam_io_managed = { workspace = true }
 beam_model = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
@@ -48,3 +51,8 @@ tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 inventory = { workspace = true }
 async-trait = { workspace = true }
+serde = { workspace = true }
+serde-saphyr = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

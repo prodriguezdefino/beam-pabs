@@ -267,14 +267,14 @@ const PY_SCHEMA_TRANSFORM_WRONG_TYPE: &str = "0a286265616d3a736368656d617472616e
 /// `ExternalTransform(ECHO_URN, ImplicitSchemaPayloadBuilder({"start": 3, "stop": 7}), service)`
 const PY_EXTERNAL_CONFIGURATION: &str = "0a3f0a0b0a0573746172741a0210040a0a0a0473746f701a021004122461306333393665302d363632332d343162332d613164302d646164383930393835303935120402000307";
 
-fn hex_bytes(hex: &str) -> Vec<u8> {
+pub(crate) fn hex_bytes(hex: &str) -> Vec<u8> {
     (0..hex.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("hex digit pair"))
         .collect()
 }
 
-fn transform_with_spec(urn: &str, payload: Vec<u8>) -> proto::PTransform {
+pub(crate) fn transform_with_spec(urn: &str, payload: Vec<u8>) -> proto::PTransform {
     proto::PTransform {
         unique_name: "MyExpansion".to_string(),
         spec: Some(proto::FunctionSpec {
@@ -285,14 +285,17 @@ fn transform_with_spec(urn: &str, payload: Vec<u8>) -> proto::PTransform {
     }
 }
 
-fn request(transform: Option<proto::PTransform>) -> ExpansionRequest {
+pub(crate) fn request(transform: Option<proto::PTransform>) -> ExpansionRequest {
     ExpansionRequest {
         transform,
         ..Default::default()
     }
 }
 
-async fn expand(service: &ExpansionServiceServer, req: ExpansionRequest) -> ExpansionResponse {
+pub(crate) async fn expand(
+    service: &ExpansionServiceServer,
+    req: ExpansionRequest,
+) -> ExpansionResponse {
     service
         .expand(Request::new(req))
         .await
@@ -876,7 +879,7 @@ async fn discover_lists_registered_providers() {
     assert_eq!(failing.description, "always fails");
     assert_eq!(failing.input_pcollection_names, vec!["input".to_string()]);
     assert_eq!(failing.output_pcollection_names, vec!["output".to_string()]);
-    assert_eq!(resp.schema_transform_configs.len(), 5);
+    assert_eq!(resp.schema_transform_configs.len(), 8);
 }
 
 // ---------------------------------------------------------------------------

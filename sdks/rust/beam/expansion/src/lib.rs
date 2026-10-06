@@ -52,9 +52,11 @@ pub use inventory;
 pub mod config;
 mod discovery;
 mod generate_sequence;
+mod managed;
 mod naming;
 mod replay;
 mod request;
+mod yaml;
 
 #[doc(hidden)]
 pub use generate_sequence::GenerateSequenceSchemaTransformProvider;
@@ -131,6 +133,17 @@ pub trait SchemaTransformProvider: Send + Sync + 'static {
     /// Expected tags for output PCollections (e.g. `["output"]`).
     fn output_tags(&self) -> Vec<String> {
         vec!["output".to_string()]
+    }
+
+    /// Other transform identifiers, such as Java SchemaTransform URNs, that this provider
+    /// serves for `beam:transform:managed:v1` requests. Other requests do not use them.
+    fn managed_identifiers(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// Key renames for the YAML config of a Managed request, as `(managed key, config key)`.
+    fn managed_key_aliases(&self) -> &'static [(&'static str, &'static str)] {
+        &[]
     }
 
     /// Expands the transform into the given pipeline using the validated configuration row.
@@ -374,6 +387,7 @@ impl ExpansionServiceGrpc for ExpansionServiceServer {
                 };
                 (id, config)
             })
+            .chain(std::iter::once(managed::discovery_entry()))
             .collect();
 
         Ok(Response::new(DiscoverSchemaTransformResponse {
@@ -396,7 +410,7 @@ impl ExpansionServiceGrpc for ExpansionServiceServer {
             }));
         };
 
-        let Some(spec) = &transform_proto.spec else {
+        let Some(spec) = transform_proto.spec.clone() else {
             return Ok(Response::new(ExpansionResponse {
                 components: None,
                 transform: None,
@@ -405,14 +419,26 @@ impl ExpansionServiceGrpc for ExpansionServiceServer {
             }));
         };
 
-        let (provider, config_row) = match request::resolve_request(spec) {
-            Ok(resolved) => resolved,
-            Err(error) => {
+        let request::Resolved {
+            provider,
+            config: config_row,
+            annotations,
+        } = match tokio::task::spawn_blocking(move || request::resolve_request(&spec)).await {
+            Ok(Ok(resolved)) => resolved,
+            Ok(Err(error)) => {
                 return Ok(Response::new(ExpansionResponse {
                     components: None,
                     transform: None,
                     requirements: Vec::new(),
                     error,
+                }));
+            }
+            Err(error) => {
+                return Ok(Response::new(ExpansionResponse {
+                    components: None,
+                    transform: None,
+                    requirements: Vec::new(),
+                    error: format!("Request resolution task failed: {error}"),
                 }));
             }
         };
@@ -632,6 +658,7 @@ impl ExpansionServiceGrpc for ExpansionServiceServer {
         };
 
         let mut expanded_transform = transform_proto.clone();
+        expanded_transform.annotations.extend(annotations);
         expanded_transform.subtransforms = root_ids.iter().map(|id| prefix_transform(id)).collect();
         // Replace any placeholder outputs from the request with the outputs that the provider
         // built.
