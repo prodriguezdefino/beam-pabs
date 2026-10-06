@@ -45,4 +45,4 @@ zstd = { workspace = true }
 sync_wrapper = { workspace = true }
 
 [dev-dependencies]
-beam_io_file = { package = "apache-beam-io-file", path = "." }
+beam_test_utils = { workspace = true }
