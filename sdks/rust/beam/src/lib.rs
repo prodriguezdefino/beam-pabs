@@ -48,6 +48,13 @@ pub mod io {
     pub use file::*;
 }
 
+pub mod runners {
+    pub use core::runners::*;
+
+    #[cfg(feature = "prism")]
+    pub use prism;
+}
+
 /// Force-links optional dependencies so that their `inventory` registrations stay.
 ///
 /// Downstream crates often import only `beam::prelude::*` and omit direct references
@@ -59,6 +66,9 @@ mod link {
 
     #[cfg(feature = "harness")]
     pub use harness as _;
+
+    #[cfg(feature = "prism")]
+    pub use prism as _;
 }
 
 /// All that an ordinary pipeline needs.
