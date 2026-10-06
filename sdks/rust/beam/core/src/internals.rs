@@ -31,6 +31,9 @@ use crate::pipeline::resources::ResourceHints;
 use crate::pipeline::{Pipeline, URN_PAR_DO};
 
 pub use crate::metrics::scope::process_wide_container;
+pub use crate::transforms::combine::registered::{
+    CombineStage, CombineStages, Combining, KeyCoder, registered_combine_handler,
+};
 pub use crate::transforms::create::create_handler;
 pub use crate::transforms::dofn::context::{
     BundleFinalizerCollector, FinalizationCallback, HandlerContext, PendingFinalizer,

@@ -19,7 +19,7 @@
 
 //! Walks and skips encoded values of the Beam standard coders, driven by coder protos.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 
 use model::pipeline::Coder as ProtoCoder;
@@ -192,6 +192,32 @@ pub fn skip_coder_value(
     nested: bool,
 ) -> Result<(), std::io::Error> {
     skip_value(cursor, coder_id, coders, nested, 0)
+}
+
+/// Returns `true` if [`skip_coder_value`] finds the end of a nested value of `coder_id`
+/// exactly. It is `false` for a coder that skips to the end of the slice: an unknown URN, a
+/// missing coder, or a Row coder without a schema.
+pub fn skips_exactly(coder_id: &str, coders: &HashMap<String, ProtoCoder>) -> bool {
+    skips_exactly_at(coder_id, coders, 0)
+}
+
+fn skips_exactly_at(coder_id: &str, coders: &HashMap<String, ProtoCoder>, depth: usize) -> bool {
+    let Some(coder) = coders.get(coder_id).filter(|_| depth <= MAX_SKIP_DEPTH) else {
+        return false;
+    };
+    let components = || {
+        coder
+            .component_coder_ids
+            .iter()
+            .all(|id| skips_exactly_at(id, coders, depth + 1))
+    };
+    match coder_urn(coder) {
+        URN_VARINT | URN_DOUBLE | URN_BOOL | URN_STRING_UTF8 | URN_BYTES | URN_LENGTH_PREFIX
+        | URN_GLOBAL_WINDOW | URN_INTERVAL_WINDOW => true,
+        URN_KV | URN_ITERABLE | URN_STATE_BACKED_ITERABLE | URN_NULLABLE => components(),
+        URN_ROW => coder.spec.as_ref().is_some_and(|s| !s.payload.is_empty()),
+        _ => false,
+    }
 }
 
 fn skip_value(
@@ -379,37 +405,60 @@ pub fn key_slice<'e>(
     element.get(..key_len)
 }
 
-/// Returns the Row [`Schema`](crate::schema::Schema) of a Row coder, also inside a length
-/// prefix, windowed value or nullable coder. Returns `None` if there is no valid Row schema.
+/// Returns the Row [`Schema`](crate::schema::Schema) of the rows in an element of `coder_id`.
+///
+/// Looks through length prefix, windowed value, nullable, iterable and key-value coders. The
+/// harness gives this one schema to every row in the element. Returns `None` if the coder has
+/// no Row coder with a valid schema, or Row coders with different schemas.
 pub fn extract_row_schema(
     coder_id: &str,
     coders: &HashMap<String, ProtoCoder>,
 ) -> Option<std::sync::Arc<crate::schema::Schema>> {
-    let mut current_id = coder_id;
-    let mut visited = std::collections::HashSet::new();
-    loop {
-        if !visited.insert(current_id) {
-            return None;
-        }
-        let coder = coders.get(current_id)?;
-        let urn = coder_urn(coder);
-        match urn {
-            URN_ROW => {
-                let payload = coder
-                    .spec
-                    .as_ref()
-                    .map(|s| s.payload.as_slice())
-                    .unwrap_or(&[]);
-                if payload.is_empty() {
-                    return None;
-                }
-                let schema = crate::schema::Schema::from_proto_bytes(payload).ok()?;
-                return Some(std::sync::Arc::new(schema));
+    let mut payloads = Vec::new();
+    collect_row_payloads(coder_id, coders, &mut HashSet::new(), &mut payloads);
+    match payloads.as_slice() {
+        [payload] => crate::schema::Schema::from_proto_bytes(payload)
+            .ok()
+            .map(std::sync::Arc::new),
+        _ => None,
+    }
+}
+
+/// Adds the distinct schema payloads of the Row coders under `coder_id` to `payloads`. Visits
+/// each coder once, so a cyclic coder graph ends.
+fn collect_row_payloads<'a>(
+    coder_id: &'a str,
+    coders: &'a HashMap<String, ProtoCoder>,
+    visited: &mut HashSet<&'a str>,
+    payloads: &mut Vec<&'a [u8]>,
+) {
+    if !visited.insert(coder_id) {
+        return;
+    }
+    let Some(coder) = coders.get(coder_id) else {
+        return;
+    };
+    match coder_urn(coder) {
+        URN_ROW => {
+            let payload = coder
+                .spec
+                .as_ref()
+                .map_or(&[][..], |s| s.payload.as_slice());
+            // A Row coder with no payload has no schema to give.
+            if !payload.is_empty() && !payloads.contains(&payload) {
+                payloads.push(payload);
             }
-            URN_WINDOWED_VALUE | URN_PARAM_WINDOWED_VALUE | URN_LENGTH_PREFIX | URN_NULLABLE => {
-                current_id = coder.component_coder_ids.first()?.as_str();
-            }
-            _ => return None,
         }
+        URN_WINDOWED_VALUE
+        | URN_PARAM_WINDOWED_VALUE
+        | URN_LENGTH_PREFIX
+        | URN_NULLABLE
+        | URN_ITERABLE
+        | URN_STATE_BACKED_ITERABLE
+        | URN_KV => coder
+            .component_coder_ids
+            .iter()
+            .for_each(|id| collect_row_payloads(id, coders, visited, payloads)),
+        _ => {}
     }
 }
