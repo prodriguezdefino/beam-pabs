@@ -20,12 +20,16 @@
 //! Splittable DoFns: restrictions, trackers and [`SplittableParDo`].
 
 pub(crate) mod dynamic_split;
+pub(crate) mod handler;
 mod offset_range;
+mod pardo;
 mod process_continuation;
 pub(crate) mod splittable_dofn;
+pub(crate) mod stages;
 mod tracker;
 
 pub use offset_range::{OffsetRange, OffsetRangeCoder, OffsetRangeTracker};
+pub use pardo::SplittableParDo;
 pub use process_continuation::ProcessContinuation;
-pub use splittable_dofn::{SplittableDoFn, SplittableParDo};
+pub use splittable_dofn::SplittableDoFn;
 pub use tracker::{RestrictionError, RestrictionProgress, RestrictionTracker, WatermarkedTracker};

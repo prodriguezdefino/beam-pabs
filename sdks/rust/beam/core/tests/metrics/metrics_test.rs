@@ -574,3 +574,40 @@ fn selected_transforms_record_while_selected_and_restore_on_return() {
         Some(10)
     );
 }
+
+#[test]
+fn a_panic_in_a_scope_leaves_no_frame_on_the_thread() {
+    use beam::internals::{
+        MetricsContainer, MetricsScope, process_wide_container, with_running_transform,
+    };
+    use beam::metrics::MetricResults;
+    use std::sync::Arc;
+
+    std::thread::spawn(|| {
+        let container = Arc::new(MetricsContainer::new());
+        let unwound = std::panic::catch_unwind(|| {
+            let _outer = MetricsScope::enter(Arc::clone(&container), Arc::from("Outer"));
+            let _inner = MetricsScope::enter(Arc::clone(&container), Arc::from("Inner"));
+            panic!("user code failed");
+        });
+        assert!(unwound.is_err());
+
+        assert_eq!(with_running_transform(|id| id.map(str::to_string)), None);
+        Metrics::counter("after_panic", "count").inc();
+        assert_eq!(
+            MetricResults::from_container(process_wide_container()).counter_for_transform(
+                "",
+                "after_panic",
+                "count"
+            ),
+            Some(1)
+        );
+        assert_eq!(
+            Arc::strong_count(&container),
+            1,
+            "no frame keeps the container"
+        );
+    })
+    .join()
+    .expect("the test thread ends");
+}

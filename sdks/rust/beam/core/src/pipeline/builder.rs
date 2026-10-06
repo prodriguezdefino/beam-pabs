@@ -55,6 +55,11 @@ impl Pipeline {
         }
     }
 
+    /// Returns true when two pipeline handles share the same graph state.
+    pub(crate) fn same_as(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
     /// Creates a pipeline configured for `options`: the entry point for pipeline binaries. The
     /// same `main` runs as driver and as worker, and `options` selects the [`ExpansionMode`]
     /// (remote at submission, placeholder in the worker) and the default resource hints.

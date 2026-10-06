@@ -90,7 +90,7 @@ pub trait ElementSink {
 /// that expects exactly `T` can [`take`](Self::take) it; others [`encode`](Self::encode) it.
 pub struct TypedElement<'v> {
     slot: &'v mut dyn std::any::Any,
-    encode: fn(&dyn std::any::Any) -> Result<Vec<u8>, String>,
+    encode: fn(&dyn std::any::Any, &mut Vec<u8>) -> Result<(), String>,
 }
 
 impl<'v> TypedElement<'v> {
@@ -117,7 +117,15 @@ impl<'v> TypedElement<'v> {
 
     /// Encodes the value with its default coder. Returns an error if the value was already taken.
     pub fn encode(&self) -> Result<Vec<u8>, String> {
-        (self.encode)(&*self.slot)
+        let mut buf = Vec::new();
+        self.encode_into(&mut buf)?;
+        Ok(buf)
+    }
+
+    /// Clears `buf` and encodes the value into it. Returns an error if the value was already taken.
+    pub fn encode_into(&self, buf: &mut Vec<u8>) -> Result<(), String> {
+        buf.clear();
+        (self.encode)(&*self.slot, buf)
     }
 }
 
@@ -174,11 +182,11 @@ fn as_target<T: 'static, V: 'static>(value: V) -> Option<T> {
     target
 }
 
-fn encode_slot<T: DefaultCoder>(slot: &dyn std::any::Any) -> Result<Vec<u8>, String> {
+fn encode_slot<T: DefaultCoder>(slot: &dyn std::any::Any, buf: &mut Vec<u8>) -> Result<(), String> {
     slot.downcast_ref::<Option<T>>()
         .and_then(Option::as_ref)
         .ok_or_else(|| "Emitted element was already consumed".to_string())?
-        .encode()
+        .encode_element(buf)
         .map_err(|e| format!("Failed to encode emitted element: {e}"))
 }
 

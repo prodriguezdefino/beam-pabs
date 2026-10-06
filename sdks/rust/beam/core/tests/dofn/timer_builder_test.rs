@@ -17,13 +17,14 @@
  * under the License.
  */
 
-//! The `ctx.timer(t)` builder: firing times and default watermark holds per time domain.
+//! The `ctx.timer(t)` builder: firing times and default watermark holds per time domain, and
+//! the timestamps that `on_timer` sees.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use beam::coders::{DefaultCoder, PaneInfo, TimerRecord, WindowedHeader};
-use beam::internals::{HandlerContext, IntoParDoFn, TimerCollector};
+use beam::coders::{DefaultCoder, PaneInfo, TimerAction, TimerRecord, WindowedHeader};
+use beam::internals::{ElementSink, HandlerContext, IntoParDoFn, TimerCollector};
 use beam::prelude::*;
 
 const ELEMENT_MILLIS: i64 = 10_000;
@@ -78,9 +79,9 @@ fn timers_after_processing(event_time: bool) -> Vec<(String, TimerRecord)> {
         handler.process(&element, &mut ctx).expect("process");
     }
     collector
-        .drain_family_records()
+        .drain()
         .into_iter()
-        .flat_map(|(family, records)| records.into_iter().map(move |r| (family.clone(), r)))
+        .map(|change| (change.family, change.record))
         .collect()
 }
 
@@ -90,11 +91,18 @@ fn an_event_time_timer_after_fires_after_the_element_timestamp_and_holds_at_the_
     let [(family, record)] = timers.as_slice() else {
         panic!("expected one timer, got {}", timers.len());
     };
-    let fire = (Instant::from_millis(ELEMENT_MILLIS) + OFFSET).as_millis();
+    let fire = Instant::from_millis(ELEMENT_MILLIS) + OFFSET;
     assert_eq!(family, "event");
-    assert!(!record.clear);
-    assert_eq!(record.fire_timestamp, fire);
-    assert_eq!(record.hold_timestamp, fire);
+    let TimerAction::Set {
+        fire_timestamp,
+        hold_timestamp,
+        ..
+    } = record.action
+    else {
+        panic!("expected a set timer, got {:?}", record.action);
+    };
+    assert_eq!(fire_timestamp, fire);
+    assert_eq!(hold_timestamp, fire);
     assert_eq!(record.user_key, "k".to_string().encode().unwrap());
 }
 
@@ -107,11 +115,170 @@ fn a_processing_time_timer_after_fires_after_the_clock_and_holds_at_the_element_
         panic!("expected one timer, got {}", timers.len());
     };
     assert_eq!(family, "processing");
-    assert!(!record.clear);
-    let fire = record.fire_timestamp;
+    let TimerAction::Set {
+        fire_timestamp,
+        hold_timestamp,
+        ..
+    } = record.action
+    else {
+        panic!("expected a set timer, got {:?}", record.action);
+    };
+    let fire = fire_timestamp;
     assert!(
-        (before + OFFSET).as_millis() <= fire && fire <= (after + OFFSET).as_millis(),
-        "fire {fire} must be the wall clock plus the offset"
+        (before + OFFSET) <= fire && fire <= (after + OFFSET),
+        "fire {fire:?} must be the wall clock plus the offset"
     );
-    assert_eq!(record.hold_timestamp, ELEMENT_MILLIS);
+    assert_eq!(hold_timestamp, Instant::from_millis(ELEMENT_MILLIS));
+}
+
+const FIRE_MILLIS: i64 = 20_000;
+const HOLD_MILLIS: i64 = 12_000;
+
+/// Records each element with the header it was pushed under.
+#[derive(Default)]
+struct HeaderRecorder(Vec<(Option<WindowedHeader>, Vec<u8>)>);
+
+impl ElementSink for HeaderRecorder {
+    fn push(&mut self, element: Vec<u8>) -> std::result::Result<(), String> {
+        self.0.push((None, element));
+        Ok(())
+    }
+
+    fn push_windowed(
+        &mut self,
+        header: &WindowedHeader,
+        element: Vec<u8>,
+    ) -> std::result::Result<(), String> {
+        self.0.push((Some(header.clone()), element));
+        Ok(())
+    }
+}
+
+/// Emits the firing time of each timer and sets the same timer again `OFFSET` later.
+#[derive(Clone)]
+struct Rearms;
+
+impl StatefulDoFn for Rearms {
+    type Key = String;
+    type Value = bool;
+    type Out = i64;
+    type State = ();
+    type Timer = Delayed;
+
+    fn process_element(
+        &mut self,
+        _key: &String,
+        _value: bool,
+        _state: &mut (),
+        _ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        Ok(())
+    }
+
+    fn on_timer(
+        &mut self,
+        timer: Delayed,
+        _key: &String,
+        _state: &mut (),
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        let fire = ctx.fire_timestamp().expect("on_timer has a firing time");
+        ctx.timer(timer).after(OFFSET)?;
+        ctx.emit(fire.as_millis())
+    }
+}
+
+/// Fires `family` at `FIRE_MILLIS` with a hold at `HOLD_MILLIS`. Returns the output timestamp,
+/// the emitted firing time and the timer that `on_timer` set.
+fn fire_and_rearm(family: &str) -> (i64, i64, TimerRecord) {
+    let collector = Arc::new(TimerCollector::new());
+    let fired = TimerRecord::new_set(
+        "k".to_string().encode().expect("encode"),
+        "",
+        Instant::from_millis(FIRE_MILLIS),
+        Instant::from_millis(HOLD_MILLIS),
+    );
+    let mut handler = Rearms.into_handler().instantiate();
+    let mut sink = HeaderRecorder::default();
+    {
+        let mut ctx = HandlerContext::new(&mut sink).with_timer_collector(Some(&collector));
+        handler
+            .on_timer(family, &fired, &mut ctx)
+            .expect("on_timer");
+    }
+    let [(Some(header), bytes)] = sink.0.as_slice() else {
+        panic!("expected one windowed output, got {}", sink.0.len());
+    };
+    let emitted = <i64 as DefaultCoder>::decode(bytes).expect("decode");
+    let [change] = <[_; 1]>::try_from(collector.drain()).expect("one timer");
+    let record = change.record;
+    (header.timestamp_millis(), emitted, record)
+}
+
+#[test]
+fn an_event_time_timer_outputs_at_its_hold_and_counts_after_from_its_firing_time() {
+    let (output, emitted, record) = fire_and_rearm("event");
+    assert_eq!(output, HOLD_MILLIS);
+    assert_eq!(emitted, FIRE_MILLIS);
+    let next = Instant::from_millis(FIRE_MILLIS) + OFFSET;
+    let TimerAction::Set {
+        fire_timestamp,
+        hold_timestamp,
+        ..
+    } = record.action
+    else {
+        panic!("expected a set timer, got {:?}", record.action);
+    };
+    assert_eq!(fire_timestamp, next);
+    assert_eq!(hold_timestamp, next);
+}
+
+#[test]
+fn a_processing_time_timer_outputs_at_its_hold_and_its_next_timer_keeps_the_hold() {
+    let (output, emitted, record) = fire_and_rearm("processing");
+    assert_eq!(output, HOLD_MILLIS);
+    assert_eq!(emitted, FIRE_MILLIS);
+    let TimerAction::Set { hold_timestamp, .. } = record.action else {
+        panic!("expected a set timer, got {:?}", record.action);
+    };
+    assert_eq!(hold_timestamp, Instant::from_millis(HOLD_MILLIS));
+}
+
+#[test]
+fn process_element_has_no_firing_time() {
+    #[derive(Clone)]
+    struct ReadsFire;
+
+    impl StatefulDoFn for ReadsFire {
+        type Key = String;
+        type Value = bool;
+        type Out = bool;
+        type State = ();
+        type Timer = NoTimers;
+
+        fn process_element(
+            &mut self,
+            _key: &String,
+            _value: bool,
+            _state: &mut (),
+            ctx: &mut StatefulContext<'_, Self>,
+        ) -> Result {
+            let fired = ctx.fire_timestamp().is_some();
+            ctx.emit(fired)
+        }
+    }
+
+    let header = WindowedHeader::global(ELEMENT_MILLIS, PaneInfo::NO_FIRING);
+    let element = ("k".to_string(), true).encode().expect("encode");
+    let mut handler = ReadsFire.into_handler().instantiate();
+    let mut sink = Vec::<Vec<u8>>::new();
+    {
+        let mut ctx = HandlerContext::new(&mut sink).with_header(&header);
+        handler.process(&element, &mut ctx).expect("process");
+    }
+    let emitted = sink
+        .iter()
+        .map(|bytes| <bool as DefaultCoder>::decode(bytes).expect("decode"))
+        .collect::<Vec<_>>();
+    assert_eq!(emitted, [false]);
 }
