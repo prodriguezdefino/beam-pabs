@@ -22,18 +22,30 @@
 //! This module is crate-private. [`crate::transforms`] exports the user items and
 //! [`crate::internals`] exports the runner plumbing.
 
+mod batch;
+mod closure;
 pub(crate) mod context;
+pub(crate) mod input;
 pub(crate) mod outputs;
+mod pardo;
+pub(crate) mod registered;
 pub(crate) mod side_input;
 pub(crate) mod state;
+mod stateful;
 pub(crate) mod timer;
 
+pub use batch::{BatchConverter, BatchedDoFn, BatchedDoFnAdapter, VecBatchConverter};
+pub(super) use closure::ClosureFn;
 pub use context::{
-    FinishBundleContext, FinishOutput, HandlerContext, OutputBuilder, ProcessContext,
+    DEFAULT_FINALIZER_EXPIRY, Finalizer, FinishBundleContext, FinishOutput, HandlerContext,
+    OutputBuilder, ProcessContext, StatefulContext, Timer,
 };
-pub use outputs::Outputs;
-pub use state::{
-    BagState, BagStateSpec, MapState, MapStateSpec, OrderedListState, OrderedListStateSpec,
-    SetState, SetStateSpec, ValueState, ValueStateSpec,
+pub use input::{DoFnInput, PerWindow, Windowed};
+pub use outputs::{Outputs, WithFinalizer};
+pub use pardo::{DoFn, DoFnHandler, IntoParDoFn, ParDo, Stateful, Stateless};
+pub use registered::{
+    FnRegistration, Registered, RegisteredFn, build_registered, encode_registered,
+    registered_handler,
 };
-pub use timer::{TimeDomain, TimerFamilySpec};
+pub use state::{BagState, MapState, OrderedListState, SetState, ValueState};
+pub use stateful::{NoTimers, StateBinding, StateCell, StateCells, StatefulDoFn, TimerFamilies};
