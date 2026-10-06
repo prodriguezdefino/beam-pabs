@@ -28,6 +28,7 @@ members = [
     "beam/harness",
     "beam/external",
     "beam/expansion",
+    "beam/ml",
     "beam/runners/*",
     "beam/testing",
     "beam/runner-tests",
@@ -115,6 +116,7 @@ beam = { package = "apache-beam", path = "beam", version = "2.78.0-SNAPSHOT" }
 core = { package = "apache-beam-core", path = "beam/core", version = "2.78.0-SNAPSHOT" }
 model = { package = "apache-beam-model", path = "beam/model", version = "2.78.0-SNAPSHOT" }
 fluent = { package = "apache-beam-fluent", path = "beam/fluent", version = "2.78.0-SNAPSHOT" }
+ml = { package = "apache-beam-ml", path = "beam/ml", version = "2.78.0-SNAPSHOT" }
 harness = { package = "apache-beam-harness", path = "beam/harness", version = "2.78.0-SNAPSHOT" }
 external = { package = "apache-beam-external", path = "beam/external", version = "2.78.0-SNAPSHOT" }
 expansion = { package = "apache-beam-expansion", path = "beam/expansion", version = "2.78.0-SNAPSHOT" }

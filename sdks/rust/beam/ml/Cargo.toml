@@ -1,0 +1,55 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+[package]
+name = "apache-beam-ml"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Machine learning inference, hardware acceleration, and ModelHandler framework for the Apache Beam Rust SDK"
+
+[lints]
+workspace = true
+
+[lib]
+name = "beam_ml"
+
+[features]
+default = []
+dynamic-refresh = ["dep:arc-swap"]
+remote = ["dep:reqwest", "dep:tokio", "dep:futures", "dep:bytes"]
+
+[dependencies]
+beam = { package = "apache-beam-core", path = "../core", version = "2.78.0-SNAPSHOT" }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+arc-swap = { version = "1.7", optional = true }
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["rustls-tls", "json"] }
+tokio = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+
+[dev-dependencies]
+fluent = { package = "apache-beam-fluent", path = "../fluent" }
+testing = { workspace = true, features = ["prism"] }
+tokio = { workspace = true }
+wiremock = { workspace = true }
