@@ -35,12 +35,14 @@ derive = ["core/derive"]
 # The worker harness is a consequence of choosing a portable runner, not an
 # independent choice, so runners enable it rather than the user.
 harness = ["dep:harness"]
+prism = ["dep:prism", "harness"]
 
 [dependencies]
 core = { workspace = true }
 model = { workspace = true }
 harness = { workspace = true, optional = true }
 file = { workspace = true, optional = true }
+prism = { workspace = true, optional = true }
 
 [lints]
 workspace = true
