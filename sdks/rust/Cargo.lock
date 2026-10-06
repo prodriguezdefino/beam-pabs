@@ -92,6 +92,7 @@ name = "apache-beam"
 version = "2.78.0-SNAPSHOT"
 dependencies = [
  "apache-beam-core",
+ "apache-beam-fluent",
  "apache-beam-harness",
  "apache-beam-io-file",
  "apache-beam-model",
@@ -135,6 +136,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.6",
+]
+
+[[package]]
+name = "apache-beam-fluent"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam-core",
+ "apache-beam-fluent",
+ "apache-beam-model",
+ "apache-beam-testing",
+ "serde",
+ "tokio",
 ]
 
 [[package]]
@@ -193,9 +206,11 @@ name = "apache-beam-runner-prism"
 version = "2.78.0-SNAPSHOT"
 dependencies = [
  "apache-beam-core",
+ "apache-beam-fluent",
  "apache-beam-harness",
  "apache-beam-model",
  "apache-beam-runner-prism",
+ "apache-beam-testing",
  "async-trait",
  "inventory",
  "prost",

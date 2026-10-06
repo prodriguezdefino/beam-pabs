@@ -20,8 +20,32 @@
 //! Apache Beam Rust SDK
 //!
 //! A native Rust SDK for writing portable [Apache Beam](https://beam.apache.org/) pipelines.
-//! Pipelines depend on this crate only. It re-exports the SDK crates, and its features
-//! select the optional ones.
+//!
+//! # Getting Started
+//!
+//! One dependency is enough. Select the runner as a feature. The connectors, the
+//! Fn API worker harness and the schema derive macros come with it:
+//!
+//! ```toml
+//! [dependencies]
+//! beam = { package = "apache-beam", version = "0.1", features = ["prism"] }
+//! ```
+//!
+//! Writing a pipeline using `beam::prelude::*`:
+//!
+//! ```rust
+//! use beam::prelude::*;
+//!
+//! let p = Pipeline::new();
+//!
+//! p.apply(textio::Read::new("TextIO.Read", "input.txt"))
+//!     .flat_map("ExtractWords", |line: String| {
+//!         line.split_whitespace().map(String::from).collect::<Vec<_>>()
+//!     })
+//!     .count_per_element("CountWords")
+//!     .map("FormatCounts", |(word, count)| format!("{word}: {count}"))
+//!     .apply(textio::Write::new("TextIO.Write", "counts.txt"));
+//! ```
 //!
 //! # Link-time registration
 //!
@@ -34,6 +58,9 @@
 
 pub use core::*;
 pub use model;
+
+#[cfg(feature = "fluent")]
+pub use fluent;
 
 #[cfg(feature = "harness")]
 pub use harness;
@@ -70,12 +97,16 @@ mod link {
     pub use prism as _;
 }
 
-/// All that an ordinary pipeline needs.
+/// All that an ordinary pipeline needs, in both styles.
 ///
-/// Holds the core prelude (`apply` style: `pcoll.apply(Map::new(..))`),
-/// [`textio`](file::textio), and [`run`](core::runners::run).
+/// Holds the core prelude (`apply` style: `pcoll.apply(Map::new(..))`), the fluent
+/// extension traits (method style: `pcoll.map(..)`), [`textio`](file::textio), and
+/// [`run`](core::runners::run).
 pub mod prelude {
     pub use core::prelude::*;
+
+    #[cfg(feature = "fluent")]
+    pub use fluent::prelude::*;
 
     #[cfg(feature = "io-file")]
     pub use file::textio;
