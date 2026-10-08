@@ -284,6 +284,23 @@ Notes:
 - **Kafka**: native in Java. Python, Go and Rust use the Java SchemaTransform providers (`beam:schematransform:org.apache.beam:kafka_read:v1` / `kafka_write:v1`). Rust exposes them as `beam::io::kafka::{KafkaRead, KafkaWrite}` behind the `kafka` feature, and they expand through Managed I/O. You can configure consumer/producer properties (security, SASL, group id, …), RAW/STRING/JSON/AVRO/PROTO formats, Confluent schema registry, bounded reads and redistribution. The providers do not expose record keys and headers. On `KafkaRead` and `KafkaWrite`, `with_error_handling` sends failed records to an error output. The plain transforms do not return this output. To get the errors from `KafkaRead`, expand `to_managed()?.with_all_outputs()` and take the error output tag. For `KafkaWrite`, expand `to_managed()?.with_outputs()`. `KafkaRead` does not support error handling together with the Confluent schema registry.
 - **Iceberg, Delta Lake & JDBC**: native in Java. Python and Rust use them through Managed I/O (`beam.managed.Read/Write` in Python, `beam::io::managed::{ManagedRead, ManagedWrite}` in Rust), which expands the Java SchemaTransforms cross-language. Iceberg and the JDBC databases support read and write. Delta Lake is read-only. Go has no Managed API.
 
+### AWS credentials
+
+| Capability | Java | Python | Go | TypeScript | **Rust** |
+|---|:--:|:--:|:--:|:--:|:--:|
+| AWS default credential chain | ✅ | ✅ | ✅ | ❌ | 🔜 |
+| Static keys from options | ✅ | ✅ | ❌ | ❌ | 🔜 (`Secret` references only) |
+| STS AssumeRole from options | ✅ | ❌ | ❌ | ❌ | 🔜 |
+| GCP → AWS federation (Google ID token → STS) | ✅ | ❌ | ❌ | ❌ | 🔜 |
+| Credentials refresh in the background | ✅ | ❌ | ❌ | ❌ | ❌ |
+
+Notes:
+- **Java**: `AwsOptions.awsCredentialsProvider` holds an AWS SDK v2 provider, which is written to pipeline options as `@type`-tagged JSON ([`AwsModule`](../../java/io/amazon-web-services2/src/main/java/org/apache/beam/sdk/io/aws2/options/AwsModule.java)). `StsAssumeRoleForFederatedCredentialsProvider` with `GoogleADCIdTokenProvider` exchanges a Google ID token for STS credentials, and refreshes them in the background. Static keys and web-identity tokens are stored in the options as plaintext.
+- **Python**: only the S3 filesystem. `S3Options` takes static keys, which do not refresh. Without these flags, boto3 uses its default chain.
+- **Go**: the S3 filesystem uses `config.LoadDefaultConfig` and has no options.
+- **Cross-language**: the Kinesis SchemaTransforms accept only a static access key and secret key. The SQS SchemaTransform uses the worker `AwsOptions`. Iceberg takes its own `catalog_properties`.
+- **Rust**: see [aws-auth.md](aws-auth.md).
+
 ## Ecosystem
 
 | Capability | Java | Python | Go | TypeScript | **Rust** |
