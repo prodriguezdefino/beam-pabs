@@ -47,11 +47,31 @@ Run builds and tests through Gradle. The rest of the Beam repository uses it too
 ./gradlew :sdks:rust:prebakedImage             # Example image with its binary pre-baked (-Pexample=wordcount [-Pdocker-repository-root=...])
 ./gradlew :sdks:rust:buildWorker               # Linux worker binary for an example (-Pexample=wordcount)
 ./gradlew :sdks:rust:expansionServiceImage     # Expansion service image; the binary is also the worker
-./gradlew :sdks:rust:validatesRunnerPrism      # ValidatesRunner conformance suite on Prism
-./gradlew :sdks:rust:validatesRunnerDataflow   # ValidatesRunner conformance suite on Dataflow
+./gradlew :sdks:rust:validatesRunnerPrism      # ValidatesRunner conformance suite on Prism (also ...Streaming)
+./gradlew :sdks:rust:validatesRunnerDataflow   # ValidatesRunner conformance suite on Dataflow (also ...Streaming)
 ./gradlew :sdks:rust:validatesCrossLanguageRunnerPythonPrism     # Python xlang suite on Prism against the Rust test expansion service
 ./gradlew :sdks:rust:validatesCrossLanguageRunnerPythonDataflow  # Python xlang suite on Dataflow against the Rust test expansion service
+./gradlew :sdks:rust:gcpExpansionServiceImage    # Expansion service image of the native Google Cloud connectors
+./gradlew :sdks:rust:bigQueryIntegrationTest     # Native BigQuery reads against public tables on Prism
+./gradlew :sdks:rust:gcpExpansionServicePythonTest  # Python pipelines on Prism against the GCP expansion service
+./gradlew :sdks:rust:gcpExpansionServicePythonTestDataflow  # The same Python pipelines on Dataflow ([-Ptests=bigquery_storage] [-PtestFilter=unbounded])
+./gradlew :sdks:rust:bigQueryBenchmark           # BigQuery benchmark on Dataflow ([-Ppipeline=python|java] [-Pshape=count|per_key|copy] -Preader=... [-Pwriter=...] [-PnumWorkers=4] [-PmaxNumWorkers=10])
 ```
+
+`bigQueryBenchmark` has three shapes. `count` and `per_key` only read.
+`copy` reads, passes each row through a step in the pipeline language, and
+writes the rows to a new table in `-Pdataset` (or `example.benchmark.dataset`).
+After a `copy` job, the task checks the rows and drops the table.
+
+The readers depend on the pipeline: `python`, `java` or `rust` for
+`-Ppipeline=python` (the default), and `java-native`, `java-managed` or `rust`
+for `-Ppipeline=java`. The default reader is `rust`. `copy` also needs
+`-Pwriter`: `java` or `rust` for `-Ppipeline=python`, and `java-native`,
+`java-managed` or `rust` for `-Ppipeline=java`. `-ProwRestriction` limits the
+rows for a smoke run. Every shape runs on fixed workers (`-PnumWorkers=4`) or
+with autoscaling (`-PnumWorkers=1 -PmaxNumWorkers=10`). See
+[`benchmark.gradle`](../scripts/benchmarks/bigquery/benchmark.gradle) for the
+other properties.
 
 ## Profiling
 

@@ -32,6 +32,8 @@ apply from: 'gradle/profiling.gradle'
 apply from: 'gradle/dataflow.gradle'
 apply from: 'gradle/containers.gradle'
 apply from: 'gradle/validates-runner.gradle'
+apply from: 'gradle/integration.gradle'
 apply from: 'gradle/xlang.gradle'
+apply from: 'gradle/benchmarks.gradle'
 apply from: 'gradle/quality.gradle'
 

@@ -29,6 +29,7 @@ members = [
     "beam/ml",
     "beam/runners/*",
     "beam/io/*",
+    "beam/io/gcp/expansion-service",
     "beam/runner-tests",
     "beam/test-utils",
     "beam/testing",
@@ -107,6 +108,9 @@ google-cloud-storage = "1.18.0"
 google-cloud-gax = "1.14.0"
 google-cloud-auth = "1.16.0"
 google-cloud-secretmanager-v1 = "1.14.0"
+google-cloud-bigquery = "0.18.0"
+google-cloud-bigquery-v2 = "1.0.0"
+uuid = { version = "1", features = ["v4"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 proc-macro2 = "1.0"
 quote = "1.0"

@@ -292,3 +292,14 @@ registerExpansionImageTasks(
     buildDescription: 'Build the Linux expansion service binary (-PexampleArch=amd64 [-PexpansionPackage=<crate> -PexpansionBin=<bin>])',
     imageDescription: 'Build the expansion service image: the SDK base image with the expansion service as the worker binary ([-PbaseImage=<image>] [-PexampleArch=amd64] [-Ppush-containers])',
 )
+
+registerExpansionImageTasks(
+    buildTask: 'buildGcpExpansionService',
+    imageTask: 'gcpExpansionServiceImage',
+    pkg: 'apache-beam-io-gcp-expansion-service',
+    bin: 'beam-gcp-expansion-service',
+    arch: workerArch,
+    image: rustImageName('gcp_expansion_service'),
+    buildDescription: 'Build the Linux expansion service binary of the native Google Cloud connectors (-PexampleArch=amd64)',
+    imageDescription: 'Build the expansion service image of the native Google Cloud connectors, beam_rust_gcp_expansion_service ([-PbaseImage=<image>] [-PexampleArch=amd64] [-Ppush-containers])',
+)

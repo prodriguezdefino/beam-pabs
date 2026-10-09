@@ -170,7 +170,10 @@ the SDK does not control. The Rust SDK only logs at startup. User metrics cost u
 
 ## Reproducing the Rust run
 
-From the repository root:
+From the repository root, with the general `wordcount` example and the `:sdks:rust:dataflow`
+launcher ([`dataflow.gradle`](../gradle/dataflow.gradle)). This benchmark has no harness under
+`scripts/benchmarks/`. The launcher passes `-PworkerMachineType`, `-PnumWorkers`, and
+`-PmaxNumWorkers` as `--worker_machine_type`, `--num_workers`, and `--max_num_workers`:
 
 ```bash
 ./gradlew :sdks:rust:dataflow -Pexample=wordcount \

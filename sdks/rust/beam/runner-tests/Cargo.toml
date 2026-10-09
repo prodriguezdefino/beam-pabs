@@ -41,7 +41,7 @@ path = "src/expansion_service.rs"
 beam = { workspace = true, features = ["fluent", "io-file", "gcp-gcs", "gcp-bigquery", "gcp-bigtable", "gcp-pubsub", "derive", "external", "prism", "dataflow", "testing", "parquet", "avro"] }
 prism = { workspace = true }
 file = { workspace = true }
-gcp = { workspace = true, features = ["gcs"] }
+gcp = { workspace = true, features = ["gcs", "bigquery-storage"] }
 fluent = { workspace = true }
 external = { workspace = true }
 expansion = { workspace = true }
@@ -56,6 +56,10 @@ tracing = { workspace = true }
 harness = { workspace = true }
 model = { workspace = true }
 tonic = { workspace = true }
+arrow_io = { workspace = true }
+google-cloud-bigquery = { workspace = true }
+google-cloud-bigquery-v2 = { workspace = true }
+google-cloud-gax = { workspace = true }
 
 [lints]
 workspace = true
