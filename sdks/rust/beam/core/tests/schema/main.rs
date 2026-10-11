@@ -19,4 +19,7 @@
 
 //! Row model, schema derive, and portable schema proto tests.
 
+mod schema_derive_test;
+mod schema_proptest;
+mod schema_proto_test;
 mod schema_test;
