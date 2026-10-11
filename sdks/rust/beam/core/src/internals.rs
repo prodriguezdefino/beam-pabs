@@ -23,6 +23,8 @@
 
 use std::collections::HashMap;
 
+pub use crate::values::SideInputKind;
+
 /// A foldhash `HashMap` for tables hashed per element. Crate-private, so public APIs
 /// keep the standard `HashMap` and foldhash stays out of the SDK's semver surface.
 pub(crate) type FastHashMap<K, V> = HashMap<K, V, foldhash::fast::RandomState>;

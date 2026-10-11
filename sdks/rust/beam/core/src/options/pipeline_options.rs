@@ -303,7 +303,7 @@ impl PipelineOptions {
 /// Parses the command line of a pipeline into [`PipelineOptions`] and its option group `T`.
 /// On invalid arguments, prints a usage message and exits the process.
 ///
-/// ```ignore
+/// ```no_run
 /// use clap::Args;
 /// use serde::{Deserialize, Serialize};
 /// use beam::options::PipelineOptionGroup;
