@@ -46,3 +46,5 @@ sync_wrapper = { workspace = true }
 
 [dev-dependencies]
 testutils = { workspace = true }
+testing = { workspace = true, features = ["prism"] }
+tokio = { workspace = true }
