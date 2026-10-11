@@ -83,6 +83,10 @@ pub mod io {
 
     #[cfg(feature = "io-file")]
     pub use beam_io_file::*;
+
+    /// Beam schema and `Row` bridge to Apache Arrow.
+    #[cfg(feature = "arrow")]
+    pub use beam_io_arrow as arrow;
 }
 
 pub mod runners {
