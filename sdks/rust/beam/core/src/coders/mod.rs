@@ -21,6 +21,7 @@
 //! exchange PCollection elements, window metadata and KV records.
 
 mod composite;
+mod display;
 mod header;
 mod iterable;
 mod metadata;
@@ -34,6 +35,7 @@ mod traversal;
 mod windowed;
 
 pub use composite::*;
+pub use display::ElementFormatter;
 pub use header::WindowedHeader;
 pub use iterable::*;
 pub use metadata::*;
