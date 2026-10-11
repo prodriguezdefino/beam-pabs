@@ -220,6 +220,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "apache-beam-testing"
+version = "2.79.0-SNAPSHOT"
+dependencies = [
+ "apache-beam-core",
+ "apache-beam-harness",
+ "apache-beam-model",
+ "apache-beam-runner-prism",
+ "apache-beam-testing",
+ "prost",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "arc-swap"
 version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
