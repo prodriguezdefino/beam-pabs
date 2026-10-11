@@ -1,0 +1,281 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+//! Iterables for `beam:coder:state_backed_iterable:v1`. The runner can split a large iterable
+//! (for example a hot key after `GroupByKey`): inlined elements come first, then a `-1` chunk
+//! header and a state continuation token. [`BeamIterable`] reads the rest lazily from the
+//! runner State API.
+
+mod state;
+
+pub use state::{
+    PageStreamReader, StateElementIterator, decode_beam_iterable, decode_iterable_with_state,
+};
+
+use std::fmt;
+use std::io::Write;
+use std::sync::{Arc, Mutex};
+
+use crate::coders::URN_ITERABLE;
+use crate::coders::composite::IterableCoder;
+use crate::coders::traits::{CoderError, CoderRegistry, DefaultCoder};
+
+/// Iterator over raw byte pages from runner state.
+pub type PageStream = Box<dyn Iterator<Item = Result<Vec<u8>, CoderError>> + Send>;
+
+/// Closure that decodes one element from a byte reader.
+pub type ElementDecoder<T> = Arc<dyn Fn(&mut &[u8]) -> Result<T, CoderError> + Send + Sync>;
+
+/// Single-pass iterator over the state-backed suffix of an iterable.
+pub type StreamingSuffix<T> = Box<dyn Iterator<Item = Result<T, CoderError>> + Send>;
+
+/// Opens runner state streams for continuation tokens.
+pub trait StateStreamReader: Send + Sync {
+    /// Opens the state pages for `token`. Each page holds nested-context elements.
+    fn stream_runner_pages(&self, token: &[u8]) -> Result<PageStream, CoderError>;
+}
+
+/// Beam elements with an in-memory prefix and an optional suffix that is read lazily from
+/// runner state when the runner sends a continuation token.
+///
+/// The suffix can be read once, so `BeamIterable` is not `Clone`. For two passes, collect
+/// the elements with [`into_vec`](Self::into_vec).
+pub struct BeamIterable<T> {
+    prefix: Vec<T>,
+    suffix: Option<OwnedSuffix<T>>,
+}
+
+/// The suffix, owned by one `BeamIterable`. The `Mutex` only makes the type `Sync`, which
+/// element types need. It is read through `get_mut` and `into_inner`, which never lock.
+type OwnedSuffix<T> = Mutex<StreamingSuffix<T>>;
+
+impl<T> BeamIterable<T> {
+    pub fn from_vec(elements: Vec<T>) -> Self {
+        Self {
+            prefix: elements,
+            suffix: None,
+        }
+    }
+
+    /// Creates an iterable with an inlined prefix and a lazy streaming suffix.
+    pub fn with_suffix(prefix: Vec<T>, suffix: StreamingSuffix<T>) -> Self {
+        Self {
+            prefix,
+            suffix: Some(Mutex::new(suffix)),
+        }
+    }
+
+    pub fn is_in_memory(&self) -> bool {
+        self.suffix.is_none()
+    }
+
+    pub fn inlined_prefix(&self) -> &[T] {
+        &self.prefix
+    }
+
+    /// Returns the element count, or `None` if a state suffix exists: the length is unknown
+    /// until the suffix is drained.
+    #[must_use]
+    pub fn in_memory_len(&self) -> Option<usize> {
+        self.is_in_memory().then_some(self.prefix.len())
+    }
+
+    /// Collects all elements, and fetches the state suffix.
+    pub fn into_vec(self) -> Result<Vec<T>, CoderError> {
+        let prefix = self.prefix;
+        match self.suffix.map(Mutex::into_inner) {
+            None => Ok(prefix),
+            Some(Err(_)) => Err(poisoned()),
+            Some(Ok(mut suffix)) => suffix.try_fold(prefix, |mut elements, item| {
+                elements.push(item?);
+                Ok(elements)
+            }),
+        }
+    }
+
+    /// An iterable with a state suffix is never empty: the runner sends a continuation token
+    /// only when more elements exist.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.prefix.is_empty() && self.suffix.is_none()
+    }
+
+    #[must_use]
+    pub fn has_state_suffix(&self) -> bool {
+        self.suffix.is_some()
+    }
+
+    /// Converts the iterable into an iterator that yields `Result<T, CoderError>`.
+    pub fn try_into_iter(self) -> BeamIterableTryIntoIter<T> {
+        BeamIterableTryIntoIter {
+            prefix: self.prefix.into_iter(),
+            suffix: self.suffix,
+        }
+    }
+}
+
+impl<T: PartialEq> PartialEq for BeamIterable<T> {
+    /// Compares in-memory iterables by their elements. An iterable with a state suffix is
+    /// never equal to another one: a comparison would consume the single-pass state stream.
+    fn eq(&self, other: &Self) -> bool {
+        self.suffix.is_none() && other.suffix.is_none() && self.prefix == other.prefix
+    }
+}
+
+impl<T: fmt::Debug> fmt::Debug for BeamIterable<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.suffix.is_some() {
+            f.debug_struct("BeamIterable")
+                .field("inlined_prefix", &self.prefix)
+                .field("has_state_suffix", &true)
+                .finish()
+        } else {
+            f.debug_struct("BeamIterable")
+                .field("elements", &self.prefix)
+                .finish()
+        }
+    }
+}
+
+impl<T> Default for BeamIterable<T> {
+    fn default() -> Self {
+        Self::from_vec(Vec::new())
+    }
+}
+
+impl<T> From<Vec<T>> for BeamIterable<T> {
+    fn from(v: Vec<T>) -> Self {
+        Self::from_vec(v)
+    }
+}
+
+impl<T> FromIterator<T> for BeamIterable<T> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        Self::from_vec(iter.into_iter().collect())
+    }
+}
+
+/// Fallible iterator over elements of a [`BeamIterable`].
+pub struct BeamIterableTryIntoIter<T> {
+    prefix: std::vec::IntoIter<T>,
+    suffix: Option<OwnedSuffix<T>>,
+}
+
+/// The suffix mutex is never locked, so it cannot be poisoned; report it rather than stop.
+fn poisoned() -> CoderError {
+    CoderError::Format("state-backed iterable suffix mutex was poisoned".to_string())
+}
+
+impl<T> Iterator for BeamIterableTryIntoIter<T> {
+    type Item = Result<T, CoderError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(item) = self.prefix.next() {
+            return Some(Ok(item));
+        }
+        match self.suffix.as_mut()?.get_mut() {
+            Ok(suffix) => suffix.next(),
+            Err(_) => Some(Err(poisoned())),
+        }
+    }
+}
+
+/// Consuming iterator over the elements of a [`BeamIterable`]. A state fetch or decode
+/// failure is an `Err` item, so `for v in values { let v = v?; .. }` fails the bundle and the
+/// runner retries it.
+pub struct BeamIterableIntoIter<T> {
+    inner: BeamIterableTryIntoIter<T>,
+}
+
+impl<T> Iterator for BeamIterableIntoIter<T> {
+    type Item = crate::Result<T>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner
+            .next()
+            .map(|item| item.map_err(crate::Error::from))
+    }
+}
+
+impl<T> IntoIterator for BeamIterable<T> {
+    type Item = crate::Result<T>;
+    type IntoIter = BeamIterableIntoIter<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        BeamIterableIntoIter {
+            inner: self.try_into_iter(),
+        }
+    }
+}
+
+impl<T: DefaultCoder> DefaultCoder for BeamIterable<T> {
+    type Coder = IterableCoder<T, T::Coder>;
+
+    fn coder() -> Self::Coder {
+        IterableCoder::new(T::coder())
+    }
+
+    fn encode_element(&self, writer: &mut Vec<u8>) -> Result<(), CoderError> {
+        // Encoding only the prefix would write a wrong count and lose the suffix elements.
+        if self.has_state_suffix() {
+            return Err(CoderError::Format(
+                "cannot encode a state-backed BeamIterable: drain it with `into_vec` first"
+                    .to_string(),
+            ));
+        }
+        let count = i32::try_from(self.prefix.len()).map_err(|_| {
+            CoderError::Format(format!(
+                "iterable length {} exceeds the i32 wire limit",
+                self.prefix.len()
+            ))
+        })?;
+        writer.write_all(&count.to_be_bytes())?;
+        self.prefix
+            .iter()
+            .try_for_each(|item| item.encode_element(writer))
+    }
+
+    fn decode_element(reader: &mut &[u8]) -> Result<Self, CoderError> {
+        Self::decode_element_with_context(reader, None, None)
+    }
+
+    fn decode_element_with_context(
+        reader: &mut &[u8],
+        schema: Option<&Arc<crate::schema::Schema>>,
+        state_reader: Option<&Arc<dyn StateStreamReader>>,
+    ) -> Result<Self, CoderError> {
+        // Cheap: Arc clone on Option<Arc<...>> for potential state-backed suffix.
+        let schema_cloned = schema.cloned();
+        let state_reader_cloned = state_reader.cloned();
+        decode_beam_iterable(
+            reader,
+            move |r| {
+                T::decode_element_with_context(
+                    r,
+                    schema_cloned.as_ref(),
+                    state_reader_cloned.as_ref(),
+                )
+            },
+            state_reader.map(|r| r.as_ref()),
+        )
+    }
+
+    fn register_coder<R: CoderRegistry + ?Sized>(registry: &R) -> String {
+        let elem_id = T::register_coder(registry);
+        registry.register_coder(URN_ITERABLE, vec![elem_id])
+    }
+}
