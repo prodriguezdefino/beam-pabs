@@ -28,7 +28,6 @@ mod outbound;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio_stream::{Stream, StreamExt};
@@ -43,7 +42,7 @@ use inbound::deliver;
 pub use inbound::{
     DataChannelState, INBOUND_QUEUE_CHUNKS, InboundReceiver, UNREGISTERED_DATA_TIMEOUT, lock_state,
 };
-pub use outbound::{OUTBOUND_FLUSH_BYTES, OUTBOUND_QUEUE_MESSAGES, Outbound};
+pub use outbound::{FlushLimits, OUTBOUND_FLUSH_BYTES, OUTBOUND_QUEUE_MESSAGES, Outbound};
 
 #[derive(Error, Debug)]
 pub enum DataError {
@@ -118,8 +117,8 @@ pub struct DataManager {
     named_streams: Arc<RwLock<HashMap<String, mpsc::Sender<Elements>>>>,
     /// Opens named data streams; without it, all data uses the default stream.
     connector: Arc<RwLock<Option<Arc<dyn DataStreamConnector>>>>,
-    /// The longest time output waits in a buffer. `None`: only size and bundle end send it.
-    flush_time_limit: Option<Duration>,
+    /// When the bundles send their buffered output.
+    flush: FlushLimits,
 }
 
 impl DataManager {
@@ -135,16 +134,13 @@ impl DataManager {
             outbound_tx,
             named_streams: Arc::new(RwLock::new(HashMap::new())),
             connector: Arc::new(RwLock::new(None)),
-            flush_time_limit: None,
+            flush: FlushLimits::default(),
         }
     }
 
-    /// Sends buffered bundle output after at most `limit`, also below the size limit.
-    pub fn with_flush_time_limit(self, limit: Option<Duration>) -> Self {
-        Self {
-            flush_time_limit: limit,
-            ..self
-        }
+    /// Sets when the bundles send their buffered output.
+    pub fn with_flush_limits(self, flush: FlushLimits) -> Self {
+        Self { flush, ..self }
     }
 
     /// Returns a shared handle to the channel state for inbound routing.
@@ -233,10 +229,16 @@ impl DataManager {
         lock_state(&self.state).unregister_data(instruction_id);
     }
 
-    /// Registers the inbound data of a bundle, and its timers if it reads timers, under one
-    /// lock. Dropping the returned registration unregisters both.
-    pub fn register_bundle_inbound(&self, instruction_id: &str, timers: bool) -> BundleInbound {
+    /// Registers the inbound data of a bundle on stream `data_stream_id`, and its timers if it
+    /// reads timers, under one lock. Dropping the returned registration unregisters both.
+    pub fn register_bundle_inbound(
+        &self,
+        instruction_id: &str,
+        data_stream_id: &str,
+        timers: bool,
+    ) -> BundleInbound {
         let mut state = lock_state(&self.state);
+        state.register_stream(instruction_id, data_stream_id);
         BundleInbound {
             data: state.register_data(instruction_id),
             timers: timers.then(|| state.register_timers(instruction_id)),
@@ -254,7 +256,7 @@ impl DataManager {
 
     /// Routes inbound `Elements` from the runner to their bundles.
     pub async fn handle_inbound_elements(&self, elements: Elements) {
-        deliver(&self.state, elements).await;
+        deliver(&self.state, elements, None).await;
     }
 
     /// Sends a data chunk for a given instruction and transform to the runner.
@@ -300,7 +302,7 @@ impl DataManager {
             instruction_id,
             sink_ids,
             timer_families,
-            self.flush_time_limit,
+            self.flush,
         )
     }
 
@@ -314,14 +316,16 @@ impl DataManager {
 }
 
 /// Delivers the messages of `inbound` to the bundles until it ends, and returns why it ended.
+/// `stream` is the id of a named stream; `None` is the default stream.
 pub(crate) async fn read_stream(
     state: &Arc<Mutex<DataChannelState>>,
     mut inbound: impl Stream<Item = Result<Elements, String>> + Unpin,
     name: &str,
+    stream: Option<&Arc<str>>,
 ) -> String {
     loop {
         match inbound.next().await {
-            Some(Ok(elements)) => deliver(state, elements).await,
+            Some(Ok(elements)) => deliver(state, elements, stream).await,
             Some(Err(e)) => break format!("{name} failed: {e}"),
             None => break format!("{name} closed by runner"),
         }
@@ -338,7 +342,9 @@ async fn read_named_stream(
     inbound: InboundStream,
 ) {
     debug!("Reading named data stream '{id}'");
-    let reason = read_stream(&state, inbound, &format!("Named data stream '{id}'")).await;
+    let stream: Arc<str> = Arc::from(id.as_str());
+    let name = format!("Named data stream '{id}'");
+    let reason = read_stream(&state, inbound, &name, Some(&stream)).await;
     error!("{reason}");
     if let Ok(mut streams) = streams.write() {
         // A newer stream with the same id stays.
@@ -349,7 +355,6 @@ async fn read_named_stream(
             streams.remove(&id);
         }
     }
-    // Inbound queues are keyed by instruction only, so the bundles of this stream cannot be
-    // told apart: all fail, and the runner retries them.
-    lock_state(&state).fail_all(&reason);
+    // Only this stream's bundles fail; the runner retries them.
+    lock_state(&state).fail_stream(&id, &reason);
 }

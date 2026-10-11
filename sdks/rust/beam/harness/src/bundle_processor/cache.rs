@@ -23,7 +23,7 @@
 //! `ProcessBundleDescriptor`, cloned from the registered prototypes and set up once, plus
 //! their routing. It runs one bundle at a time, so concurrent bundles each take their own.
 //! After a bundle succeeds, the processor goes back to an idle pool. After a failure it can
-//! hold half-finished state, so it is torn down, as is one idle longer than [`IDLE_TIMEOUT`].
+//! hold half-finished state, so it is torn down, as is one idle longer than the idle timeout.
 
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
@@ -48,8 +48,11 @@ use beam::internals::TransformFn;
 use crate::state::SideInputSpecs;
 use crate::user_state::UserStateSpecs;
 
-/// Maximum time that an idle processor stays in the pool before teardown.
-const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long an idle processor of a batch pipeline stays in the pool before teardown.
+pub const BATCH_PROCESSOR_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long an idle processor of a streaming pipeline stays in the pool before teardown.
+pub const STREAMING_PROCESSOR_IDLE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
 /// Immutable topology and port metadata resolved once per `ProcessBundleDescriptor`.
 pub(super) struct BundlePlan {
@@ -183,11 +186,7 @@ impl PreparedProcessor {
         descriptor: &ProcessBundleDescriptor,
         prototypes: &HashMap<String, TransformFn>,
     ) -> Result<Self, BundleError> {
-        let (source_id, source_t) = descriptor
-            .transforms
-            .iter()
-            .find(|(_, t)| has_urn(t, URN_DATA_SOURCE))
-            .ok_or_else(|| BundleError::MissingSource(descriptor.id.clone()))?;
+        let (source_id, source_t) = only_source(descriptor)?;
         let sinks = collect_sinks(descriptor)?;
         let ordered_transform_ids = topological_order(descriptor, source_id, source_t);
         let source_port = decode_port(source_t)?;
@@ -259,6 +258,33 @@ impl PreparedProcessor {
     }
 }
 
+/// The one DATA_SOURCE transform of `descriptor`. Fails when it has none or more than one,
+/// so the data of a second source is never dropped.
+fn only_source(
+    descriptor: &ProcessBundleDescriptor,
+) -> Result<(&String, &model::pipeline::PTransform), BundleError> {
+    let mut sources = descriptor
+        .transforms
+        .iter()
+        .filter(|(_, t)| has_urn(t, URN_DATA_SOURCE));
+    match (sources.next(), sources.next()) {
+        (Some(source), None) => Ok(source),
+        (None, _) => Err(BundleError::MissingSource(descriptor.id.clone())),
+        (Some(first), Some(second)) => {
+            let mut ids: Vec<String> = [first, second]
+                .into_iter()
+                .chain(sources)
+                .map(|(id, _)| id.clone())
+                .collect();
+            ids.sort_unstable();
+            Err(BundleError::MultipleSources {
+                descriptor: descriptor.id.clone(),
+                sources: ids,
+            })
+        }
+    }
+}
+
 /// An idle processor and the time it went back to the pool.
 type Idle = (Instant, PreparedProcessor);
 
@@ -267,6 +293,7 @@ pub(super) struct ProcessorCache {
     /// The handlers registered with the pipeline. The cache clones them and never runs them.
     prototypes: Arc<HashMap<String, TransformFn>>,
     idle: Mutex<HashMap<String, Vec<Idle>>>,
+    idle_timeout: Duration,
 }
 
 impl ProcessorCache {
@@ -274,7 +301,40 @@ impl ProcessorCache {
         Self {
             prototypes,
             idle: Mutex::new(HashMap::new()),
+            idle_timeout: BATCH_PROCESSOR_IDLE_TIMEOUT,
         }
+    }
+
+    /// Sets how long an idle processor stays in the pool before teardown.
+    pub(super) fn with_idle_timeout(self, idle_timeout: Duration) -> Self {
+        Self {
+            idle_timeout,
+            ..self
+        }
+    }
+
+    pub(super) fn idle_timeout(&self) -> Duration {
+        self.idle_timeout
+    }
+
+    /// Tears down the processors idle longer than the idle timeout. Returns how many.
+    pub(super) fn sweep(&self) -> usize {
+        let expired = self.with_idle(|idle| take_expired(idle, Instant::now(), self.idle_timeout));
+        let count = expired.len();
+        // Tear down outside the lock, because teardown runs user code.
+        expired.into_iter().for_each(PreparedProcessor::teardown);
+        count
+    }
+
+    /// The number of idle processors of each descriptor, in descriptor order.
+    pub(super) fn idle_counts(&self) -> Vec<(String, usize)> {
+        let mut counts: Vec<(String, usize)> = self.with_idle(|idle| {
+            idle.iter()
+                .map(|(descriptor, processors)| (descriptor.clone(), processors.len()))
+                .collect()
+        });
+        counts.sort_unstable();
+        counts
     }
 
     /// Takes an idle processor for `descriptor`, or builds a new one. Dropping the lease
@@ -313,7 +373,7 @@ impl ProcessorCache {
             idle.entry(descriptor_id)
                 .or_default()
                 .push((now, processor));
-            take_expired(idle, now)
+            take_expired(idle, now, self.idle_timeout)
         });
         // Tear down outside the lock, because teardown runs user code.
         expired.into_iter().for_each(PreparedProcessor::teardown);
@@ -329,9 +389,13 @@ impl ProcessorCache {
     }
 }
 
-/// Removes the processors that have been idle longer than [`IDLE_TIMEOUT`].
-fn take_expired(idle: &mut HashMap<String, Vec<Idle>>, now: Instant) -> Vec<PreparedProcessor> {
-    let is_expired = |returned: &Instant| now.duration_since(*returned) > IDLE_TIMEOUT;
+/// Removes the processors that have been idle longer than `timeout`.
+fn take_expired(
+    idle: &mut HashMap<String, Vec<Idle>>,
+    now: Instant,
+    timeout: Duration,
+) -> Vec<PreparedProcessor> {
+    let is_expired = |returned: &Instant| now.duration_since(*returned) > timeout;
     let expired = idle
         .values_mut()
         .flat_map(|pool| {

@@ -21,4 +21,6 @@
 mod common;
 
 mod control_dispatch_test;
+mod memory_test;
+mod worker_run_test;
 mod worker_status_test;
