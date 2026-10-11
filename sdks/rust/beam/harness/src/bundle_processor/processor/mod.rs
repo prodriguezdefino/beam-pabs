@@ -25,8 +25,11 @@ mod state_access;
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
 
+use tokio::task::JoinHandle;
+use tokio::time::{MissedTickBehavior, interval_at};
 use tracing::{Instrument, debug};
 
 use super::BundleError;
@@ -60,6 +63,31 @@ pub(super) fn emit_timers(
 
 pub const URN_DATA_SOURCE: &str = "beam:runner:source:v1";
 pub const URN_DATA_SINK: &str = "beam:runner:sink:v1";
+
+/// Starts a task that tears down the processors of `bundles` that stayed idle past their
+/// timeout, at intervals of `every`. The task stops at the first tick after the processor
+/// is dropped.
+#[doc(hidden)]
+pub fn spawn_idle_processor_sweeper(
+    bundles: Weak<BundleProcessor>,
+    every: Duration,
+) -> JoinHandle<()> {
+    let mut ticker = interval_at(tokio::time::Instant::now() + every, every);
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    tokio::spawn(async move {
+        loop {
+            ticker.tick().await;
+            let Some(processor) = bundles.upgrade() else {
+                return;
+            };
+            // Teardown runs user code, so it runs on a blocking thread.
+            let swept = tokio::task::spawn_blocking(move || processor.sweep_idle_processors());
+            if let Ok(count @ 1..) = swept.await {
+                debug!("Tore down {count} idle bundle processor(s)");
+            }
+        }
+    })
+}
 
 pub struct BundleProcessor {
     pub(super) data_manager: DataManager,
@@ -107,9 +135,41 @@ impl BundleProcessor {
             .get(instruction_id)
             .cloned()
     }
+    /// The size and the counts of the state cache that bundles share.
+    #[doc(hidden)]
+    pub fn state_cache_stats(&self) -> crate::state::CacheStats {
+        self.state_cache.stats()
+    }
+    /// The number of idle processors of each descriptor.
+    #[doc(hidden)]
+    pub fn idle_processors(&self) -> Vec<(String, usize)> {
+        self.processors.idle_counts()
+    }
+    /// Sets how long an idle bundle processor stays set up for reuse.
+    pub fn with_processor_idle_timeout(self, timeout: Duration) -> Self {
+        Self {
+            processors: self.processors.with_idle_timeout(timeout),
+            ..self
+        }
+    }
+    /// How long an idle bundle processor stays set up for reuse.
+    pub fn processor_idle_timeout(&self) -> Duration {
+        self.processors.idle_timeout()
+    }
+    /// Tears down the processors idle longer than their timeout. Returns how many.
+    /// [`spawn_idle_processor_sweeper`] calls this function at each tick.
+    #[doc(hidden)]
+    pub fn sweep_idle_processors(&self) -> usize {
+        self.processors.sweep()
+    }
+    /// The number of short ids that the worker assigned to monitoring infos.
+    #[doc(hidden)]
+    pub fn short_id_count(&self) -> usize {
+        self.short_id_cache.len()
+    }
     /// Sets the worker id that the state channel sends as gRPC metadata, so the runner can
     /// match the stream with the worker that registered on the control channel.
-    /// the worker attaches it to the other channels at connection time.
+    /// [`crate::worker`] attaches it to the other channels at connection time.
     pub fn with_worker_id(mut self, worker_id: String) -> Self {
         self.state_clients = crate::state::StateClients::new(worker_id);
         self
@@ -186,9 +246,11 @@ impl BundleProcessor {
             plan.sink_count()
         );
 
-        let inbound = self
-            .data_manager
-            .register_bundle_inbound(instruction_id, plan.has_timer_families());
+        let inbound = self.data_manager.register_bundle_inbound(
+            instruction_id,
+            data_stream_id,
+            plan.has_timer_families(),
+        );
         if let Some(elements) = embedded_elements {
             let dm = self.data_manager.clone();
             tokio::spawn(async move {

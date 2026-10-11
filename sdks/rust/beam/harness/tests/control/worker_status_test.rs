@@ -24,6 +24,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use beam_harness::status::{WorkerMetrics, WorkerStatusHandler, format_status_info};
+use beam_harness::worker::spawn_watchdog;
 use beam_model::fn_execution::beam_fn_worker_status_server::{
     BeamFnWorkerStatus, BeamFnWorkerStatusServer,
 };
@@ -180,7 +181,7 @@ async fn test_worker_status_grpc_lifecycle() {
     server_handle.abort();
 }
 
-/// Linux reports `/proc` figures; other platforms report that they are unavailable.
+/// The memory section leads with the monitor's resident size, peak and limit.
 #[test]
 fn status_report_includes_memory_usage_details() {
     let info = format_status_info(Instant::now(), &WorkerMetrics::new(), None);
@@ -191,15 +192,52 @@ fn status_report_includes_memory_usage_details() {
         .expect("memory section header");
     let first = lines.next().unwrap_or_default();
     assert!(
-        !first.is_empty() && !first.starts_with("===="),
-        "the memory section is empty: {info}"
+        first.starts_with("Resident: ") && first.contains(", Limit: "),
+        "{info}"
     );
+}
+
+/// The thread and cache sections: threads by name and state (Linux), the Tokio runtime, and
+/// the state cache, idle processors and short ids of the bundle processor.
+#[tokio::test]
+async fn status_report_includes_threads_and_caches() {
+    let processor = TestBundle::empty().processor;
+    let info = format_status_info(Instant::now(), &WorkerMetrics::new(), Some(&processor));
+
+    assert!(info.contains("============Threads============"), "{info}");
+    assert!(info.contains("Tokio runtime: "), "{info}");
     if cfg!(target_os = "linux") {
-        assert!(
-            first.starts_with("Vm") || first.starts_with("Threads:"),
-            "{first}"
-        );
+        assert!(info.contains("Threads: "), "{info}");
     }
+    assert!(info.contains("State cache: 0 entries, 0 of "), "{info}");
+    assert!(info.contains("Idle bundle processors: none"), "{info}");
+    assert!(info.contains("Short ids: 0"), "{info}");
+
+    let without = format_status_info(Instant::now(), &WorkerMetrics::new(), None);
+    assert!(without.contains("Caches: no bundle processor"), "{without}");
+}
+
+/// The heartbeat task of the watchdog ends when the bundle processor is dropped.
+#[tokio::test(start_paused = true)]
+async fn the_watchdog_heartbeat_ends_with_the_bundle_processor() {
+    let processor = TestBundle::empty().processor;
+    let tasks = || {
+        tokio::runtime::Handle::current()
+            .metrics()
+            .num_alive_tasks()
+    };
+    let before = tasks();
+
+    spawn_watchdog(WorkerMetrics::new(), Arc::downgrade(&processor));
+    assert_eq!(tasks(), before + 1, "the heartbeat task is alive");
+
+    drop(processor);
+    within("the heartbeat task to end", async {
+        while tasks() > before {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await;
 }
 
 #[test]
@@ -307,6 +345,25 @@ async fn stopping_or_dropping_the_status_handler_closes_its_stream() {
         .await;
         server.abort();
     }
+}
+
+/// The worker opens a new status stream after the runner ends the first one.
+#[tokio::test]
+async fn the_status_stream_reconnects_after_the_runner_ends_it() {
+    let (handler, probe, server) = connected_handler().await;
+    probe
+        .open_streams
+        .lock()
+        .expect("open streams lock")
+        .clear();
+    within(
+        "the worker to close the ended stream",
+        probe.closed.notified(),
+    )
+    .await;
+    within("the status stream to reopen", probe.connected.notified()).await;
+    handler.stop();
+    server.abort();
 }
 
 const GATE_ID: &str = "gate_transform";

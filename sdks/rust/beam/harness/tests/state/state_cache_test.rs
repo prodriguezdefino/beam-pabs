@@ -293,6 +293,33 @@ fn cached_bag_appends_across_many_bundles_compact_and_keep_order() {
     );
 }
 
+/// An entry with an empty value has the weight of its key and of a fixed overhead, so the
+/// byte limit evicts such entries.
+#[test]
+fn entries_with_empty_values_are_evicted_at_the_byte_limit() {
+    with_timeout(
+        "entries_with_empty_values_are_evicted_at_the_byte_limit",
+        || {
+            const CELLS: usize = 64;
+            let server = StrictStateServer::start();
+            let cache = Arc::new(StateCache::new(4096));
+
+            let state = bundle(&server, "inst_1", &cache, Some(b"token_a"));
+            let reader = state.scoped("t");
+            (0..CELLS).for_each(|i| {
+                let cell = reader.get_state("bag", b"w", &[i as u8]).unwrap();
+                assert!(cell.is_empty(), "cell {i} has no elements");
+            });
+            state.commit().unwrap();
+
+            let stats = cache.stats();
+            assert!(stats.evictions > 0, "{stats:?}");
+            assert!(stats.entries < CELLS, "{stats:?}");
+            assert!(stats.bytes <= stats.max_bytes, "{stats:?}");
+        },
+    );
+}
+
 #[test]
 fn map_reads_are_not_written_back() {
     with_timeout("map_reads_are_not_written_back", || {
