@@ -45,6 +45,7 @@ derive = ["dep:derive"]
 [dev-dependencies]
 beam = { package = "apache-beam-core", path = ".", features = ["derive"] }
 model = { workspace = true }
+proptest = { workspace = true }
 
 [lints]
 workspace = true

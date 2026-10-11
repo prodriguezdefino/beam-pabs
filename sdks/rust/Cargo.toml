@@ -71,6 +71,7 @@ quote = "1.0"
 syn = { version = "3", features = ["full"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 rust_decimal = { version = "1", default-features = false, features = ["std"] }
+proptest = "1"
 
 # Internal workspace crates
 beam = { package = "apache-beam", path = "beam", version = "2.78.0-SNAPSHOT" }
