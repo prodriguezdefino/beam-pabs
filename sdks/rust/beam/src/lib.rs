@@ -87,6 +87,10 @@ pub mod io {
     /// Beam schema and `Row` bridge to Apache Arrow.
     #[cfg(feature = "arrow")]
     pub use beam_io_arrow as arrow;
+
+    /// Parquet I/O. The transforms are in `beam::io::parquet::parquetio`.
+    #[cfg(feature = "parquet")]
+    pub use beam_io_parquet as parquet;
 }
 
 pub mod runners {
