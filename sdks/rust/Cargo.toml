@@ -26,6 +26,8 @@ members = [
     "beam/io/file",
     "beam/test-utils",
     "beam/harness",
+    "beam/external",
+    
     "beam/runners/prism",
     "beam/testing",
 ]
@@ -89,6 +91,7 @@ async-trait = "0.1"
 bytes = "1.7"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["float_roundtrip"] }
+sha2 = "0.11"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 thiserror = "2"
@@ -102,12 +105,14 @@ zstd = { version = "0.14", default-features = false }
 foldhash = "0.2"
 arc-swap = "1.7"
 serde-saphyr = "1"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 proc-macro2 = "1.0"
 quote = "1.0"
 syn = { version = "3", features = ["full"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 rust_decimal = { version = "1", default-features = false, features = ["std"] }
 proptest = "1"
+libc = "0.2"
 
 # Internal workspace crates
 beam = { package = "apache-beam", path = "beam", version = "2.79.0-SNAPSHOT" }
@@ -115,6 +120,8 @@ beam_core = { package = "apache-beam-core", path = "beam/core", version = "2.79.
 beam_model = { package = "apache-beam-model", path = "beam/model", version = "2.79.0-SNAPSHOT" }
 beam_fluent = { package = "apache-beam-fluent", path = "beam/fluent", version = "2.79.0-SNAPSHOT" }
 beam_harness = { package = "apache-beam-harness", path = "beam/harness", version = "2.79.0-SNAPSHOT" }
+beam_external = { package = "apache-beam-external", path = "beam/external", version = "2.79.0-SNAPSHOT" }
+
 beam_io_file = { package = "apache-beam-io-file", path = "beam/io/file", version = "2.79.0-SNAPSHOT" }
 beam_runner_prism = { package = "apache-beam-runner-prism", path = "beam/runners/prism", version = "2.79.0-SNAPSHOT" }
 beam_testing = { package = "apache-beam-testing", path = "beam/testing", version = "2.79.0-SNAPSHOT" }
