@@ -20,11 +20,25 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+mod blocking_bundles_test;
+mod bundle_coders_test;
+mod bundle_execution_test;
 mod bundle_finalization_test;
 mod bundle_split_test;
+mod capability_handlers_test;
 mod chain_internals_test;
+mod data_sampling_test;
+mod elements_embedding_test;
+mod execution_time_test;
+mod finalization_logging_test;
 mod handler_lookup_test;
+mod harness_monitoring_test;
+mod nullable_framing_test;
 mod processor_cache_test;
 mod roots_test;
 mod row_framing_test;
+mod timer_delivery_test;
+mod timer_tracking_test;
 mod to_string_test;
+mod typed_fusion_test;
+mod user_metrics_test;
