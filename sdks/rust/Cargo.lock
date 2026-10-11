@@ -216,6 +216,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "apache-beam-testing"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam-core",
+ "apache-beam-harness",
+ "apache-beam-model",
+ "apache-beam-runner-prism",
+ "apache-beam-testing",
+ "prost",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "arraydeque"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
