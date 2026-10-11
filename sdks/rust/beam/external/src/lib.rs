@@ -23,12 +23,20 @@
 pub mod artifact;
 pub mod client;
 pub mod error;
+pub mod payload;
 pub mod service;
+pub mod splicing;
+pub mod transform;
 
 pub use artifact::*;
 pub use client::ExpansionClient;
 pub use error::ExpansionError;
+pub use payload::*;
 pub use service::*;
+pub use splicing::*;
+pub use transform::*;
+
+pub use beam::pipeline::{ExpansionMode, UNEXPANDED_PLACEHOLDER_ID};
 
 /// Automated Java expansion service management.
 ///
