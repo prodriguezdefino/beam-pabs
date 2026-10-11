@@ -27,6 +27,7 @@ use std::collections::HashMap;
 /// keep the standard `HashMap` and foldhash stays out of the SDK's semver surface.
 pub(crate) type FastHashMap<K, V> = HashMap<K, V, foldhash::fast::RandomState>;
 
+pub use crate::coders::display::ElementFormatter;
 pub use crate::metrics::context::MetricsContainer;
 pub use crate::metrics::scope::{
     MetricsScope, TransformMetrics, TransformSelection, process_wide_container,
