@@ -27,11 +27,13 @@ use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 use tokio_stream::{Stream, StreamExt};
 
-use beam::options::{HarnessOptions, SDK_OPTIONS_OPTION};
+use crate::bundle_processor::STREAMING_PROCESSOR_IDLE_TIMEOUT;
+use beam::options::{HarnessOptions, SDK_OPTIONS_OPTION, WorkerOptions};
 use beam::pipeline::{PREBAKED_WORKER_BINARY_PATH, URN_RUST_ARTIFACT_ROLE_WORKER_BINARY};
 use model::fn_execution::ProvisionInfo;
 use model::job_management::GetArtifactResponse;
 use model::pipeline::ArtifactInformation;
+use prost_types::value::Kind;
 
 /// Error type the boot program reports.
 pub type BootError = Box<dyn std::error::Error + Send + Sync>;
@@ -108,29 +110,107 @@ pub fn select_worker_binary(
 /// The driver's encoded [`OptionsSnapshot`](beam::options::OptionsSnapshot) from the
 /// forwarded options; `None` if the job was not submitted by a Rust driver of this version.
 pub fn sdk_options_from(info: &ProvisionInfo) -> Option<&str> {
-    let options = info.pipeline_options.as_ref()?;
+    match portable_option(info, SDK_OPTIONS_OPTION, SDK_OPTIONS_OPTION)? {
+        Kind::StringValue(encoded) => Some(encoded),
+        _ => None,
+    }
+}
 
-    // Portable runners key the option by URN; Dataflow nests it one level down. Try both.
-    let nested = || {
-        options
+/// The value of the option that a driver forwarded as `name` (snake case) or `camel`.
+/// Portable runners key it by URN; Dataflow nests it one level down, by the name that the
+/// driver's SDK uses.
+fn portable_option<'a>(info: &'a ProvisionInfo, name: &str, camel: &str) -> Option<&'a Kind> {
+    let options = info.pipeline_options.as_ref()?;
+    let nested = || match options.fields.get("options")?.kind.as_ref()? {
+        Kind::StructValue(inner) => inner.fields.get(name).or_else(|| inner.fields.get(camel)),
+        _ => None,
+    };
+    options
+        .fields
+        .get(&format!("beam:option:{name}:v1"))
+        .or_else(nested)?
+        .kind
+        .as_ref()
+}
+
+/// The worker options that a driver of another SDK forwarded: the log levels, the element
+/// processing timeout, the state cache size, the `data_buffer_time_limit_ms` and
+/// `data_buffer_size_limit` experiments, and the streaming mode as the processor cache
+/// timeout. Options that this SDK does not read are ignored.
+pub fn portable_worker_options(info: &ProvisionInfo) -> WorkerOptions {
+    let string = |name, camel| match portable_option(info, name, camel)? {
+        Kind::StringValue(value) => Some(value.clone()),
+        _ => None,
+    };
+    let number = |name, camel| match portable_option(info, name, camel)? {
+        Kind::NumberValue(value) if *value >= 0.0 => Some(*value as u64),
+        Kind::StringValue(value) => value.trim().parse().ok(),
+        _ => None,
+    };
+    let experiment = |key: &str| match portable_option(info, "experiments", "experiments")? {
+        Kind::ListValue(list) => list.values.iter().find_map(|value| match &value.kind {
+            Some(Kind::StringValue(entry)) => entry
+                .strip_prefix(key)
+                .and_then(|rest| rest.strip_prefix('='))
+                .and_then(|n| n.trim().parse().ok()),
+            _ => None,
+        }),
+        _ => None,
+    };
+    WorkerOptions {
+        default_sdk_harness_log_level: string(
+            "default_sdk_harness_log_level",
+            "defaultSdkHarnessLogLevel",
+        )
+        .map(|level| portable_level(&level)),
+        sdk_harness_log_level_overrides: portable_option(
+            info,
+            "sdk_harness_log_level_overrides",
+            "sdkHarnessLogLevelOverrides",
+        )
+        .map(level_overrides)
+        .unwrap_or_default(),
+        element_processing_timeout_minutes: number(
+            "element_processing_timeout_minutes",
+            "elementProcessingTimeoutMinutes",
+        ),
+        state_cache_size_mb: number("max_cache_memory_usage_mb", "maxCacheMemoryUsageMb")
+            .and_then(|mb| usize::try_from(mb).ok()),
+        data_buffer_time_limit_ms: experiment("data_buffer_time_limit_ms"),
+        data_buffer_size_limit: experiment("data_buffer_size_limit")
+            .and_then(|bytes| usize::try_from(bytes).ok()),
+        bundle_processor_cache_timeout_secs: matches!(
+            portable_option(info, "streaming", "streaming"),
+            Some(Kind::BoolValue(true))
+        )
+        .then_some(STREAMING_PROCESSOR_IDLE_TIMEOUT.as_secs()),
+        ..WorkerOptions::default()
+    }
+}
+
+/// `target=level` entries from a map of target to level.
+fn level_overrides(value: &Kind) -> Vec<String> {
+    match value {
+        Kind::StructValue(map) => map
             .fields
-            .get("options")
-            .and_then(|value| match &value.kind {
-                Some(prost_types::value::Kind::StructValue(inner)) => {
-                    inner.fields.get(SDK_OPTIONS_OPTION)
+            .iter()
+            .filter_map(|(target, level)| match &level.kind {
+                Some(Kind::StringValue(level)) => {
+                    Some(format!("{target}={}", portable_level(level)))
                 }
                 _ => None,
             })
-    };
+            .collect(),
+        _ => Vec::new(),
+    }
+}
 
-    let value = options
-        .fields
-        .get(&format!("beam:option:{SDK_OPTIONS_OPTION}:v1"))
-        .or_else(nested)?;
-
-    match value.kind.as_ref()? {
-        prost_types::value::Kind::StringValue(encoded) => Some(encoded),
-        _ => None,
+/// A level name of another SDK as a level that this SDK parses.
+fn portable_level(level: &str) -> String {
+    match level.trim().to_ascii_lowercase().as_str() {
+        "warning" => "warn".to_string(),
+        "critical" | "fatal" => "error".to_string(),
+        other => other.to_string(),
     }
 }
 
@@ -142,12 +222,12 @@ pub fn artifact_endpoint(args: &HarnessOptions, info: &ProvisionInfo) -> Option<
 }
 
 /// The options the pipeline binary is re-executed with: `args`, with unset endpoints taken
-/// from the provision info and `options_file` set.
-#[doc(hidden)]
+/// from the provision info and `options_file` set. `options_file` is `None` when the job
+/// carries no Rust options snapshot, because a driver of another SDK submitted it.
 pub fn worker_options(
     args: HarnessOptions,
     info: &ProvisionInfo,
-    options_file: PathBuf,
+    options_file: Option<PathBuf>,
 ) -> HarnessOptions {
     let artifact_endpoint = artifact_endpoint(&args, info);
     let status_endpoint = args
@@ -158,7 +238,7 @@ pub fn worker_options(
     HarnessOptions {
         status_endpoint,
         artifact_endpoint,
-        options_file: Some(options_file),
+        options_file,
         ..args
     }
 }
