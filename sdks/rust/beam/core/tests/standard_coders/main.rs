@@ -26,14 +26,15 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use beam_core::coders::{
-    BoolCoder, BytesCoder, Coder, CoderError, Context, DoubleCoder, GlobalWindow, IntervalWindow,
-    IntervalWindowCoder, IterableCoder, KvCoder, NullableCoder, PageStream, PaneInfo,
-    ParamWindowedValueCoder, RowCoder, StateStreamReader, StringUtf8Coder, Timing, VarIntCoder,
-    WindowedValue, WindowedValueCoder, decode_beam_iterable,
+    BoolCoder, BytesCoder, Coder, CoderError, Context, DoubleCoder, IntervalWindowCoder,
+    IterableCoder, KvCoder, NullableCoder, PageStream, PaneInfo, ParamWindowedValueCoder, RowCoder,
+    StateStreamReader, StringUtf8Coder, Timing, VarIntCoder, WindowedValue, WindowedValueCoder,
+    decode_beam_iterable,
 };
 use beam_core::schema::{
     BeamField, FieldType, FieldValue, Row, Schema, TypeInfo, URN_DECIMAL, URN_MILLIS_INSTANT,
 };
+use beam_core::windowing::{GlobalWindow, IntervalWindow};
 use beam_model::pipeline as proto;
 use prost::Message;
 use rust_decimal::Decimal;

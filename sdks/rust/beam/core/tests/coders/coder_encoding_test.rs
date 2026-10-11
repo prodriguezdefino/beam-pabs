@@ -21,13 +21,13 @@
 //!
 //! Covers URNs, length-prefix framing, unit, bool, KV, nullable, iterables and logical types.
 
-use beam_core::coders::IntervalWindow;
 use beam_core::coders::{
     BoolCoder, BytesCoder, Coder, Context, DoubleCoder, FloatCoder, IntervalWindowCoder,
     IterableCoder, LengthPrefixCoder, ParamWindowedValueCoder, RowCoder, StringUtf8Coder,
     VarIntCoder, WindowedValue, WindowedValueCoder,
 };
 use beam_core::schema::Row;
+use beam_core::windowing::IntervalWindow;
 
 /// A length prefix encodes the inner value in the outer context, so a string has one length,
 /// not two.
@@ -96,11 +96,11 @@ fn length_prefixed_decodes_with_context_the_bytes_of_its_coder() {
 /// URNs are spelled out, not taken from SDK constants, so a typo in a constant is caught.
 #[test]
 fn every_coder_reports_its_standard_urn() {
-    use beam_core::coders::GlobalWindow;
     use beam_core::coders::{
         GlobalWindowCoder, LengthPrefixed, LengthPrefixedCoder, RowStructCoder, UnitCoder,
     };
     use beam_core::schema::BeamRow;
+    use beam_core::windowing::GlobalWindow;
 
     #[derive(BeamRow)]
     #[beam(crate = "beam_core")]

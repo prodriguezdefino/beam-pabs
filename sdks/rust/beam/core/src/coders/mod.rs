@@ -33,7 +33,7 @@ pub(crate) mod standard;
 mod timer;
 mod traits;
 mod traversal;
-mod windowed;
+pub(crate) mod windowed;
 
 pub use composite::*;
 pub use decimal::*;
@@ -47,7 +47,11 @@ pub use standard::*;
 pub use timer::*;
 pub use traits::*;
 pub use traversal::*;
-pub use windowed::*;
+pub(crate) use windowed::{GlobalWindow, IntervalWindow, write_interval_window};
+pub use windowed::{
+    GlobalWindowCoder, IntervalWindowCoder, ParamWindowedValueCoder, WindowedValue,
+    WindowedValueCoder,
+};
 
 pub const URN_BYTES: &str = "beam:coder:bytes:v1";
 pub const URN_BOOL: &str = "beam:coder:bool:v1";

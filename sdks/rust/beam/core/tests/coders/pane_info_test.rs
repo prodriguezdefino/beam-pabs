@@ -25,10 +25,11 @@
 //! directly, not only round trips, so a change to the tag arithmetic cannot pass unnoticed.
 
 use beam_core::coders::{
-    CausedByDrain, Coder, Context, ElementMetadata, GlobalWindow, PaneInfo, StringUtf8Coder,
-    Timing, URN_BYTES, URN_GLOBAL_WINDOW, URN_WINDOWED_VALUE, ValueKind, VarIntCoder,
-    WindowedValue, WindowedValueCoder, skip_coder_value, skip_pane_info,
+    CausedByDrain, Coder, Context, ElementMetadata, PaneInfo, StringUtf8Coder, Timing, URN_BYTES,
+    URN_GLOBAL_WINDOW, URN_WINDOWED_VALUE, ValueKind, VarIntCoder, WindowedValue,
+    WindowedValueCoder, skip_coder_value, skip_pane_info,
 };
+use beam_core::windowing::GlobalWindow;
 use beam_model::pipeline::{Coder as ProtoCoder, FunctionSpec};
 
 /// Byte appended after an encoding so tests can prove a read stopped there.

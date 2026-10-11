@@ -19,8 +19,12 @@
 
 use std::sync::Arc;
 
-use beam_core::coders::{Coder, CoderError, Context, RowCoder};
-use beam_core::schema::{FieldType, FieldValue, Row, Schema};
+use beam_core::coders::{
+    BeamIterable, Coder, CoderError, Context, DefaultCoder, FieldMapCache, LengthPrefixed,
+    RowCoder, VarIntCoder, extract_row_schema,
+};
+use beam_core::pipeline::Pipeline;
+use beam_core::schema::{FieldType, FieldValue, Row, Schema, TypeInfo};
 
 #[test]
 fn test_row_coder_all_primitive_types_roundtrip() {
@@ -312,4 +316,188 @@ fn a_value_of_the_wrong_type_is_rejected_on_encode() {
         matches!(&err, CoderError::Format(msg) if msg.starts_with("Atomic type mismatch: expected Int64")),
         "{err:?}"
     );
+}
+
+/// `BeamIterable` and `LengthPrefixed` pass the schema to the rows they hold, and register
+/// the coder of the row value with its schema.
+#[test]
+fn row_wrappers_decode_and_register_with_the_row_schema() {
+    let schema = Arc::new(Schema::builder().field("n", FieldType::int64()).build());
+    let row = Row::new(Arc::clone(&schema), vec![Some(FieldValue::Int64(7))]).unwrap();
+
+    let iterable = BeamIterable::from_vec(vec![row.clone()]);
+    let bytes = iterable.encode().unwrap();
+    assert!(BeamIterable::<Row>::decode(&bytes).is_err());
+    let decoded = BeamIterable::<Row>::decode_with_schema(&bytes, Some(&schema)).unwrap();
+    assert_eq!(decoded.into_vec().unwrap(), vec![row.clone()]);
+
+    let prefixed = LengthPrefixed(row.clone());
+    let bytes = prefixed.encode().unwrap();
+    let decoded = LengthPrefixed::<Row>::decode_with_schema(&bytes, Some(&schema)).unwrap();
+    assert_eq!(decoded.0, row);
+
+    let p = Pipeline::new();
+    let coders = |id: &str| {
+        let proto = p.to_proto();
+        extract_row_schema(id, &proto.components.unwrap_or_default().coders)
+    };
+    let iterable_id = BeamIterable::from_vec(vec![row]).register_value_coder(&p);
+    assert_eq!(coders(&iterable_id).as_deref(), Some(schema.as_ref()));
+    let prefixed_id = prefixed.register_value_coder(&p);
+    assert_eq!(coders(&prefixed_id).as_deref(), Some(schema.as_ref()));
+}
+
+#[derive(Debug, PartialEq, beam_core::schema::BeamRow)]
+#[beam(crate = "beam_core")]
+struct ChunkedRow {
+    items: Vec<i64>,
+    nullable_items: Vec<Option<String>>,
+    tail: i64,
+}
+
+#[derive(Debug, PartialEq, beam_core::schema::BeamRow)]
+#[beam(crate = "beam_core")]
+struct TailOnly {
+    tail: i64,
+}
+
+fn encode_chunked_row(
+    item_chunks: &[&[i64]],
+    nullable_chunks: &[&[Option<&str>]],
+    tail: i64,
+) -> Vec<u8> {
+    let mut wire = vec![0x03, 0x00]; // 3 fields, empty null bitmask.
+
+    wire.extend_from_slice(&(-1i32).to_be_bytes());
+    for chunk in item_chunks {
+        VarIntCoder::encode_varint_to_vec(chunk.len() as i64, &mut wire);
+        for &value in *chunk {
+            VarIntCoder::encode_varint_to_vec(value, &mut wire);
+        }
+    }
+    VarIntCoder::encode_varint_to_vec(0, &mut wire);
+
+    wire.extend_from_slice(&(-1i32).to_be_bytes());
+    for chunk in nullable_chunks {
+        VarIntCoder::encode_varint_to_vec(chunk.len() as i64, &mut wire);
+        for value in *chunk {
+            match value {
+                Some(text) => {
+                    wire.push(1);
+                    VarIntCoder::encode_varint_to_vec(text.len() as i64, &mut wire);
+                    wire.extend_from_slice(text.as_bytes());
+                }
+                None => wire.push(0),
+            }
+        }
+    }
+    VarIntCoder::encode_varint_to_vec(0, &mut wire);
+
+    VarIntCoder::encode_varint_to_vec(tail, &mut wire);
+    wire
+}
+
+#[test]
+fn chunked_iterables_decode_and_skip_in_rows_and_derived_structs() {
+    let nullable_str = FieldType::string().with_nullable(true);
+    let array_schema = Arc::new(
+        Schema::builder()
+            .field("items", FieldType::array(FieldType::int64()))
+            .field("nullable_items", FieldType::array(nullable_str.clone()))
+            .field("tail", FieldType::int64())
+            .build(),
+    );
+    let iterable_schema = Arc::new(
+        Schema::builder()
+            .field(
+                "items",
+                FieldType::new(TypeInfo::Iterable(Box::new(FieldType::int64())), false),
+            )
+            .field(
+                "nullable_items",
+                FieldType::new(TypeInfo::Iterable(Box::new(nullable_str)), false),
+            )
+            .field("tail", FieldType::int64())
+            .build(),
+    );
+
+    let wire = encode_chunked_row(
+        &[&[10, 20], &[30]],
+        &[&[Some("a"), None], &[Some("bc")]],
+        99,
+    );
+    let expected_items = FieldValue::Array(vec![
+        Some(FieldValue::Int64(10)),
+        Some(FieldValue::Int64(20)),
+        Some(FieldValue::Int64(30)),
+    ]);
+    let expected_nullable = FieldValue::Array(vec![
+        Some(FieldValue::String("a".to_string())),
+        None,
+        Some(FieldValue::String("bc".to_string())),
+    ]);
+
+    for schema in [&array_schema, &iterable_schema] {
+        let mut cursor = wire.as_slice();
+        let row = RowCoder::decode_row(schema, &mut cursor).expect("chunked row decodes");
+        assert!(cursor.is_empty());
+        assert_eq!(
+            row.get_value("items").unwrap().as_ref(),
+            Some(&expected_items)
+        );
+        assert_eq!(
+            row.get_value("nullable_items").unwrap().as_ref(),
+            Some(&expected_nullable)
+        );
+        assert_eq!(row.get_i64("tail").unwrap(), Some(99));
+
+        let mut with_sentinel = wire.clone();
+        with_sentinel.push(0xEE);
+        let mut skip_cursor = with_sentinel.as_slice();
+        RowCoder::skip_row(schema, &mut skip_cursor).expect("chunked row skips");
+        assert_eq!(skip_cursor, &[0xEE]);
+    }
+
+    let mut cursor = wire.as_slice();
+    let decoded = ChunkedRow::decode_element(&mut cursor).expect("derived struct decodes");
+    assert!(cursor.is_empty());
+    assert_eq!(
+        decoded,
+        ChunkedRow {
+            items: vec![10, 20, 30],
+            nullable_items: vec![Some("a".to_string()), None, Some("bc".to_string())],
+            tail: 99,
+        }
+    );
+
+    let mut cache = FieldMapCache::new();
+    let mapped: TailOnly = cache
+        .decode(&wire, Some(&array_schema), None)
+        .expect("mapped decode skips chunked arrays");
+    assert_eq!(mapped, TailOnly { tail: 99 });
+
+    // Empty chunked iterables (-1 followed immediately by 0) decode and skip cleanly.
+    let empty_wire = encode_chunked_row(&[], &[], 7);
+    let empty_row =
+        RowCoder::decode_row(&array_schema, &mut empty_wire.as_slice()).expect("empty chunked row");
+    assert_eq!(
+        empty_row.get_value("items").unwrap().as_ref(),
+        Some(&FieldValue::Array(Vec::new()))
+    );
+    assert_eq!(
+        empty_row.get_value("nullable_items").unwrap().as_ref(),
+        Some(&FieldValue::Array(Vec::new()))
+    );
+    assert_eq!(empty_row.get_i64("tail").unwrap(), Some(7));
+    assert_eq!(
+        ChunkedRow::decode(&empty_wire).expect("empty chunked struct"),
+        ChunkedRow {
+            items: Vec::new(),
+            nullable_items: Vec::new(),
+            tail: 7,
+        }
+    );
+    let mut skip_empty = empty_wire.as_slice();
+    RowCoder::skip_row(&array_schema, &mut skip_empty).expect("empty chunked skips");
+    assert!(skip_empty.is_empty());
 }

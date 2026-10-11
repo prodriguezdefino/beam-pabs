@@ -39,8 +39,8 @@ use beam_core::coders::{
     URN_PARAM_WINDOWED_VALUE, URN_ROW, URN_STRING_UTF8, URN_VARINT, VarIntCoder, WindowedValue,
     extract_kv_key_bytes, extract_row_schema, skip_coder_value,
 };
-use beam_core::coders::{GlobalWindow, IntervalWindow};
 use beam_core::schema::{Field, FieldType, Schema};
+use beam_core::windowing::{GlobalWindow, IntervalWindow};
 use beam_model::pipeline::{Coder as ProtoCoder, FunctionSpec};
 
 /// Byte appended after an encoded value so tests can prove a skip stopped there.
