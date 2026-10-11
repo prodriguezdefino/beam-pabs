@@ -31,8 +31,25 @@ use model::fn_execution::{
 use super::DataError;
 use super::inbound::InboundLimit;
 
-/// Maximum bytes a bundle buffers before flushing to the outbound stream.
+/// Bytes a bundle buffers before it sends them, unless the worker sets another limit.
 pub const OUTBOUND_FLUSH_BYTES: usize = 1_000_000;
+
+/// When a bundle sends its buffered output: at `bytes`, or `time` after the oldest write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlushLimits {
+    pub bytes: usize,
+    /// `None`: only size and bundle end send output.
+    pub time: Option<Duration>,
+}
+
+impl Default for FlushLimits {
+    fn default() -> Self {
+        Self {
+            bytes: OUTBOUND_FLUSH_BYTES,
+            time: None,
+        }
+    }
+}
 
 /// Messages an outbound stream queues for gRPC. A full queue pushes back on the bundles
 /// writing to it, so a slow runner bounds memory instead of growing it.
@@ -82,9 +99,9 @@ pub(super) async fn send_reporting_stall(
 /// One bundle's outbound data.
 ///
 /// Elements go to a buffer per sink.
-/// At each [`OUTBOUND_FLUSH_BYTES`] threshold, buffers flush as one `Elements` message.
+/// At each [`FlushLimits::bytes`] threshold, buffers flush as one `Elements` message.
 /// [`Outbound::finish`] sends remainder bytes with each sink's end-of-stream marker.
-/// A bundle costs one message per megabyte, not one per element.
+/// A bundle costs one message per flush, not one per element.
 pub struct Outbound {
     sender: mpsc::Sender<Elements>,
     inbound_limit: Arc<InboundLimit>,
@@ -94,7 +111,7 @@ pub struct Outbound {
     timers: Vec<(String, String, Vec<u8>)>,
     buffered: usize,
     oldest_buffered: Option<Instant>,
-    flush_time_limit: Option<Duration>,
+    flush: FlushLimits,
     has_flushed: bool,
     /// Messages the queue had no room for, in order. Writes happen on the synchronous
     /// element path, so these wait for [`Outbound::drain`] rather than blocking there.
@@ -108,7 +125,7 @@ impl Outbound {
         instruction_id: &str,
         sink_ids: impl IntoIterator<Item = &'a str>,
         timer_families: impl IntoIterator<Item = (&'a str, &'a str)>,
-        flush_time_limit: Option<Duration>,
+        flush: FlushLimits,
     ) -> Self {
         Self {
             sender,
@@ -124,7 +141,7 @@ impl Outbound {
                 .collect(),
             buffered: 0,
             oldest_buffered: None,
-            flush_time_limit,
+            flush,
             has_flushed: false,
             pending: VecDeque::new(),
         }
@@ -132,7 +149,7 @@ impl Outbound {
 
     /// The time until buffered output must go out. `None` when nothing waits or no limit applies.
     pub fn time_until_flush(&self) -> Option<Duration> {
-        let limit = self.flush_time_limit?;
+        let limit = self.flush.time?;
         let oldest = self.oldest_buffered?;
         Some(limit.saturating_sub(oldest.elapsed()))
     }
@@ -165,7 +182,7 @@ impl Outbound {
     }
 
     /// Appends one element to `sink`'s buffer through `write`, sending the buffers once
-    /// they reach [`OUTBOUND_FLUSH_BYTES`] or the flush time limit. Fails if `sink` is unknown.
+    /// they reach the [`FlushLimits`]. Fails if `sink` is unknown.
     pub fn write(
         &mut self,
         sink: usize,
@@ -188,7 +205,7 @@ impl Outbound {
             self.oldest_buffered = Some(Instant::now());
         }
         self.buffered += added;
-        if self.buffered >= OUTBOUND_FLUSH_BYTES || expired {
+        if self.buffered >= self.flush.bytes || expired {
             self.flush()?;
         }
         Ok(())
