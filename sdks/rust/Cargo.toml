@@ -26,6 +26,7 @@ members = [
     "beam/io/file",
     "beam/io/arrow",
     "beam/io/parquet",
+    "beam/io/avro",
     "beam/test-utils",
     "beam/harness",
     "beam/external",
@@ -103,6 +104,7 @@ arrow-buffer = { version = "60.0.0", default-features = false }
 arrow-schema = { version = "60.0.0", default-features = false }
 arrow-ipc = { version = "60.0.0", default-features = false, features = ["lz4", "zstd"] }
 parquet = { version = "60.0.0", default-features = false, features = ["arrow", "flate2-zlib-rs", "lz4", "snap", "zstd"] }
+arrow-avro = { version = "60.0.0", default-features = false, features = ["deflate", "snappy", "zstd"] }
 
 # Internal workspace crates
 beam = { package = "apache-beam", path = "beam", version = "2.78.0-SNAPSHOT" }
@@ -115,6 +117,7 @@ expansion = { package = "apache-beam-expansion", path = "beam/expansion", versio
 file = { package = "apache-beam-io-file", path = "beam/io/file", version = "2.78.0-SNAPSHOT" }
 arrow_io = { package = "apache-beam-io-arrow", path = "beam/io/arrow", version = "2.78.0-SNAPSHOT" }
 parquet_io = { package = "apache-beam-io-parquet", path = "beam/io/parquet", version = "2.78.0-SNAPSHOT" }
+avro_io = { package = "apache-beam-io-avro", path = "beam/io/avro", version = "2.78.0-SNAPSHOT" }
 prism = { package = "apache-beam-runner-prism", path = "beam/runners/prism", version = "2.78.0-SNAPSHOT" }
 testing = { package = "apache-beam-testing", path = "beam/testing", version = "2.78.0-SNAPSHOT" }
 testutils = { package = "apache-beam-test-utils", path = "beam/test-utils", version = "2.78.0-SNAPSHOT" }
