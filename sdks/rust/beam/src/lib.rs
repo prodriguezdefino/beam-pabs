@@ -62,6 +62,10 @@ pub use beam_model as model;
 #[cfg(feature = "fluent")]
 pub use beam_fluent as fluent;
 
+#[cfg(feature = "external")]
+pub use beam_external as external;
+
+/// Logging setup for pipeline binaries.
 #[cfg(feature = "harness")]
 pub mod logging {
     pub use beam_harness::logging::init_logging;

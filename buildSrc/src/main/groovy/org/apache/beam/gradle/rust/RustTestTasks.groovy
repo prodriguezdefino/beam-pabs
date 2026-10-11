@@ -214,7 +214,9 @@ class RustTestTasks {
   }
 
   /** Crates whose tests start a Java expansion service from a shadow JAR built in this repo. */
-  private static final Map<String, String> TEST_EXPANSION_SERVICE_JARS = [:]
+  private static final Map<String, String> TEST_EXPANSION_SERVICE_JARS = [
+    'apache-beam-external': ':sdks:java:io:google-cloud-platform:expansion-service:shadowJar',
+  ]
 
   static void register(RustSdkBuild build) {
     int testConcurrency = Math.max(
