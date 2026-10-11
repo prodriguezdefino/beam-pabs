@@ -19,8 +19,6 @@
 
 //! Helpers for the `CombineFn` tests in `core/tests`.
 
-#![allow(dead_code, reason = "shared test helper")]
-
 use beam::transforms::CombineFn;
 
 /// Runs `combine_fn` as a runner does: it deals `inputs` to `parts` partial accumulators in
