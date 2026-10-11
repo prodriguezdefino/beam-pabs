@@ -294,20 +294,22 @@ fn test_beam_iterable_methods_and_edge_cases() {
     assert!(!iter.is_empty());
     assert!(!iter.has_state_suffix());
 
-    // Clone, PartialEq, Debug
-    let cloned = iter.clone();
-    assert_eq!(iter, cloned);
+    // PartialEq, Debug. Not Clone: a state suffix can be read only once.
+    assert_eq!(iter, BeamIterable::from_vec(vec![1, 2, 3]));
     let debug = format!("{iter:?}");
     assert_eq!(debug, "BeamIterable { elements: [1, 2, 3] }");
 
     // try_into_iter and into_iter
-    let mut try_it = iter.clone().try_into_iter();
+    let mut try_it = BeamIterable::from_vec(vec![1, 2, 3]).try_into_iter();
     assert_eq!(try_it.next().unwrap().unwrap(), 1);
     assert_eq!(try_it.next().unwrap().unwrap(), 2);
     assert_eq!(try_it.next().unwrap().unwrap(), 3);
     assert!(try_it.next().is_none());
 
-    let collected: Vec<i32> = iter.clone().into_iter().collect();
+    let collected: Vec<i32> = BeamIterable::from_vec(vec![1, 2, 3])
+        .into_iter()
+        .collect::<beam::Result<_>>()
+        .unwrap();
     assert_eq!(collected, vec![1, 2, 3]);
 
     // into_vec
@@ -330,7 +332,7 @@ fn test_beam_iterable_methods_and_edge_cases() {
     let iterable_coder = IterableCoder::new(VarIntCoder);
     assert_eq!(
         <IterableCoder<i64, VarIntCoder> as Coder<BeamIterable<i64>>>::urn(&iterable_coder),
-        "beam:coder:state_backed_iterable:v1"
+        "beam:coder:iterable:v1"
     );
 
     let mut it_buf = Vec::new();

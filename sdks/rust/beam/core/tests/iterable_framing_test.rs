@@ -198,7 +198,7 @@ impl beam::coders::StateStreamReader for MockStateReader {
     fn stream_runner_pages(
         &self,
         token: &[u8],
-    ) -> Result<Box<dyn Iterator<Item = Result<Vec<u8>, String>> + Send>, String> {
+    ) -> Result<beam::coders::PageStream, beam::coders::CoderError> {
         assert_eq!(token, b"state-token");
         let pages = self.pages.clone();
         Ok(Box::new(pages.into_iter().map(Ok)))
@@ -239,7 +239,7 @@ fn test_decode_state_backed_iterable_streaming() {
     assert_eq!(beam_iter.inlined_prefix(), &[10, 20]);
     assert!(!beam_iter.is_in_memory());
 
-    let collected: Vec<i64> = beam_iter.into_iter().collect();
+    let collected: Vec<i64> = beam_iter.into_vec().expect("group values decode");
     assert_eq!(collected, vec![10, 20, 30, 40, 50]);
 }
 
@@ -253,11 +253,21 @@ struct ScriptedStateReader {
 }
 
 impl beam::coders::StateStreamReader for ScriptedStateReader {
-    fn stream_runner_pages(&self, token: &[u8]) -> Result<beam::coders::PageStream, String> {
+    fn stream_runner_pages(
+        &self,
+        token: &[u8],
+    ) -> Result<beam::coders::PageStream, beam::coders::CoderError> {
         assert_eq!(token, b"state-token");
         self.open
             .clone()
-            .map(|pages| Box::new(pages.into_iter()) as beam::coders::PageStream)
+            .map(|pages| {
+                Box::new(
+                    pages
+                        .into_iter()
+                        .map(|p| p.map_err(beam::coders::CoderError::StateStream)),
+                ) as beam::coders::PageStream
+            })
+            .map_err(beam::coders::CoderError::StateStream)
     }
 }
 
@@ -282,6 +292,13 @@ fn format_message<T: std::fmt::Debug>(result: Result<T, beam::coders::CoderError
     }
 }
 
+fn state_stream_message<T: std::fmt::Debug>(result: Result<T, beam::coders::CoderError>) -> String {
+    match result {
+        Err(beam::coders::CoderError::StateStream(msg)) => msg,
+        other => panic!("expected a StateStream error, got {other:?}"),
+    }
+}
+
 #[test]
 fn a_state_stream_that_fails_to_open_is_reported() {
     use beam::coders::{BeamIterable, DefaultCoder};
@@ -290,7 +307,7 @@ fn a_state_stream_that_fails_to_open_is_reported() {
     let reader = scripted(Err("permission denied".to_string()));
 
     assert_eq!(
-        format_message(Vec::<i64>::decode_element_with_context(
+        state_stream_message(Vec::<i64>::decode_element_with_context(
             &mut &encoded[..],
             None,
             Some(&reader)
@@ -298,7 +315,7 @@ fn a_state_stream_that_fails_to_open_is_reported() {
         "Failed to open runner state stream: permission denied"
     );
     assert_eq!(
-        format_message(BeamIterable::<i64>::decode_element_with_context(
+        state_stream_message(BeamIterable::<i64>::decode_element_with_context(
             &mut &encoded[..],
             None,
             Some(&reader)
@@ -318,7 +335,7 @@ fn a_page_error_fails_the_eager_decode() {
     ]));
 
     assert_eq!(
-        format_message(Vec::<i64>::decode_element_with_context(
+        state_stream_message(Vec::<i64>::decode_element_with_context(
             &mut &encoded[..],
             None,
             Some(&reader)
@@ -345,7 +362,7 @@ fn a_page_error_surfaces_from_the_lazy_iterator_after_the_good_elements() {
     assert_eq!(it.next().unwrap().unwrap(), 20);
     assert_eq!(it.next().unwrap().unwrap(), 30);
     assert_eq!(
-        format_message(it.next().unwrap()),
+        state_stream_message(it.next().unwrap()),
         "Runner state stream read error: stream reset"
     );
 
@@ -355,25 +372,28 @@ fn a_page_error_surfaces_from_the_lazy_iterator_after_the_good_elements() {
         BeamIterable::<i64>::decode_element_with_context(&mut &encoded[..], None, Some(&reader))
             .unwrap();
     assert_eq!(
-        format_message(fresh.into_vec()),
+        state_stream_message(fresh.into_vec()),
         "Runner state stream read error: stream reset"
     );
 }
 
+/// A state stream error is an `Err` item of the plain `for` loop, not a panic, so a DoFn
+/// returns it with `?` and the bundle fails cleanly (C3-F4).
 #[test]
-#[should_panic(expected = "Failed to stream state-backed iterable element: \
-                           Decoding format error: Runner state stream read error: stream reset")]
-fn the_infallible_iterator_panics_on_a_page_error() {
+fn the_iterator_yields_a_page_error_as_an_err_item() {
     use beam::coders::{BeamIterable, DefaultCoder};
 
-    let encoded = state_backed_iterable(&[], b"state-token");
+    let encoded = state_backed_iterable(&[7], b"state-token");
     let reader = scripted(Ok(vec![Err("stream reset".to_string())]));
     let iterable =
         BeamIterable::<i64>::decode_element_with_context(&mut &encoded[..], None, Some(&reader))
             .unwrap();
 
-    // Infallible iteration panics on stream errors; `try_into_iter` returns results.
-    let _: Vec<i64> = iterable.into_iter().collect();
+    let items: Vec<beam::Result<i64>> = iterable.into_iter().collect();
+    assert_eq!(items.len(), 2, "the prefix element, then the error");
+    assert_eq!(*items[0].as_ref().unwrap(), 7);
+    let err = items[1].as_ref().unwrap_err();
+    assert!(err.to_string().contains("stream reset"), "{err}");
 }
 
 #[test]
@@ -416,7 +436,10 @@ fn an_element_split_across_state_pages_decodes() {
 struct EmptyTokenReader;
 
 impl beam::coders::StateStreamReader for EmptyTokenReader {
-    fn stream_runner_pages(&self, token: &[u8]) -> Result<beam::coders::PageStream, String> {
+    fn stream_runner_pages(
+        &self,
+        token: &[u8],
+    ) -> Result<beam::coders::PageStream, beam::coders::CoderError> {
         assert!(token.is_empty(), "unexpected token {token:?}");
         Ok(Box::new(std::iter::once(Ok(varints(&[20])))))
     }
@@ -463,7 +486,7 @@ fn beam_iterables_are_equal_only_with_equal_prefixes_and_the_same_suffix() {
     assert_eq!(in_memory, BeamIterable::from_vec(vec![1, 2]));
     assert_ne!(in_memory, BeamIterable::from_vec(vec![1, 3]));
 
-    // Suffixes are single-pass streams, so only a shared suffix compares equal.
+    // Suffixes are single-pass streams, so an iterable with a suffix is never equal.
     let encoded = state_backed_iterable(&[1, 2], b"state-token");
     let reader = scripted(Ok(vec![Ok(varints(&[3]))]));
     let decode = || {
@@ -471,7 +494,38 @@ fn beam_iterables_are_equal_only_with_equal_prefixes_and_the_same_suffix() {
             .unwrap()
     };
     let state_backed = decode();
-    assert_eq!(state_backed, state_backed.clone());
+    let same = &state_backed;
+    assert_ne!(*same, state_backed);
     assert_ne!(state_backed, decode());
     assert_ne!(state_backed, in_memory);
+}
+
+/// Records the URN of each coder that it registers.
+#[derive(Default)]
+struct UrnRegistry(std::cell::RefCell<Vec<String>>);
+
+impl beam::coders::CoderRegistry for UrnRegistry {
+    fn register_coder(&self, urn: &str, _component_coder_ids: Vec<String>) -> String {
+        let mut urns = self.0.borrow_mut();
+        urns.push(urn.to_string());
+        format!("c{}", urns.len())
+    }
+}
+
+/// The coder and the registered proto of a `BeamIterable` name the same URN, the in-memory
+/// `beam:coder:iterable:v1`.
+#[test]
+fn a_beam_iterable_coder_reports_the_urn_that_it_registers() {
+    use beam::coders::{BeamIterable, DefaultCoder};
+
+    let coder = IterableCoder::<i64, VarIntCoder>::new(VarIntCoder);
+    assert_eq!(Coder::<BeamIterable<i64>>::urn(&coder), URN_ITERABLE);
+    assert_eq!(Coder::<Vec<i64>>::urn(&coder), URN_ITERABLE);
+
+    let registry = UrnRegistry::default();
+    BeamIterable::<i64>::register_coder(&registry);
+    assert_eq!(
+        registry.0.borrow().last().map(String::as_str),
+        Some(URN_ITERABLE)
+    );
 }
