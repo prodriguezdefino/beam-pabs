@@ -20,3 +20,4 @@
 mod passert_status_test;
 mod passert_test;
 mod test_pipeline_test;
+mod test_stream_test;
