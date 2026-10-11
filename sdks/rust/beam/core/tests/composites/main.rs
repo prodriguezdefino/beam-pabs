@@ -19,6 +19,11 @@
 
 //! Composite transform expansion and handler tests.
 
+#[path = "../support/mod.rs"]
+mod support;
+
 mod batch_elements_test;
+mod co_group_by_key_test;
+mod periodic_impulse_test;
 mod reshuffle_test;
 mod to_rows_test;

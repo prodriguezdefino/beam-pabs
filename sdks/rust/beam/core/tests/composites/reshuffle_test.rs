@@ -21,11 +21,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
+use std::sync::Arc;
 use std::time::Duration;
 
 use beam_core::Instant;
 use beam_core::coders::{
-    BeamIterable, Coder, CoderError, Context, DefaultCoder, PaneInfo, Timing, WindowedHeader,
+    BeamIterable, Coder, CoderError, Context, DefaultCoder, FieldMap, PaneInfo, StateStreamReader,
+    Timing, WindowedHeader,
 };
 use beam_core::internals::{
     BundleHandler, ElementSink, HandlerContext, registered_handler, reshuffle_bucket,
@@ -33,11 +35,13 @@ use beam_core::internals::{
 use beam_core::pipeline::{
     Pipeline, URN_GROUP_BY_KEY, URN_PAR_DO, URN_RESHUFFLE, URN_WINDOW_FN_GLOBAL_WINDOWS,
 };
+use beam_core::schema::Schema;
 use beam_core::transforms::{Create, Reshuffle};
 use beam_core::windowing::{
-    AccumulationMode, BoundedWindow, IntervalWindow, Sessions, Trigger, WindowInto,
+    AccumulationMode, BoundedWindow, FixedWindows, IntervalWindow, Sessions, Trigger, WindowInto,
 };
 use beam_model::pipeline as proto;
+use beam_testing::{TestPipeline, passert};
 
 #[test]
 fn test_reshuffle_graph_expansion() {
@@ -125,9 +129,9 @@ impl DefaultCoder for NonClone {
 
     fn decode_whole_stream_with_context(
         reader: &mut &[u8],
-        _schema: Option<&std::sync::Arc<beam_core::schema::Schema>>,
-        _field_map: Option<&beam_core::coders::FieldMap>,
-        _state_reader: Option<&std::sync::Arc<dyn beam_core::coders::StateStreamReader>>,
+        _schema: Option<&Arc<Schema>>,
+        _field_map: Option<&FieldMap>,
+        _state_reader: Option<&Arc<dyn StateStreamReader>>,
     ) -> Result<Self, CoderError> {
         Self::coder().decode(reader, Context::WholeStream)
     }
@@ -194,6 +198,36 @@ fn test_reshuffle_shuffles_in_global_window_and_restores_on_output() {
     assert_eq!(decoded_trigger, Trigger::always());
 }
 
+#[tokio::test]
+async fn test_reshuffle_with_non_default_trigger_execution() {
+    let p = TestPipeline::new();
+    let words = p
+        .apply(
+            "Create",
+            Create::new(vec![
+                "apple".to_string(),
+                "banana".to_string(),
+                "cherry".to_string(),
+            ]),
+        )
+        .apply(
+            "WindowInto",
+            WindowInto::new(FixedWindows::of(Duration::from_secs(10)))
+                .with_trigger(
+                    Trigger::after_end_of_window().with_late_firings(Trigger::after_count(2)),
+                )
+                .with_accumulation_mode(AccumulationMode::Discarding)
+                .with_allowed_lateness(Duration::from_secs(60)),
+        );
+
+    let reshuffled = words.apply("ReshuffleExecution", Reshuffle::new());
+
+    passert::that("AssertReshuffled", &reshuffled)
+        .contains_in_any_order(["apple", "banana", "cherry"].map(String::from));
+
+    p.run().await.expect("pipeline execution succeeds");
+}
+
 #[test]
 fn test_create_reshuffles_only_more_than_one_element() {
     let p = Pipeline::new();
@@ -250,6 +284,15 @@ fn test_reshuffle_bucket_keys_stay_below_the_bucket_count() {
         .map(|shard| reshuffle_bucket(shard, 13))
         .collect();
     assert_eq!(keys, (0..13).collect::<BTreeSet<i64>>());
+}
+
+#[tokio::test]
+async fn test_bucketed_reshuffle_conserves_elements() {
+    let p = TestPipeline::new();
+    let numbers = p.apply("Create", Create::new((0..1_000_i64).collect::<Vec<_>>()));
+    let reshuffled = numbers.apply("BucketedReshuffle", Reshuffle::new().with_num_buckets(7));
+    passert::that("AssertBucketedReshuffle", &reshuffled).contains_in_any_order(0..1_000_i64);
+    p.run().await.expect("pipeline execution succeeds");
 }
 
 /// The element bytes and output header of each element that a handler emits.

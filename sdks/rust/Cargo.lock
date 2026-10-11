@@ -105,6 +105,8 @@ dependencies = [
  "apache-beam-core",
  "apache-beam-derive",
  "apache-beam-model",
+ "apache-beam-test-utils",
+ "apache-beam-testing",
  "async-trait",
  "bytes",
  "chrono",
@@ -120,7 +122,9 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokio",
+ "tokio-stream",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

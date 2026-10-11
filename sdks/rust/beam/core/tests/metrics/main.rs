@@ -19,8 +19,11 @@
 
 //! Error model, metric handles, and metrics query tests.
 
+mod counter_cache_test;
+mod dofn_metrics_test;
 mod error_test;
 mod io_test;
+mod metric_cache_test;
 mod metric_types_test;
 mod metrics_query_test;
 mod metrics_reading_test;
