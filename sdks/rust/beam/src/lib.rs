@@ -62,6 +62,9 @@ pub use model;
 #[cfg(feature = "fluent")]
 pub use fluent;
 
+#[cfg(feature = "external")]
+pub use external;
+
 #[cfg(feature = "harness")]
 pub use harness;
 
