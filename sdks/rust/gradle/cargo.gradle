@@ -454,3 +454,13 @@ build.dependsOn 'buildWorkspace'
 check.dependsOn 'fmtCheck', 'clippy'
 clean.dependsOn 'cleanSdk'
 
+// Some crates test against Java expansion services that start from the JARs of this Beam
+// build (build/libs/<artifact>-<version>.jar). Only those crate test tasks depend on the JARs.
+def testExpansionServiceJars = [
+    'apache-beam-external': ':sdks:java:io:google-cloud-platform:expansion-service:shadowJar',
+]
+testExpansionServiceJars.each { String pkg, String jar ->
+  cargoTestTasks[pkg]?.configure {
+    dependsOn jar
+  }
+}
