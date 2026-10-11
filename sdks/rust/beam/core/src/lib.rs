@@ -20,10 +20,17 @@
 //! Core types, traits, and pipeline model for the Apache Beam Rust SDK.
 //!
 //! - [`coders`] — how elements are serialized on the wire.
+//! - [`error`] — the standard error type.
+//! - [`metrics`] — pipeline metrics API.
 //! - [`schema`] — the language-independent schema of rows.
 
+mod error;
+
 pub mod coders;
+pub mod internals;
+pub mod metrics;
 pub mod schema;
 pub mod time;
 
+pub use error::{Error, Result};
 pub use time::Instant;
