@@ -40,6 +40,9 @@ pub mod logging {
     pub use beam_harness::logging::init_logging;
 }
 
+#[cfg(feature = "testing")]
+pub use beam_testing as testing;
+
 pub mod io {
     #[cfg(feature = "io-file")]
     pub use beam_io_file as file;
