@@ -32,10 +32,14 @@ name = "beam"
 default = ["io-file", "derive"]
 io-file = ["dep:beam_io_file"]
 derive = ["beam_core/derive"]
+# The worker harness is a consequence of choosing a portable runner, not an
+# independent choice, so runners enable it rather than the user.
+harness = ["dep:beam_harness"]
 
 [dependencies]
 beam_core = { workspace = true }
 beam_model = { workspace = true }
+beam_harness = { workspace = true, optional = true }
 beam_io_file = { workspace = true, optional = true }
 
 [lints]

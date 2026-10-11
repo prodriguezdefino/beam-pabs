@@ -35,6 +35,11 @@
 pub use beam_core::*;
 pub use beam_model as model;
 
+#[cfg(feature = "harness")]
+pub mod logging {
+    pub use beam_harness::logging::init_logging;
+}
+
 pub mod io {
     #[cfg(feature = "io-file")]
     pub use beam_io_file as file;
@@ -51,6 +56,9 @@ pub mod io {
 mod link {
     #[cfg(feature = "io-file")]
     pub use beam_io_file as _;
+
+    #[cfg(feature = "harness")]
+    pub use beam_harness as _;
 }
 
 /// All that an ordinary pipeline needs.
