@@ -61,8 +61,8 @@
 //! [`contains_in_any_order`](PAssert::contains_in_any_order) on it would pass silently.
 //!
 //! On an unbounded collection, the global window closes only when the watermark
-//! reaches the end of time. Finish a `TestStream` with
-//! `advance_watermark_to_infinity`.
+//! reaches the end of time. Finish a [`TestStream`](super::TestStream) with
+//! [`advance_watermark_to_infinity`](super::TestStream::advance_watermark_to_infinity).
 //!
 //! # Windows and panes
 //!

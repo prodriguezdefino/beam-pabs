@@ -24,6 +24,8 @@
 //!
 //! - [`passert`] — assertions that run inside the pipeline and fail the job if a
 //!   collection does not match expectations.
+//! - [`TestStream`] — unbounded source replaying a scripted sequence of elements,
+//!   watermark advances, and processing-time advances.
 //! - [`TestPipeline`] — pipeline configured from the environment. After it runs, it
 //!   verifies that all assertions ran. It panics if it is never run.
 //! - [`assert_deterministic_pipeline`] — builds a pipeline two times and checks that both
@@ -58,16 +60,18 @@
 mod determinism;
 pub mod passert;
 mod test_pipeline;
+mod test_stream;
 
 pub use determinism::assert_deterministic_pipeline;
 pub use test_pipeline::{
     TEST_PIPELINE_OPTIONS_ENV, TestPipeline, TestPipelineError, parse_test_pipeline_options,
     test_pipeline_options,
 };
+pub use test_stream::TestStream;
 
 /// Force-links the runner so that its `inventory` registration stays.
 #[cfg(feature = "prism")]
 mod link {
-    pub use beam_harness as _;
-    pub use beam_runner_prism as _;
+    pub(crate) use beam_harness as _;
+    pub(crate) use beam_runner_prism as _;
 }
