@@ -141,16 +141,17 @@ impl Worker {
 
         // Set up logging first, so later failures show in the runner's console and not only
         // on the container's stderr.
-        let logging_client = match &endpoints.logging {
-            Some(endpoint) => Some(connect_logging(endpoint, &worker_id)),
+        let logging = match &endpoints.logging {
+            Some(endpoint) => Some(GlobalLoggingClient::set(connect_logging(
+                endpoint, &worker_id,
+            ))),
             None => {
                 warn!("No logging endpoint supplied; worker logs stay local to the container");
                 None
             }
         };
 
-        if let Some(client) = &logging_client {
-            crate::logging::set_global_client(client.clone());
+        if let Some(GlobalLoggingClient(client)) = &logging {
             let _ = client.info(format!(
                 "Rust SDK worker '{worker_id}' starting with {} registered transform handlers",
                 self.transform_handlers.len()
@@ -227,7 +228,7 @@ impl Worker {
         if let Some(handler) = &status_handler {
             handler.stop();
         }
-        if let Some(client) = &logging_client {
+        if let Some(GlobalLoggingClient(client)) = &logging {
             client.flush().await;
         }
         control_result
@@ -498,6 +499,23 @@ async fn serve_control(
                 return Err(WorkerError::Status(Box::new(e)));
             }
         }
+    }
+}
+
+/// The worker's client on the global logging handle. Drop removes the client from the
+/// handle, unless a later worker replaced it, so the next worker in the process can log.
+struct GlobalLoggingClient(LoggingClient);
+
+impl GlobalLoggingClient {
+    fn set(client: LoggingClient) -> Self {
+        crate::logging::set_global_client(client.clone());
+        Self(client)
+    }
+}
+
+impl Drop for GlobalLoggingClient {
+    fn drop(&mut self) {
+        crate::logging::clear_global_client(&self.0);
     }
 }
 
