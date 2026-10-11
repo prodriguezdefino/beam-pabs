@@ -20,6 +20,7 @@
 //! Prism runner implementation submitting and monitoring jobs on Prism.
 
 use prost::Message;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
@@ -560,8 +561,13 @@ impl PrismRunner {
                 );
             }
         } else {
+            let options = self
+                .options
+                .pipeline_options
+                .as_ref()
+                .map_or_else(|| Cow::Owned(PipelineOptions::default()), Cow::Borrowed);
             let worker_pool =
-                WorkerPool::start(None, Arc::new(pipeline.transform_handlers())).await?;
+                WorkerPool::start(None, Arc::new(pipeline.transform_handlers()), &options).await?;
             let pool_endpoint = worker_pool.endpoint().to_string();
             worker_pool_opt = Some(worker_pool);
 

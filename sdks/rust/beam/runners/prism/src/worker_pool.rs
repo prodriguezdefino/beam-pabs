@@ -21,15 +21,15 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use thiserror::Error;
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::oneshot;
 use tokio_stream::wrappers::TcpListenerStream;
 use tracing::{info, warn};
 
 use beam::internals::TransformFn;
-use beam::options::HarnessOptions;
-use beam_harness::worker::Worker;
+use beam::options::{HarnessOptions, PipelineOptions};
+use beam_harness::worker::{Worker, WorkerConfig};
 use beam_model::fn_execution::beam_fn_external_worker_pool_server::{
     BeamFnExternalWorkerPool, BeamFnExternalWorkerPoolServer,
 };
@@ -45,10 +45,23 @@ pub enum WorkerPoolError {
     Tonic(#[from] tonic::transport::Error),
 }
 
+/// The tasks of the running workers, keyed by worker id.
+type Workers = Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>;
+
+/// Locks `workers`. A worker task that panics does not hold the lock, so a poisoned lock
+/// still has a valid map.
+fn lock(workers: &Workers) -> MutexGuard<'_, HashMap<String, tokio::task::JoinHandle<()>>> {
+    workers
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Internal gRPC service implementation for BeamFnExternalWorkerPool.
 struct WorkerPoolService {
-    workers: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    workers: Workers,
     transform_handlers: Arc<HashMap<String, TransformFn>>,
+    /// The worker settings from the pipeline options.
+    config: WorkerConfig,
 }
 
 #[tonic::async_trait]
@@ -80,7 +93,10 @@ impl BeamFnExternalWorkerPool for WorkerPoolService {
             ..Default::default()
         };
 
-        let worker = Worker::new(args).with_handlers((*self.transform_handlers).clone());
+        self.config.apply_to_process();
+        let worker = Worker::new(args)
+            .with_config(&self.config)
+            .with_handlers((*self.transform_handlers).clone());
 
         let w_id = worker_id.clone();
         let handle = tokio::spawn(async move {
@@ -91,7 +107,10 @@ impl BeamFnExternalWorkerPool for WorkerPoolService {
             }
         });
 
-        self.workers.lock().await.insert(worker_id, handle);
+        let replaced = lock(&self.workers).insert(worker_id, handle);
+        if let Some(replaced) = replaced {
+            replaced.abort();
+        }
 
         Ok(tonic::Response::new(StartWorkerResponse {
             error: String::new(),
@@ -105,7 +124,8 @@ impl BeamFnExternalWorkerPool for WorkerPoolService {
         let req = request.into_inner();
         info!("WorkerPool received StopWorker for '{}'", req.worker_id);
 
-        if let Some(handle) = self.workers.lock().await.remove(&req.worker_id) {
+        let handle = lock(&self.workers).remove(&req.worker_id);
+        if let Some(handle) = handle {
             handle.abort();
         }
 
@@ -115,19 +135,27 @@ impl BeamFnExternalWorkerPool for WorkerPoolService {
     }
 }
 
-/// Managing handle for a running external worker pool gRPC server.
+/// Handle of a running external worker pool gRPC server. Drop stops it, as
+/// [`stop`](Self::stop) does.
 pub struct WorkerPool {
     endpoint: String,
     port: u16,
-    workers: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    workers: Workers,
     shutdown_tx: Option<oneshot::Sender<()>>,
 }
 
 impl WorkerPool {
-    /// Starts the loopback worker pool server on an ephemeral or requested port.
+    /// Starts the loopback worker pool server on an ephemeral or requested port. The workers
+    /// run `transform_handlers` with the worker settings of `options`.
+    ///
+    /// The workers run in this process. A worker installs the Beam tracing subscriber unless
+    /// the program installs one first. While a worker runs, its logs go to Prism. The log
+    /// levels and the element processing timeout are process-wide, so the first worker sets
+    /// them for the process.
     pub async fn start(
         requested_port: Option<u16>,
         transform_handlers: Arc<HashMap<String, TransformFn>>,
+        options: &PipelineOptions,
     ) -> Result<Self, WorkerPoolError> {
         let port = requested_port.unwrap_or(0);
         let bind_addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -137,10 +165,11 @@ impl WorkerPool {
 
         info!("WorkerPool listening on {}", endpoint);
 
-        let workers = Arc::new(Mutex::new(HashMap::new()));
+        let workers = Workers::default();
         let service = BeamFnExternalWorkerPoolServer::new(WorkerPoolService {
             workers: Arc::clone(&workers),
             transform_handlers,
+            config: WorkerConfig::from(options),
         });
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -171,19 +200,25 @@ impl WorkerPool {
         self.port
     }
 
+    /// Stops the server and aborts the workers.
     pub async fn stop(&mut self) {
+        self.shut_down();
+    }
+
+    fn shut_down(&mut self) {
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
         }
-        let mut map = self.workers.lock().await;
-        map.drain().for_each(|(_, handle)| handle.abort());
+        let handles: Vec<_> = lock(&self.workers)
+            .drain()
+            .map(|(_, handle)| handle)
+            .collect();
+        handles.iter().for_each(tokio::task::JoinHandle::abort);
     }
 }
 
 impl Drop for WorkerPool {
     fn drop(&mut self) {
-        if let Some(tx) = self.shutdown_tx.take() {
-            let _ = tx.send(());
-        }
+        self.shut_down();
     }
 }

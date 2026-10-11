@@ -147,9 +147,13 @@ fn start_request(worker_id: &str, control: &str) -> StartWorkerRequest {
 #[tokio::test]
 async fn test_worker_pool_lifecycle() {
     let (control, mut events) = start_fake_fn_api().await;
-    let mut pool = WorkerPool::start(None, Arc::new(std::collections::HashMap::new()))
-        .await
-        .expect("WorkerPool must start on ephemeral port");
+    let mut pool = WorkerPool::start(
+        None,
+        Arc::new(std::collections::HashMap::new()),
+        &PipelineOptions::default(),
+    )
+    .await
+    .expect("WorkerPool must start on ephemeral port");
     assert_eq!(pool.endpoint(), format!("127.0.0.1:{}", pool.port()));
 
     let mut client = BeamFnExternalWorkerPoolClient::connect(format!("http://{}", pool.endpoint()))
@@ -220,6 +224,92 @@ async fn test_worker_pool_lifecycle() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(refused, "pool still accepting connections after stop()");
+}
+
+#[tokio::test]
+async fn dropping_the_worker_pool_stops_its_workers() {
+    let (control, mut events) = start_fake_fn_api().await;
+    let pool = WorkerPool::start(
+        None,
+        Arc::new(std::collections::HashMap::new()),
+        &PipelineOptions::default(),
+    )
+    .await
+    .expect("WorkerPool must start on ephemeral port");
+    let mut client = BeamFnExternalWorkerPoolClient::connect(format!("http://{}", pool.endpoint()))
+        .await
+        .expect("pool must serve gRPC");
+    client
+        .start_worker(start_request("w1", &control))
+        .await
+        .unwrap();
+    assert_eq!(
+        next_event(&mut events).await,
+        ControlEvent::Connected("w1".into())
+    );
+
+    drop(client);
+    drop(pool);
+
+    assert_eq!(
+        next_event(&mut events).await,
+        ControlEvent::Closed("w1".into())
+    );
+}
+
+/// Set in the environment of the child process of
+/// [`a_loopback_worker_gets_the_pipeline_options`].
+const OPTIONS_CHILD_ENV: &str = "BEAM_PRISM_WORKER_OPTIONS_TEST_CHILD";
+const OPTIONS_TEST: &str = "prism_runner_test::a_loopback_worker_gets_the_pipeline_options";
+
+/// Child side: a loopback worker of a pool with `--default_sdk_harness_log_level=debug` turns
+/// on debug logs. The log levels are global to the process, so this runs in a child process.
+async fn start_a_worker_with_debug_logs() {
+    assert!(!tracing::enabled!(tracing::Level::DEBUG));
+    let (control, mut events) = start_fake_fn_api().await;
+    let options = PipelineOptions::parse_from(["test", "--default_sdk_harness_log_level=debug"]);
+    let mut pool = WorkerPool::start(None, Arc::new(std::collections::HashMap::new()), &options)
+        .await
+        .expect("WorkerPool must start on ephemeral port");
+    let mut client = BeamFnExternalWorkerPoolClient::connect(format!("http://{}", pool.endpoint()))
+        .await
+        .expect("pool must serve gRPC");
+    client
+        .start_worker(start_request("w1", &control))
+        .await
+        .unwrap();
+    assert_eq!(
+        next_event(&mut events).await,
+        ControlEvent::Connected("w1".into())
+    );
+
+    assert!(
+        tracing::enabled!(tracing::Level::DEBUG),
+        "the worker sets the log level of the options"
+    );
+    pool.stop().await;
+}
+
+#[tokio::test]
+async fn a_loopback_worker_gets_the_pipeline_options() {
+    if std::env::var_os(OPTIONS_CHILD_ENV).is_some() {
+        start_a_worker_with_debug_logs().await;
+        return;
+    }
+
+    let exe = std::env::current_exe().expect("path of the running test binary");
+    let out = std::process::Command::new(exe)
+        .args(["--exact", OPTIONS_TEST, "--nocapture", "--test-threads=1"])
+        .env(OPTIONS_CHILD_ENV, "1")
+        .env_remove("RUST_LOG")
+        .output()
+        .expect("run the child test process");
+    assert!(
+        out.status.success(),
+        "child failed:\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[tokio::test]
