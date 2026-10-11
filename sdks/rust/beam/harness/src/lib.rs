@@ -27,24 +27,13 @@ pub mod grpc;
 pub mod logging;
 #[doc(hidden)]
 pub mod provisioning;
+pub mod replay;
 pub mod state;
 pub mod status;
 pub mod user_state;
 pub mod worker;
 
 pub use model;
-
-pub use bundle_processor::BundleProcessor;
-pub use control::ControlClient;
-pub use data::DataManager;
-pub use logging::{
-    BeamFnLoggingHandle, BeamFnLoggingLayer, LoggingClient, create_layer, init_logging,
-    set_global_client,
-};
-pub use state::{FnApiSideInputReader, StateChannel};
-pub use status::{WorkerMetrics, WorkerStatusHandler, format_status_info};
-pub use user_state::BundleUserState;
-pub use worker::Worker;
 
 use beam::options::{HarnessOptions, PipelineOptions, WorkerOptions};
 use beam::pipeline::Pipeline;
@@ -59,6 +48,7 @@ use beam::runners::{
 /// exactly the DoFns the runner asks for.
 struct WorkerRunner {
     args: HarnessOptions,
+    experiments: Vec<String>,
     /// `--element_processing_timeout_minutes`, from the job's options.
     element_processing_timeout: Option<std::time::Duration>,
 }
@@ -73,12 +63,13 @@ impl PipelineRunner for WorkerRunner {
 impl WorkerRunner {
     /// Runs `pipeline`, reporting failures with this runner's own error type.
     async fn execute(&self, pipeline: &Pipeline) -> Result<PipelineResult, worker::WorkerError> {
-        init_logging();
+        logging::init_logging();
         if let Some(timeout) = self.element_processing_timeout {
             bundle_processor::set_element_processing_timeout(timeout);
         }
         let handlers = pipeline.transform_handlers();
-        Worker::with_handlers(self.args.clone(), handlers)
+        worker::Worker::with_handlers(self.args.clone(), handlers)
+            .with_experiments(self.experiments.clone())
             .run()
             .await?;
 
@@ -94,6 +85,10 @@ inventory::submit! {
         name: WORKER_RUNNER_NAME,
         factory: |options: &PipelineOptions| Box::new(WorkerRunner {
             args: options.harness.clone(),
+            experiments: options
+                .view_as::<beam::options::DebugOptions>()
+                .map(|d| d.experiments)
+                .unwrap_or_default(),
             element_processing_timeout: options
                 .view_as::<WorkerOptions>()
                 .ok()
