@@ -66,6 +66,14 @@ pub(super) fn read_be_i32(reader: &mut dyn Read) -> Result<i32, std::io::Error> 
     Ok(i32::from_be_bytes(read_array(reader)?))
 }
 
+/// Reads a 32-bit big-endian element count. A negative count is an error: it would read zero
+/// elements and leave the reader on the wrong byte.
+pub(super) fn read_count(reader: &mut dyn Read) -> Result<usize, CoderError> {
+    let count = read_be_i32(reader)?;
+    usize::try_from(count)
+        .map_err(|_| CoderError::Format(format!("Negative element count: {count}")))
+}
+
 /// Writes a collection length as the 32-bit big-endian count of the wire format.
 pub(super) fn write_count(len: usize, writer: &mut dyn Write) -> Result<(), CoderError> {
     let count = i32::try_from(len)

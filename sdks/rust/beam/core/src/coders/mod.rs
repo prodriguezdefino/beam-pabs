@@ -25,6 +25,7 @@ mod header;
 mod iterable;
 mod metadata;
 mod pane;
+mod row;
 mod runner_framing;
 mod standard;
 mod timer;
@@ -37,6 +38,7 @@ pub use header::WindowedHeader;
 pub use iterable::*;
 pub use metadata::*;
 pub use pane::*;
+pub use row::*;
 pub use runner_framing::*;
 pub use standard::*;
 pub use timer::*;
@@ -82,4 +84,5 @@ pub const SUPPORTED_CODER_URNS: &[&str] = &[
     URN_WINDOWED_VALUE,
     URN_PARAM_WINDOWED_VALUE,
     URN_TIMER,
+    URN_ROW,
 ];
