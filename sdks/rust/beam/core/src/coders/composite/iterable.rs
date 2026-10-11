@@ -160,7 +160,7 @@ impl<T: Send + Sync + 'static, C: Coder<T> + 'static>
         let element_coder = Arc::clone(&self.element_coder);
         crate::coders::iterable::decode_beam_iterable(
             reader,
-            Arc::new(move |r| element_coder.decode(r, Context::Nested)),
+            move |r| element_coder.decode(r, Context::Nested),
             None,
         )
     }
