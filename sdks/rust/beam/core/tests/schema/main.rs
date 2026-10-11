@@ -19,4 +19,9 @@
 
 //! Row model, schema derive, and portable schema proto tests.
 
+mod generic_and_wire_test;
+mod row_struct_coder_test;
+mod schema_derive_test;
+mod schema_proptest;
+mod schema_proto_test;
 mod schema_test;

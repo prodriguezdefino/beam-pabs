@@ -19,8 +19,10 @@
 
 //! Core coder and wire-framing tests.
 
+mod coder_encoding_test;
 mod coder_hostile_input_test;
 mod coder_traversal_test;
+mod decimal_coder_test;
 mod element_metadata_test;
 mod instant_test;
 mod iterable_framing_test;
@@ -29,3 +31,4 @@ mod pane_info_test;
 mod param_windowed_value_test;
 mod row_coder_test;
 mod runner_framing_test;
+mod tuple_coder_test;
