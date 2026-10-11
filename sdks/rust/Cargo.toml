@@ -110,6 +110,7 @@ proptest = "1"
 beam = { package = "apache-beam", path = "beam", version = "2.79.0-SNAPSHOT" }
 beam_core = { package = "apache-beam-core", path = "beam/core", version = "2.79.0-SNAPSHOT" }
 beam_model = { package = "apache-beam-model", path = "beam/model", version = "2.79.0-SNAPSHOT" }
+beam_harness = { package = "apache-beam-harness", path = "beam/harness", version = "2.79.0-SNAPSHOT" }
 beam_io_file = { package = "apache-beam-io-file", path = "beam/io/file", version = "2.79.0-SNAPSHOT" }
 beam_test_utils = { package = "apache-beam-test-utils", path = "beam/test-utils", version = "2.79.0-SNAPSHOT" }
 beam_derive = { package = "apache-beam-derive", path = "beam/derive", version = "2.79.0-SNAPSHOT" }

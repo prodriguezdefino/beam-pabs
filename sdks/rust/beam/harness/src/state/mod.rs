@@ -29,6 +29,6 @@ pub(crate) mod framing;
 pub(crate) mod side_input_cache;
 pub(crate) mod tables;
 
-pub use cache::{CacheTokens, DEFAULT_STATE_CACHE_BYTES, StateCache};
+pub use cache::{CacheStats, CacheTokens, DEFAULT_STATE_CACHE_BYTES, StateCache};
 pub use channel::{StateChannel, StateClients};
 pub use side_input_cache::{FnApiSideInputReader, SideInputSpecs};
