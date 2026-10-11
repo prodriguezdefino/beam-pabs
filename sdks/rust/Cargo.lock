@@ -96,6 +96,7 @@ dependencies = [
  "apache-beam-io-file",
  "apache-beam-model",
  "apache-beam-runner-prism",
+ "apache-beam-testing",
 ]
 
 [[package]]
@@ -167,6 +168,7 @@ dependencies = [
  "apache-beam-core",
  "apache-beam-model",
  "apache-beam-test-utils",
+ "apache-beam-testing",
  "flate2",
  "globset",
  "inventory",
@@ -174,6 +176,7 @@ dependencies = [
  "snap",
  "sync_wrapper",
  "thiserror",
+ "tokio",
  "tracing",
  "zstd",
 ]
@@ -1015,7 +1018,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
