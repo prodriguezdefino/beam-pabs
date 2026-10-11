@@ -32,11 +32,11 @@ use tonic::transport::Channel;
 use tracing::{debug, error, info, warn};
 
 use beam::internals::TransformFn;
-use beam::options::{HarnessOptions, WorkerOptions};
+use beam::options::{DebugOptions, HarnessOptions, PipelineOptions, WorkerOptions};
 
 use crate::bundle_processor::{
-    BATCH_PROCESSOR_IDLE_TIMEOUT, BundleProcessor, spawn_finalizer_sweeper,
-    spawn_idle_processor_sweeper,
+    BATCH_PROCESSOR_IDLE_TIMEOUT, BundleProcessor, STREAMING_PROCESSOR_IDLE_TIMEOUT,
+    set_element_processing_timeout, spawn_finalizer_sweeper, spawn_idle_processor_sweeper,
 };
 use crate::control::ControlClient;
 use crate::data::{
@@ -77,6 +77,51 @@ impl From<tonic::Status> for WorkerError {
     }
 }
 
+/// The worker settings that come from the pipeline options.
+#[derive(Clone, Debug, Default)]
+pub struct WorkerConfig {
+    worker_options: WorkerOptions,
+    experiments: Vec<String>,
+    streaming: bool,
+}
+
+impl From<&PipelineOptions> for WorkerConfig {
+    /// Reads the worker options, the experiments and the streaming flag. A group that does
+    /// not parse gives its defaults.
+    fn from(options: &PipelineOptions) -> Self {
+        Self {
+            worker_options: options.view_as::<WorkerOptions>().unwrap_or_default(),
+            experiments: options
+                .view_as::<DebugOptions>()
+                .map(|debug| debug.experiments)
+                .unwrap_or_default(),
+            streaming: options.streaming,
+        }
+    }
+}
+
+impl WorkerConfig {
+    /// Turns on logging and sets the log levels and the element processing timeout.
+    ///
+    /// These settings are process-wide. The first call sets them, and later calls do not
+    /// change them.
+    pub fn apply_to_process(&self) {
+        let options = &self.worker_options;
+        crate::logging::init_logging();
+        crate::logging::set_log_levels(crate::logging::LogLevels::resolve(
+            std::env::var("RUST_LOG").ok().as_deref(),
+            options.default_sdk_harness_log_level.as_deref(),
+            &options.sdk_harness_log_level_overrides,
+        ));
+        if let Some(minutes) = options
+            .element_processing_timeout_minutes
+            .filter(|&minutes| minutes > 0)
+        {
+            set_element_processing_timeout(Duration::from_secs(minutes.saturating_mul(60)));
+        }
+    }
+}
+
 /// The top-level worker harness coordinator.
 pub struct Worker {
     args: HarnessOptions,
@@ -97,6 +142,27 @@ impl Worker {
             metrics: crate::status::WorkerMetrics::new(),
             processor_idle_timeout: BATCH_PROCESSOR_IDLE_TIMEOUT,
         }
+    }
+
+    /// Applies the worker options, the experiments and the idle processor timeout of
+    /// `config`. Call [`WorkerConfig::apply_to_process`] for the process-wide settings.
+    pub fn with_config(self, config: &WorkerConfig) -> Self {
+        let WorkerConfig {
+            worker_options,
+            experiments,
+            streaming,
+        } = config;
+        let idle_timeout = worker_options
+            .bundle_processor_cache_timeout_secs
+            .map(Duration::from_secs)
+            .unwrap_or(if *streaming {
+                STREAMING_PROCESSOR_IDLE_TIMEOUT
+            } else {
+                BATCH_PROCESSOR_IDLE_TIMEOUT
+            });
+        self.with_worker_options(worker_options.clone())
+            .with_processor_idle_timeout(idle_timeout)
+            .with_experiments(experiments.clone())
     }
 
     /// Sets how long an idle bundle processor stays set up for reuse.
