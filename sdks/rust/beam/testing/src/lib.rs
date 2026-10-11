@@ -21,6 +21,8 @@
 //!
 //! - [`passert`] — assertions that run inside the pipeline and fail the job if a
 //!   collection does not match expectations.
+//! - [`TestStream`] — unbounded source replaying a scripted sequence of elements,
+//!   watermark advances, and processing-time advances.
 //! - [`TestPipeline`] — pipeline configured from the environment. After it runs, it
 //!   verifies that all assertions ran. It panics if it is never run.
 //! - [`require_env!`] / [`env_or_skip`] — visible, CI-enforceable skipping for tests
@@ -52,12 +54,14 @@
 mod env;
 pub mod passert;
 mod test_pipeline;
+mod test_stream;
 
 pub use env::{EnvRequirement, STRICT_ENV_VAR, check_env, env_or_skip};
 pub use test_pipeline::{
     TEST_PIPELINE_OPTIONS_ENV, TestPipeline, TestPipelineError, parse_test_pipeline_options,
     test_pipeline_options,
 };
+pub use test_stream::{TestStream, WATERMARK_INFINITY};
 
 /// The Prism runner, for tests that name it: `testing::prism::PrismRunner`.
 #[cfg(feature = "prism")]
