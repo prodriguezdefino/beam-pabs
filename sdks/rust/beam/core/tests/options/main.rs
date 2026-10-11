@@ -20,4 +20,10 @@
 //! Pipeline options, CLI parsing, environment, and capability tests.
 
 mod capabilities_test;
+mod environment_test;
+mod options_snapshot_test;
+mod options_test;
+mod parse_test;
+mod secret_test;
 mod to_string_test;
+mod worker_args_test;
