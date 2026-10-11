@@ -35,6 +35,9 @@
 pub use core::*;
 pub use model;
 
+#[cfg(feature = "harness")]
+pub use harness;
+
 pub mod io {
     #[cfg(feature = "io-file")]
     pub use file;
@@ -49,6 +52,9 @@ pub mod io {
 mod link {
     #[cfg(feature = "io-file")]
     pub use file as _;
+
+    #[cfg(feature = "harness")]
+    pub use harness as _;
 }
 
 /// All that an ordinary pipeline needs.
