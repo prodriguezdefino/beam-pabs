@@ -38,6 +38,8 @@ pub mod memory;
 #[doc(hidden)]
 pub mod provisioning;
 #[doc(hidden)]
+pub mod replay;
+#[doc(hidden)]
 pub mod state;
 #[doc(hidden)]
 pub mod status;
@@ -46,21 +48,10 @@ pub mod user_state;
 pub mod worker;
 
 pub use beam_model as model;
-
-pub use bundle_processor::BundleProcessor;
-pub use control::ControlClient;
-pub use data::DataManager;
-pub use logging::{
-    BeamFnLoggingHandle, BeamFnLoggingLayer, LoggingClient, create_layer, init_logging,
-    set_global_client,
-};
-pub use state::{FnApiSideInputReader, StateChannel};
-pub use status::{WorkerMetrics, WorkerStatusHandler, format_status_info};
-pub use user_state::BundleUserState;
-pub use worker::Worker;
+pub use bundle_processor::SamplingMode;
 
 use beam::internals::PipelineInternals;
-use beam::options::{HarnessOptions, PipelineOptions, WorkerOptions};
+use beam::options::{HarnessOptions, PipelineOptions};
 use beam::pipeline::Pipeline;
 use beam::runners::{
     JobState, PipelineResult, PipelineRunner, RunnerError, RunnerRegistration, WORKER_RUNNER_NAME,
@@ -73,7 +64,7 @@ use beam::runners::{
 /// exactly the DoFns the runner asks for.
 struct WorkerRunner {
     args: HarnessOptions,
-    worker_options: WorkerOptions,
+    config: worker::WorkerConfig,
 }
 
 #[async_trait::async_trait]
@@ -86,25 +77,10 @@ impl PipelineRunner for WorkerRunner {
 impl WorkerRunner {
     /// Runs `pipeline`, reporting failures with this runner's own error type.
     async fn execute(&self, pipeline: &Pipeline) -> Result<PipelineResult, worker::WorkerError> {
-        init_logging();
-        logging::set_log_levels(logging::LogLevels::resolve(
-            std::env::var("RUST_LOG").ok().as_deref(),
-            self.worker_options.default_sdk_harness_log_level.as_deref(),
-            &self.worker_options.sdk_harness_log_level_overrides,
-        ));
-        if let Some(minutes) = self
-            .worker_options
-            .element_processing_timeout_minutes
-            .filter(|&minutes| minutes > 0)
-        {
-            bundle_processor::set_element_processing_timeout(std::time::Duration::from_secs(
-                minutes.saturating_mul(60),
-            ));
-        }
-        let handlers = pipeline.transform_handlers();
-        Worker::new(self.args.clone())
-            .with_worker_options(self.worker_options.clone())
-            .with_handlers(handlers)
+        self.config.apply_to_process();
+        worker::Worker::new(self.args.clone())
+            .with_config(&self.config)
+            .with_handlers(pipeline.transform_handlers())
             .run()
             .await?;
 
@@ -120,7 +96,7 @@ inventory::submit! {
         name: WORKER_RUNNER_NAME,
         factory: |options: &PipelineOptions| Box::new(WorkerRunner {
             args: options.harness.clone(),
-            worker_options: options.view_as::<WorkerOptions>().unwrap_or_default(),
+            config: worker::WorkerConfig::from(options),
         }),
     }
 }
