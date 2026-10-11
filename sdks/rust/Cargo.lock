@@ -96,6 +96,7 @@ dependencies = [
  "apache-beam-io-file",
  "apache-beam-model",
  "apache-beam-runner-prism",
+ "apache-beam-testing",
 ]
 
 [[package]]
@@ -168,10 +169,13 @@ dependencies = [
  "apache-beam-io-file",
  "apache-beam-model",
  "apache-beam-test-utils",
+ "apache-beam-testing",
+ "bytes",
  "globset",
  "inventory",
  "sync_wrapper",
  "thiserror",
+ "tokio",
  "tracing",
 ]
 

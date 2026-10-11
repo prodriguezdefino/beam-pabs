@@ -38,6 +38,9 @@ pub use model;
 #[cfg(feature = "harness")]
 pub use harness;
 
+#[cfg(feature = "testing")]
+pub use testing;
+
 pub mod io {
     #[cfg(feature = "io-file")]
     pub use file;

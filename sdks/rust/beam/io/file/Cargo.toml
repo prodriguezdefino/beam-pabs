@@ -35,10 +35,13 @@ beam = { package = "apache-beam-core", path = "../../core", version = "2.78.0-SN
 model = { workspace = true }
 inventory = { workspace = true }
 globset = { workspace = true }
+tokio = { workspace = true }
 tracing = { workspace = true }
+bytes = { workspace = true }
 thiserror = { workspace = true }
 sync_wrapper = { workspace = true }
 
 [dev-dependencies]
 file = { package = "apache-beam-io-file", path = "." }
 testutils = { workspace = true }
+testing = { workspace = true, features = ["prism"] }
