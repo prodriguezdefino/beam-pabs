@@ -33,7 +33,9 @@ use tonic::transport::{Channel, Endpoint};
 
 use super::artifact::is_automated_expansion_service;
 use super::error::ExpansionError;
-use super::retrieval::{fetch_environment_dependencies, fetched_artifacts_dir};
+use super::retrieval::{
+    fetch_environment_dependencies, fetched_artifacts_dir, redeem_deferred_dependencies,
+};
 use super::service::JavaExpansionServer;
 
 /// Calls of an expansion RPC: 2 retries on a new connection, waits of 25 to 100 ms.
@@ -233,9 +235,15 @@ impl ExpansionClient {
                 }
                 Ok(response)
             }
-            // The driver started the service from a JAR, and the runner redeems the deferred
-            // dependencies against that JAR.
-            Target::Auto { .. } => Ok(response),
+            // The driver started the service from a JAR on this machine.
+            Target::Auto { ref server, .. } => {
+                if let (Some(server), Some(components)) =
+                    (server.get(), response.components.as_mut())
+                {
+                    redeem_deferred_dependencies(components, server.jar_path());
+                }
+                Ok(response)
+            }
         }
     }
 
