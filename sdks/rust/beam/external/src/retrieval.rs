@@ -24,7 +24,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use beam::pipeline::{URN_ARTIFACT_TYPE_FILE, URN_ARTIFACT_TYPE_URL};
+use beam::pipeline::{URN_ARTIFACT_TYPE_DEFERRED, URN_ARTIFACT_TYPE_FILE, URN_ARTIFACT_TYPE_URL};
 use beam_model::job_management::artifact_retrieval_service_client::ArtifactRetrievalServiceClient;
 use beam_model::job_management::{GetArtifactRequest, ResolveArtifactsRequest};
 use beam_model::pipeline::{ArtifactFilePayload, ArtifactInformation, Components};
@@ -78,6 +78,29 @@ pub(crate) async fn fetch_environment_dependencies(
         environment.dependencies = local;
     }
     Ok(())
+}
+
+/// Rewrites each deferred dependency of `components` to the local `file` artifact `jar`. The
+/// role stays the same.
+///
+/// A service that the driver started from `jar` can describe its JAR as a deferred token
+/// that only it can redeem. Each service redeems the tokens of its own expansions, so each
+/// environment gets the JAR of the service that made it.
+#[doc(hidden)]
+pub fn redeem_deferred_dependencies(components: &mut Components, jar: &Path) {
+    components
+        .environments
+        .values_mut()
+        .flat_map(|environment| environment.dependencies.iter_mut())
+        .filter(|dependency| dependency.type_urn == URN_ARTIFACT_TYPE_DEFERRED)
+        .for_each(|dependency| {
+            dependency.type_urn = URN_ARTIFACT_TYPE_FILE.to_string();
+            dependency.type_payload = ArtifactFilePayload {
+                path: jar.to_string_lossy().into_owned(),
+                sha256: String::new(),
+            }
+            .encode_to_vec();
+        });
 }
 
 /// Returns `artifact` as a local `file` artifact with the same role.
