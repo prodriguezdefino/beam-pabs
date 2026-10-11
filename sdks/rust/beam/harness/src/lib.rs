@@ -38,6 +38,8 @@ pub mod memory;
 #[doc(hidden)]
 pub mod provisioning;
 #[doc(hidden)]
+pub mod replay;
+#[doc(hidden)]
 pub mod state;
 #[doc(hidden)]
 pub mod status;
@@ -45,19 +47,8 @@ pub mod status;
 pub mod user_state;
 pub mod worker;
 
+pub use bundle_processor::SamplingMode;
 pub use model;
-
-pub use bundle_processor::BundleProcessor;
-pub use control::ControlClient;
-pub use data::DataManager;
-pub use logging::{
-    BeamFnLoggingHandle, BeamFnLoggingLayer, LoggingClient, create_layer, init_logging,
-    set_global_client,
-};
-pub use state::{FnApiSideInputReader, StateChannel};
-pub use status::{WorkerMetrics, WorkerStatusHandler, format_status_info};
-pub use user_state::BundleUserState;
-pub use worker::Worker;
 
 use beam::internals::PipelineInternals;
 use beam::options::{HarnessOptions, PipelineOptions, WorkerOptions};
@@ -74,6 +65,8 @@ use beam::runners::{
 struct WorkerRunner {
     args: HarnessOptions,
     worker_options: WorkerOptions,
+    experiments: Vec<String>,
+    streaming: bool,
 }
 
 #[async_trait::async_trait]
@@ -86,7 +79,7 @@ impl PipelineRunner for WorkerRunner {
 impl WorkerRunner {
     /// Runs `pipeline`, reporting failures with this runner's own error type.
     async fn execute(&self, pipeline: &Pipeline) -> Result<PipelineResult, worker::WorkerError> {
-        init_logging();
+        logging::init_logging();
         logging::set_log_levels(logging::LogLevels::resolve(
             std::env::var("RUST_LOG").ok().as_deref(),
             self.worker_options.default_sdk_harness_log_level.as_deref(),
@@ -102,9 +95,19 @@ impl WorkerRunner {
             ));
         }
         let handlers = pipeline.transform_handlers();
-        Worker::new(self.args.clone())
+        let idle_timeout = self
+            .worker_options
+            .bundle_processor_cache_timeout_secs
+            .map(std::time::Duration::from_secs)
+            .unwrap_or(match self.streaming {
+                true => bundle_processor::STREAMING_PROCESSOR_IDLE_TIMEOUT,
+                false => bundle_processor::BATCH_PROCESSOR_IDLE_TIMEOUT,
+            });
+        worker::Worker::new(self.args.clone())
             .with_worker_options(self.worker_options.clone())
+            .with_processor_idle_timeout(idle_timeout)
             .with_handlers(handlers)
+            .with_experiments(self.experiments.clone())
             .run()
             .await?;
 
@@ -121,6 +124,11 @@ inventory::submit! {
         factory: |options: &PipelineOptions| Box::new(WorkerRunner {
             args: options.harness.clone(),
             worker_options: options.view_as::<WorkerOptions>().unwrap_or_default(),
+            experiments: options
+                .view_as::<beam::options::DebugOptions>()
+                .map(|d| d.experiments)
+                .unwrap_or_default(),
+            streaming: options.streaming,
         }),
     }
 }
