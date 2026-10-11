@@ -36,6 +36,8 @@ derive = ["core/derive"]
 # independent choice, so runners enable it rather than the user.
 harness = ["dep:harness"]
 prism = ["dep:prism", "harness"]
+# `passert` and `TestStream`, as `beam::testing`. Usually enabled for tests only.
+testing = ["dep:testing"]
 
 [dependencies]
 core = { workspace = true }
@@ -43,6 +45,7 @@ model = { workspace = true }
 harness = { workspace = true, optional = true }
 file = { workspace = true, optional = true }
 prism = { workspace = true, optional = true }
+testing = { workspace = true, optional = true }
 
 [lints]
 workspace = true
