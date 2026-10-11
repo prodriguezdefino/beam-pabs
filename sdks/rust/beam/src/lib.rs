@@ -68,6 +68,9 @@ pub use external;
 #[cfg(feature = "harness")]
 pub use harness;
 
+#[cfg(feature = "expansion")]
+pub use expansion;
+
 #[cfg(feature = "testing")]
 pub use testing;
 
@@ -98,6 +101,9 @@ mod link {
 
     #[cfg(feature = "prism")]
     pub use prism as _;
+
+    #[cfg(feature = "expansion")]
+    pub use expansion as _;
 }
 
 /// All that an ordinary pipeline needs, in both styles.

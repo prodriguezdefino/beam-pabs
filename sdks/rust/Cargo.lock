@@ -92,6 +92,7 @@ name = "apache-beam"
 version = "2.78.0-SNAPSHOT"
 dependencies = [
  "apache-beam-core",
+ "apache-beam-expansion",
  "apache-beam-external",
  "apache-beam-fluent",
  "apache-beam-harness",
@@ -137,6 +138,23 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.6",
+]
+
+[[package]]
+name = "apache-beam-expansion"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam-core",
+ "apache-beam-harness",
+ "apache-beam-model",
+ "async-trait",
+ "clap",
+ "inventory",
+ "prost",
+ "tokio",
+ "tonic",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
