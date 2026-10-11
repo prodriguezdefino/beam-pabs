@@ -34,3 +34,4 @@ pub mod time;
 
 pub use error::{Error, Result};
 pub use time::Instant;
+pub mod pipeline;
