@@ -40,6 +40,8 @@ use model::fn_execution::ProcessBundleDescriptor;
 use model::pipeline::{CombinePayload, FunctionSpec, PTransform, ParDoPayload, WindowIntoPayload};
 use tracing::warn;
 
+use crate::replay::{self, URN_RUST_DOFN_EXPANDED};
+
 /// Resolves the handler registered for a transform.
 ///
 /// Resolution reads only the `spec` of the transform, never its id or `unique_name`. A
@@ -55,6 +57,9 @@ use tracing::warn;
 ///   fields and the key coder. The URN of the stage transform gives the stage.
 /// - The `combine_grouped_values` stage and the lifted `CombinePerKey` stages: the
 ///   `combine_fn` payload plus the stage.
+/// - A `do_fn` or `combine_fn` from an expansion service: the key in its
+///   [`ExpandedSpec`](replay::ExpandedSpec). The worker replays the expansion once, then
+///   finds the key in it.
 /// - `WindowInto`: built in for the standard window functions, otherwise the key from
 ///   [`window_into_handler_key`].
 /// - `Flatten`: built in.
@@ -225,7 +230,6 @@ fn nested_prefix(elem: &[u8]) -> std::io::Result<&[u8]> {
     Ok(&elem[..elem.len() - cursor.len()])
 }
 
-/// Returns the handler key in the `do_fn` of a `ParDoPayload`, if it has one.
 fn do_fn(payload: &[u8]) -> Option<FunctionSpec> {
     ParDoPayload::decode(payload).ok()?.do_fn
 }
@@ -234,9 +238,11 @@ fn combine_fn(payload: &[u8]) -> Option<FunctionSpec> {
     CombinePayload::decode(payload).ok()?.combine_fn
 }
 
-/// Resolves a Rust `FunctionSpec`, plus a combine `stage` if set. A spec that holds a bare
-/// key resolves in `handlers`; `Create` and registered functions build their handler from
-/// the spec.
+/// Resolves a Rust `FunctionSpec`, plus a combine `stage` if set.
+///
+/// An expanded spec resolves in the handlers of its replay entry. `Create` and registered
+/// functions build their handler from the spec. Every other spec holds a bare key, which
+/// resolves in `handlers`.
 fn resolve_key_spec(
     handlers: &HashMap<String, TransformFn>,
     spec: &FunctionSpec,
@@ -253,6 +259,10 @@ fn resolve_key_spec(
         .cloned()
     };
     match spec.urn.as_str() {
+        URN_RUST_DOFN_EXPANDED => {
+            let (replayed, key) = replay::replayed_handlers(spec)?;
+            find(&replayed, &key)
+        }
         URN_RUST_DOFN_CREATE => beam::internals::create_handler(&spec.payload)
             .inspect_err(|e| warn!("{e}"))
             .ok(),
