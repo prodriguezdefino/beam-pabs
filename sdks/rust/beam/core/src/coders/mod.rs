@@ -22,6 +22,7 @@
 
 mod composite;
 mod decimal;
+pub(crate) mod display;
 mod header;
 mod iterable;
 mod metadata;
