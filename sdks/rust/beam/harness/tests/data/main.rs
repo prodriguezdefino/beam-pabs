@@ -20,4 +20,5 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+mod data_plane_test;
 mod outbound_test;
