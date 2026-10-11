@@ -31,9 +31,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use beam::coders::{
-    BoolCoder, BytesCoder, Coder, Context, DoubleCoder, IntervalWindow, IntervalWindowCoder,
-    IterableCoder, KvCoder, NullableCoder, PaneInfo, ParamWindowedValueCoder, RowCoder,
-    StringUtf8Coder, Timing, VarIntCoder, WindowedValue, WindowedValueCoder,
+    BoolCoder, BytesCoder, Coder, CoderError, Context, DoubleCoder, IntervalWindow,
+    IntervalWindowCoder, IterableCoder, KvCoder, NullableCoder, PageStream, PaneInfo,
+    ParamWindowedValueCoder, RowCoder, StateStreamReader, StringUtf8Coder, Timing, VarIntCoder,
+    WindowedValue, WindowedValueCoder, decode_beam_iterable,
 };
 use beam::schema::{BeamField, FieldType, FieldValue, Row, Schema, TypeInfo, URN_DECIMAL};
 use model::pipeline as proto;
@@ -67,6 +68,9 @@ struct CoderDefinition {
     payload: Option<String>,
     #[serde(default)]
     non_deterministic: Option<bool>,
+    /// Runner state of a state-backed iterable: continuation token to the bytes of one page.
+    #[serde(default)]
+    state: BTreeMap<String, String>,
 }
 
 /// Specification of a standard coder URN not yet implemented in the Rust SDK.
@@ -91,6 +95,62 @@ const UNSUPPORTED_CODERS: &[UnsupportedCoderSpec] = &[
 
 fn key_to_bytes(key: &str) -> Vec<u8> {
     key.chars().map(|c| c as u8).collect()
+}
+
+/// Runner state from the YAML `state:` map. Each token opens one page with its value.
+struct YamlState(BTreeMap<Vec<u8>, Vec<u8>>);
+
+impl YamlState {
+    fn new(state: &BTreeMap<String, String>) -> Self {
+        Self(
+            state
+                .iter()
+                .map(|(token, page)| (key_to_bytes(token), key_to_bytes(page)))
+                .collect(),
+        )
+    }
+}
+
+impl StateStreamReader for YamlState {
+    fn stream_runner_pages(&self, token: &[u8]) -> Result<PageStream, CoderError> {
+        let page = self
+            .0
+            .get(token)
+            .cloned()
+            .ok_or_else(|| CoderError::Format(format!("no state for token {token:?}")))?;
+        Ok(Box::new(std::iter::once(Ok(page))))
+    }
+}
+
+/// Decodes a `beam:coder:state_backed_iterable:v1` example, reading the suffix from `state`,
+/// and encodes `expected` back if the encoding is deterministic.
+fn assert_state_backed_roundtrip<T, C>(
+    element_coder: C,
+    expected: Vec<T>,
+    expected_bytes: &[u8],
+    state: &YamlState,
+    non_deterministic: bool,
+) where
+    T: std::fmt::Debug + PartialEq + Send + Sync + 'static,
+    C: Coder<T> + Clone + 'static,
+{
+    let decoder = element_coder.clone();
+    let decoded = decode_beam_iterable(
+        &mut &expected_bytes[..],
+        move |r| decoder.decode(r, Context::Nested),
+        Some(state),
+    )
+    .unwrap()
+    .into_vec()
+    .unwrap();
+    assert_eq!(decoded, expected);
+    if !non_deterministic {
+        let mut buf = Vec::new();
+        IterableCoder::new(element_coder)
+            .encode(&expected, &mut buf, Context::Nested)
+            .unwrap();
+        assert_eq!(buf.as_slice(), expected_bytes);
+    }
 }
 
 fn assert_coder_roundtrip<T, C>(
@@ -262,6 +322,43 @@ fn run_single_spec(spec: &StandardCoderDoc) {
                             );
                         }
                         _ => panic!("Unsupported KV components: ({comp0}, {comp1})"),
+                    }
+                }
+                "beam:coder:state_backed_iterable:v1" => {
+                    let state = YamlState::new(&spec.coder.state);
+                    let seq = val.as_array().expect("seq");
+                    match spec.coder.components.first().map(|c| c.urn.as_str()) {
+                        Some("beam:coder:varint:v1") => assert_state_backed_roundtrip(
+                            VarIntCoder,
+                            seq.iter().map(|item| item.as_i64().unwrap()).collect(),
+                            &expected_bytes,
+                            &state,
+                            non_deterministic,
+                        ),
+                        Some("beam:coder:bytes:v1") => assert_state_backed_roundtrip(
+                            BytesCoder,
+                            seq.iter()
+                                .map(|item| key_to_bytes(item.as_str().unwrap()))
+                                .collect(),
+                            &expected_bytes,
+                            &state,
+                            non_deterministic,
+                        ),
+                        Some("beam:coder:bool:v1") => assert_state_backed_roundtrip(
+                            BoolCoder,
+                            seq.iter().map(|item| item.as_bool().unwrap()).collect(),
+                            &expected_bytes,
+                            &state,
+                            non_deterministic,
+                        ),
+                        Some("beam:coder:global_window:v1") => assert_state_backed_roundtrip(
+                            beam::coders::GlobalWindowCoder,
+                            seq.iter().map(|_| beam::coders::GlobalWindow).collect(),
+                            &expected_bytes,
+                            &state,
+                            non_deterministic,
+                        ),
+                        other => panic!("Unsupported state-backed iterable component: {other:?}"),
                     }
                 }
                 "beam:coder:iterable:v1" => {
