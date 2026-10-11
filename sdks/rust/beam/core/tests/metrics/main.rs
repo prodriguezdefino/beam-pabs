@@ -19,6 +19,7 @@
 
 //! Error model, metric handles, and metrics query tests.
 
+mod dofn_metrics_test;
 mod error_test;
 mod metric_types_test;
 mod metrics_query_test;
