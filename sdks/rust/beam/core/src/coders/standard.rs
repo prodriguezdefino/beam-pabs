@@ -79,6 +79,14 @@ pub(super) fn read_be_i32(reader: &mut &[u8]) -> Result<i32, std::io::Error> {
     Ok(i32::from_be_bytes(read_array(reader)?))
 }
 
+/// Reads a 32-bit big-endian element count. A negative count is an error: it would read zero
+/// elements and leave the reader on the wrong byte.
+pub(super) fn read_count(reader: &mut &[u8]) -> Result<usize, CoderError> {
+    let count = read_be_i32(reader)?;
+    usize::try_from(count)
+        .map_err(|_| CoderError::Format(format!("Negative element count: {count}")))
+}
+
 /// Writes a collection length as the 32-bit big-endian count of the wire format.
 pub(super) fn write_count(len: usize, writer: &mut Vec<u8>) -> Result<(), CoderError> {
     let count = i32::try_from(len)
@@ -93,7 +101,11 @@ pub(super) fn read_varint_len(reader: &mut &[u8]) -> Result<usize, CoderError> {
 }
 
 /// Writes a byte payload, with a varint length prefix in `Nested` context.
-fn write_bytes(value: &[u8], writer: &mut Vec<u8>, context: Context) -> Result<(), CoderError> {
+pub(super) fn write_bytes(
+    value: &[u8],
+    writer: &mut Vec<u8>,
+    context: Context,
+) -> Result<(), CoderError> {
     if context == Context::Nested {
         VarIntCoder::encode_varint(value.len() as i64, writer)?;
     }
@@ -102,7 +114,7 @@ fn write_bytes(value: &[u8], writer: &mut Vec<u8>, context: Context) -> Result<(
 }
 
 /// Reads a byte payload: varint length-prefixed in `Nested` context, else the rest of the stream.
-fn read_bytes(reader: &mut &[u8], context: Context) -> Result<Vec<u8>, CoderError> {
+pub(super) fn read_bytes(reader: &mut &[u8], context: Context) -> Result<Vec<u8>, CoderError> {
     match context {
         Context::Nested => {
             let len = read_varint_len(reader)?;
