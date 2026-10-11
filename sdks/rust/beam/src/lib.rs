@@ -91,6 +91,10 @@ pub mod io {
     /// Parquet I/O. The transforms are in `beam::io::parquet::parquetio`.
     #[cfg(feature = "parquet")]
     pub use beam_io_parquet as parquet;
+
+    /// Avro I/O. The transforms are in `beam::io::avro::avroio`.
+    #[cfg(feature = "avro")]
+    pub use beam_io_avro as avro;
 }
 
 pub mod runners {

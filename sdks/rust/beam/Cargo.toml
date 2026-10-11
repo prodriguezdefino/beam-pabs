@@ -35,6 +35,7 @@ io-file = ["dep:beam_io_file"]
 # Columnar formats via arrow-rs. Off by default: they pull in arrow and codec crates.
 arrow = ["dep:beam_io_arrow"]
 parquet = ["dep:beam_io_parquet", "arrow", "io-file"]
+avro = ["dep:beam_io_avro", "arrow", "io-file"]
 derive = ["beam_core/derive"]
 external = ["dep:beam_external"]
 expansion = ["dep:beam_expansion"]
@@ -53,6 +54,7 @@ beam_harness = { workspace = true, optional = true }
 beam_io_file = { workspace = true, optional = true }
 beam_io_arrow = { workspace = true, optional = true }
 beam_io_parquet = { workspace = true, optional = true }
+beam_io_avro = { workspace = true, optional = true }
 beam_external = { workspace = true, optional = true }
 beam_expansion = { workspace = true, optional = true }
 beam_runner_prism = { workspace = true, optional = true }
