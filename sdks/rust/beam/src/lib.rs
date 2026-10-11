@@ -71,6 +71,9 @@ pub mod logging {
     pub use beam_harness::logging::init_logging;
 }
 
+#[cfg(feature = "expansion")]
+pub use beam_expansion as expansion;
+
 #[cfg(feature = "testing")]
 pub use beam_testing as testing;
 
@@ -103,6 +106,9 @@ mod link {
 
     #[cfg(feature = "prism")]
     pub use beam_runner_prism as _;
+
+    #[cfg(feature = "expansion")]
+    pub use beam_expansion as _;
 }
 
 /// All that an ordinary pipeline needs, in both styles.

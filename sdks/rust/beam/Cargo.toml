@@ -34,6 +34,7 @@ fluent = ["dep:beam_fluent"]
 io-file = ["dep:beam_io_file"]
 derive = ["beam_core/derive"]
 external = ["dep:beam_external"]
+expansion = ["dep:beam_expansion"]
 # The worker harness is a consequence of choosing a portable runner, not an
 # independent choice, so runners enable it rather than the user.
 harness = ["dep:beam_harness"]
@@ -48,6 +49,7 @@ beam_fluent = { workspace = true, optional = true }
 beam_harness = { workspace = true, optional = true }
 beam_io_file = { workspace = true, optional = true }
 beam_external = { workspace = true, optional = true }
+beam_expansion = { workspace = true, optional = true }
 beam_runner_prism = { workspace = true, optional = true }
 beam_testing = { workspace = true, optional = true }
 
