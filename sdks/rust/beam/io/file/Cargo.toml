@@ -29,6 +29,7 @@ workspace = true
 
 [lib]
 name = "beam_io_file"
+test = false
 
 [dependencies]
 # Names apache-beam-core as beam to prevent name collisions with the Rust standard core.
@@ -46,3 +47,5 @@ sync_wrapper = { workspace = true }
 
 [dev-dependencies]
 beam_test_utils = { workspace = true }
+beam_testing = { workspace = true, features = ["prism"] }
+tokio = { workspace = true }
