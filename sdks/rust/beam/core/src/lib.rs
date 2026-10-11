@@ -37,6 +37,7 @@ pub mod metrics;
 pub mod options;
 pub mod pipeline;
 pub mod prelude;
+pub mod retry;
 pub mod runners;
 pub mod schema;
 pub(crate) mod time;
