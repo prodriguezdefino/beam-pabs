@@ -46,6 +46,9 @@ derive = ["dep:beam_derive"]
 beam = { package = "apache-beam-core", path = ".", features = ["derive"] }
 beam_model = { workspace = true }
 proptest = { workspace = true }
+serde = { workspace = true }
+serde-saphyr = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true
