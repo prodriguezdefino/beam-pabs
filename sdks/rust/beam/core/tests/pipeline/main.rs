@@ -19,7 +19,14 @@
 
 //! Pipeline graph, validation, and element metadata propagation tests.
 
+#[path = "../support/mod.rs"]
+mod support;
+
+mod coder_propagation_test;
 mod element_metadata_propagation_test;
+mod graph_combinators_test;
 mod job_state_test;
+mod label_scope_test;
 mod pcollection_boundedness_test;
+mod pipeline_graph_test;
 mod pipeline_validation_test;

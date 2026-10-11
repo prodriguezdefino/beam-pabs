@@ -29,8 +29,9 @@ use beam::pipeline::{
     Pipeline, URN_GROUP_BY_KEY, URN_PAR_DO, URN_RESHUFFLE, URN_WINDOW_FN_GLOBAL_WINDOWS,
 };
 use beam::transforms::{Create, Reshuffle};
-use beam::windowing::{AccumulationMode, Sessions, Trigger, WindowInto};
+use beam::windowing::{AccumulationMode, FixedWindows, Sessions, Trigger, WindowInto};
 use model::pipeline as proto;
+use testing::{TestPipeline, passert};
 
 #[test]
 fn test_reshuffle_graph_expansion() {
@@ -178,6 +179,36 @@ fn test_reshuffle_shuffles_in_global_window_and_restores_on_output() {
     assert_eq!(decoded_trigger, Trigger::always());
 }
 
+#[tokio::test]
+async fn test_reshuffle_with_non_default_trigger_execution() {
+    let p = TestPipeline::new();
+    let words = p
+        .apply(
+            "Create",
+            Create::new(vec![
+                "apple".to_string(),
+                "banana".to_string(),
+                "cherry".to_string(),
+            ]),
+        )
+        .apply(
+            "WindowInto",
+            WindowInto::new(FixedWindows::of(Duration::from_secs(10)))
+                .with_trigger(
+                    Trigger::after_end_of_window().with_late_firings(Trigger::after_count(2)),
+                )
+                .with_accumulation_mode(AccumulationMode::Discarding)
+                .with_allowed_lateness(Duration::from_secs(60)),
+        );
+
+    let reshuffled = words.apply("ReshuffleExecution", Reshuffle::new());
+
+    passert::that("AssertReshuffled", &reshuffled)
+        .contains_in_any_order(["apple", "banana", "cherry"].map(String::from));
+
+    p.run().await.expect("pipeline execution succeeds");
+}
+
 #[test]
 fn test_create_reshuffles_only_more_than_one_element() {
     let p = Pipeline::new();
@@ -234,4 +265,13 @@ fn test_reshuffle_bucket_keys_stay_below_the_bucket_count() {
         .map(|shard| reshuffle_bucket(shard, 13))
         .collect();
     assert_eq!(keys, (0..13).collect::<BTreeSet<i64>>());
+}
+
+#[tokio::test]
+async fn test_bucketed_reshuffle_conserves_elements() {
+    let p = TestPipeline::new();
+    let numbers = p.apply("Create", Create::new((0..1_000_i64).collect::<Vec<_>>()));
+    let reshuffled = numbers.apply("BucketedReshuffle", Reshuffle::new().with_num_buckets(7));
+    passert::that("AssertBucketedReshuffle", &reshuffled).contains_in_any_order(0..1_000_i64);
+    p.run().await.expect("pipeline execution succeeds");
 }
