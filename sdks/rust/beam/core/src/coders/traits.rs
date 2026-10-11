@@ -96,6 +96,22 @@ impl FieldMapCache {
         let map = self.get::<T>(schema)?;
         T::decode_with_context(bytes, schema, map, state_reader)
     }
+
+    /// Converts `element` to `T`. A [`Row`](crate::schema::Row) maps by its own schema.
+    /// Encoded bytes decode with `schema`, the schema that wrote them.
+    pub fn from_row_element<T: crate::schema::BeamRow + DefaultCoder>(
+        &mut self,
+        element: crate::schema::RowElement,
+        schema: Option<&Arc<crate::schema::Schema>>,
+    ) -> Result<T, CoderError> {
+        match element {
+            crate::schema::RowElement::Row(row) => match self.get::<T>(Some(row.schema()))? {
+                Some(FieldMap::ByName(indices)) => Ok(T::from_row_mapped(&row, indices)?),
+                Some(FieldMap::Same) | None => Ok(T::from_row(&row)?),
+            },
+            crate::schema::RowElement::Encoded(bytes) => self.decode::<T>(&bytes, schema, None),
+        }
+    }
 }
 
 /// Encodes and decodes values of type `T` in a Beam wire format.
