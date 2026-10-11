@@ -71,6 +71,9 @@ pub mod logging {
     pub use harness::logging::init_logging;
 }
 
+#[cfg(feature = "expansion")]
+pub use expansion;
+
 #[cfg(feature = "testing")]
 pub use testing;
 
@@ -103,6 +106,9 @@ mod link {
 
     #[cfg(feature = "prism")]
     pub use prism as _;
+
+    #[cfg(feature = "expansion")]
+    pub use expansion as _;
 }
 
 /// All that an ordinary pipeline needs, in both styles.
