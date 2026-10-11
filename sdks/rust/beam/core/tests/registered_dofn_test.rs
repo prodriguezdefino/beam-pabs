@@ -23,11 +23,16 @@
 use std::collections::HashMap;
 
 use beam::internals::PipelineInternals;
-use beam::pipeline::{PipelineError, URN_PAR_DO, URN_RUST_DOFN};
+use beam::pipeline::{PipelineError, URN_PAR_DO, URN_RUST_DOFN, URN_RUST_DOFN_REGISTERED};
 use beam::prelude::*;
+use beam::transforms::sdf::{
+    OffsetRange, OffsetRangeTracker, ProcessContinuation, RestrictionTracker, SplittableDoFn,
+    SplittableParDo,
+};
 use model::pipeline as proto;
 use prost::Message;
 use serde::{Deserialize, Serialize};
+use testing::{TestPipeline, passert};
 
 /// Multiplies by `factor` and adds `offset`. `offset` is not serialized, so the worker
 /// gets its `Default`.
@@ -110,6 +115,84 @@ fn do_fn_spec(p: &Pipeline, name: &str) -> proto::FunctionSpec {
         .expect("do_fn")
 }
 
+#[tokio::test]
+async fn registered_dofn_runs_on_prism_without_a_registered_handler() {
+    let p = TestPipeline::new();
+    let out = p
+        .apply(Create::new("Create", vec![1i64, 2, 3]))
+        .apply(ParDo::new(
+            "Scale",
+            ScaleBy {
+                factor: 10,
+                offset: 5,
+            },
+        ));
+    passert::that("Scaled", &out).contains_in_any_order([10i64, 20, 30]);
+
+    assert_eq!(
+        do_fn_spec(p.pipeline(), "Scale").urn,
+        URN_RUST_DOFN_REGISTERED
+    );
+    // The assertions register closure handlers; the registered DoFn adds none.
+    assert!(!p.pipeline().transform_handlers().contains_key("Scale"));
+    p.run().await.expect("pipeline and assertions pass");
+}
+
+/// Emits `offset + i` for every `i` in `0..n`, splitting the range into pieces of 2.
+#[derive(Clone, Serialize, Deserialize, Register)]
+struct RangeFrom {
+    offset: i64,
+}
+
+impl SplittableDoFn for RangeFrom {
+    type In = i64;
+    type Out = i64;
+    type Restriction = OffsetRange;
+    type Tracker = OffsetRangeTracker;
+
+    fn initial_restriction(&self, n: &i64) -> Result<OffsetRange> {
+        Ok(OffsetRange::new(0, *n))
+    }
+
+    fn split_restriction(&self, _n: &i64, restriction: &OffsetRange) -> Vec<OffsetRange> {
+        restriction.sized_splits(2)
+    }
+
+    fn create_tracker(&self, restriction: &OffsetRange) -> OffsetRangeTracker {
+        OffsetRangeTracker::new(*restriction)
+    }
+
+    fn process_element(
+        &mut self,
+        _n: i64,
+        tracker: &OffsetRangeTracker,
+        ctx: &mut ProcessContext<'_, i64>,
+    ) -> Result<ProcessContinuation> {
+        let mut i = tracker.current_restriction().start;
+        while tracker.try_claim(&i) {
+            ctx.emit(self.offset + i)?;
+            i += 1;
+        }
+        Ok(ProcessContinuation::Stop)
+    }
+}
+
+#[tokio::test]
+async fn registered_splittable_dofn_runs_on_prism_without_a_registered_handler() {
+    let p = TestPipeline::new();
+    let out = p
+        .apply(Create::new("Create", vec![3i64, 2]))
+        .apply(SplittableParDo::new("Range", RangeFrom { offset: 100 }));
+    passert::that("Ranged", &out).contains_in_any_order([100i64, 101, 102, 100, 101]);
+
+    assert_eq!(
+        do_fn_spec(p.pipeline(), "Range").urn,
+        URN_RUST_DOFN_REGISTERED
+    );
+    assert!(!p.pipeline().transform_handlers().contains_key("Range"));
+    p.run().await.expect("pipeline and assertions pass");
+}
+
 #[test]
 fn the_default_id_is_the_module_path_and_the_type_name() {
     #[derive(Message)]
@@ -176,6 +259,61 @@ fn a_registration_error_fails_validate_and_keeps_the_rebuild_path() {
         );
         assert_eq!(do_fn_spec(&p, "Identity").urn, URN_RUST_DOFN, "{expected}");
     }
+}
+
+/// Emits each value times `step`, and counts the values of each key in state.
+#[derive(Clone, Serialize, Deserialize, Register)]
+struct StepPerKey {
+    step: i64,
+}
+
+#[derive(State)]
+struct Count {
+    seen: ValueState<i64>,
+}
+
+impl StatefulDoFn for StepPerKey {
+    type Key = String;
+    type Value = i64;
+    type Out = (String, i64);
+    type State = Count;
+    type Timer = NoTimers;
+
+    fn process_element(
+        &mut self,
+        key: &String,
+        value: i64,
+        state: &mut Count,
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        let seen = state.seen.read()?.unwrap_or(0);
+        state.seen.write(seen + 1)?;
+        ctx.emit((key.clone(), value * self.step))
+    }
+}
+
+#[tokio::test]
+async fn registered_stateful_dofn_runs_on_prism_without_a_registered_handler() {
+    let p = TestPipeline::new();
+    let input = [("a", 1i64), ("b", 2), ("a", 3)]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect::<Vec<_>>();
+    let out = p
+        .apply(Create::new("Create", input))
+        .apply(ParDo::new("Step", StepPerKey { step: 10 }));
+    passert::that("Stepped", &out).contains_in_any_order([
+        ("a".to_string(), 10i64),
+        ("b".to_string(), 20),
+        ("a".to_string(), 30),
+    ]);
+
+    assert_eq!(
+        do_fn_spec(p.pipeline(), "Step").urn,
+        URN_RUST_DOFN_REGISTERED
+    );
+    assert!(!p.pipeline().transform_handlers().contains_key("Step"));
+    p.run().await.expect("pipeline and assertions pass");
 }
 
 #[test]

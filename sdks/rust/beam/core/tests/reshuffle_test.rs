@@ -27,8 +27,9 @@ use beam::pipeline::{
     Pipeline, URN_GROUP_BY_KEY, URN_PAR_DO, URN_RESHUFFLE, URN_WINDOW_FN_GLOBAL_WINDOWS,
 };
 use beam::transforms::{Create, Reshuffle};
-use beam::windowing::{AccumulationMode, Sessions, Trigger, WindowInto};
+use beam::windowing::{AccumulationMode, FixedWindows, Sessions, Trigger, WindowInto};
 use model::pipeline as proto;
+use testing::{TestPipeline, passert};
 
 #[test]
 fn test_reshuffle_graph_expansion() {
@@ -176,6 +177,35 @@ fn test_reshuffle_shuffles_in_global_window_and_restores_on_output() {
     let decoded_trigger = Trigger::try_from(paired_ws.trigger.as_ref().expect("trigger present"))
         .expect("valid trigger proto");
     assert_eq!(decoded_trigger, Trigger::always());
+}
+
+#[tokio::test]
+async fn test_reshuffle_with_non_default_trigger_execution() {
+    let p = TestPipeline::new();
+    let words = p
+        .apply(Create::new(
+            "Create",
+            vec![
+                "apple".to_string(),
+                "banana".to_string(),
+                "cherry".to_string(),
+            ],
+        ))
+        .apply(
+            WindowInto::new("WindowInto", FixedWindows::of(Duration::from_secs(10)))
+                .with_trigger(
+                    Trigger::after_end_of_window().with_late_firings(Trigger::after_count(2)),
+                )
+                .with_accumulation_mode(AccumulationMode::Discarding)
+                .with_allowed_lateness(Duration::from_secs(60)),
+        );
+
+    let reshuffled = words.apply(Reshuffle::new("ReshuffleExecution"));
+
+    passert::that("AssertReshuffled", &reshuffled)
+        .contains_in_any_order(["apple", "banana", "cherry"].map(String::from));
+
+    p.run().await.expect("pipeline execution succeeds");
 }
 
 #[test]

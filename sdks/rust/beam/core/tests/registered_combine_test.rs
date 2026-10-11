@@ -27,13 +27,14 @@ use beam::internals::{
     BundleHandler, HandlerContext, PipelineInternals, registered_combine_handler,
 };
 use beam::pipeline::{
-    CombineStage, URN_COMBINE_FN_HANDLER_KEY, URN_COMBINE_GLOBALLY, URN_COMBINE_PER_KEY,
-    URN_PAR_DO, URN_RUST_COMBINE_FN_REGISTERED, stage_key,
+    CombineStage, URN_COMBINE_FN_HANDLER_KEY, URN_COMBINE_GLOBALLY, URN_COMBINE_GROUPED_VALUES,
+    URN_COMBINE_PER_KEY, URN_PAR_DO, URN_RUST_COMBINE_FN_REGISTERED, stage_key,
 };
 use beam::prelude::*;
 use model::pipeline as proto;
 use prost::Message;
 use serde::{Deserialize, Serialize};
+use testing::{TestPipeline, passert};
 
 /// Sums the values of a key, each times `factor`.
 #[derive(Clone, Serialize, Deserialize, Register)]
@@ -142,6 +143,56 @@ fn do_fn_spec(p: &Pipeline, name: &str) -> proto::FunctionSpec {
 
 fn kvs(pairs: &[(&str, i64)]) -> Vec<(String, i64)> {
     pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
+}
+
+#[tokio::test]
+async fn registered_combine_fn_runs_on_prism_without_registered_handlers() {
+    let p = TestPipeline::new();
+    let out = p
+        .apply(Create::new("Create", kvs(&[("a", 1), ("b", 2), ("a", 3)])))
+        .apply(CombinePerKey::new("Sum", ScaledSum { factor: 10 }));
+    passert::that("PerKeyTotals", &out).contains_in_any_order(kvs(&[("a", 40), ("b", 20)]));
+
+    assert_eq!(
+        combine_fn_spec(p.pipeline(), "Sum").urn,
+        URN_RUST_COMBINE_FN_REGISTERED
+    );
+    assert_eq!(
+        transform(p.pipeline(), "Sum/CombineGroupedValues")
+            .spec
+            .expect("spec")
+            .urn,
+        URN_COMBINE_GROUPED_VALUES
+    );
+    assert_eq!(
+        combine_fn_spec(p.pipeline(), "Sum/CombineGroupedValues"),
+        combine_fn_spec(p.pipeline(), "Sum")
+    );
+    // The assertions register closure handlers; the combine adds none.
+    assert!(
+        p.pipeline()
+            .transform_handlers()
+            .keys()
+            .all(|key| !key.starts_with("Sum")),
+        "{:?}",
+        p.pipeline().transform_handlers().keys()
+    );
+    p.run().await.expect("pipeline and assertions pass");
+}
+
+#[tokio::test]
+async fn registered_combine_fn_runs_globally() {
+    let p = TestPipeline::new();
+    let out = p
+        .apply(Create::new("Create", vec![1i64, 2, 3]))
+        .apply(CombineGlobally::new("Total", ScaledSum { factor: 2 }));
+    passert::that("Total", &out).contains_in_any_order([12i64]);
+
+    assert_eq!(
+        combine_fn_spec(p.pipeline(), "Total/Combine").urn,
+        URN_RUST_COMBINE_FN_REGISTERED
+    );
+    p.run().await.expect("pipeline and assertions pass");
 }
 
 #[test]
