@@ -51,7 +51,11 @@ class BeamRustPlugin implements Plugin<Project> {
     RustPrismTasks.register(build)
 
     project.tasks.named('build').configure { Task task -> task.dependsOn('buildWorkspace') }
-    project.tasks.named('check').configure { Task task -> task.dependsOn('fmtCheck', 'clippy') }
-    project.tasks.named('clean').configure { Task task -> task.dependsOn('cleanSdk') }
+    project.tasks.named('check').configure { Task task ->
+      task.dependsOn('fmtCheck', 'clippy', 'pythonScriptsTest')
+    }
+    project.tasks.named('clean').configure { Task task ->
+      task.dependsOn('cleanSdk')
+    }
   }
 }
