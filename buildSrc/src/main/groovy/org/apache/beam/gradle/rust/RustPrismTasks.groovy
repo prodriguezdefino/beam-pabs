@@ -103,14 +103,22 @@ class RustPrismTasks {
       configureTask(task, prismHostBinary, hostOs)
     }
 
-    build.testTasks.each { String pkg, TaskProvider<Exec> tp ->
+    build.testTasks.each { String pkg, TaskProvider<Task> tp ->
       if ('apache-beam-runner-prism' in build.workspace.crateClosure[pkg]) {
-        tp.configure { Exec task ->
+        build.crateExtraEnv
+            .computeIfAbsent(pkg, { new LinkedHashMap<String, String>() })
+            .put('BEAM_PRISM_PATH', prismHostBinary.absolutePath)
+        tp.configure { Task task ->
           task.dependsOn('fetchPrism')
           task.inputs.file(prismHostBinary).withPathSensitivity(PathSensitivity.NONE)
-          task.environment('BEAM_PRISM_PATH', prismHostBinary.absolutePath)
         }
       }
+    }
+
+    build.doctestExtraEnv.put('BEAM_PRISM_PATH', prismHostBinary.absolutePath)
+    build.testWorkspaceDoctestsTask?.configure { Task task ->
+      task.dependsOn('fetchPrism')
+      task.inputs.file(prismHostBinary).withPathSensitivity(PathSensitivity.NONE)
     }
 
     project.tasks.matching { Task task -> task.name == 'testBenchmarks' }.configureEach { Task task ->

@@ -18,17 +18,33 @@
 package org.apache.beam.gradle.rust
 
 import groovy.transform.CompileStatic
+import javax.inject.Inject
+import org.gradle.api.Action
 import org.gradle.api.Project
+import org.gradle.api.Task
 import org.gradle.api.file.ConfigurableFileTree
 import org.gradle.api.tasks.Exec
 import org.gradle.api.tasks.TaskProvider
+import org.gradle.process.ExecSpec
+import org.gradle.workers.WorkerExecutor
 
 /** The settings that the task groups of the Rust SDK build share. */
 @CompileStatic
 class RustSdkBuild {
+
+  /** Provides Gradle's {@link WorkerExecutor} to non-task classes. */
+  abstract static class RustWorkerAccess {
+    @Inject
+    RustWorkerAccess() {}
+
+    @Inject
+    abstract WorkerExecutor getWorkerExecutor()
+  }
+
   final Project project
   final RustSdkExtension extension
   final BeamVersions versions
+  final WorkerExecutor workerExecutor
   /** The root of the Cargo workspace. */
   final File rustDir
   final CargoWorkspace workspace
@@ -41,6 +57,8 @@ class RustSdkBuild {
   final List<String> featureScope
   /** The cargo arguments that select the crate of {@code -Ppkg}, or the workspace. */
   final List<String> cargoScope
+  /** The cargo arguments for {@code buildWorkspace}, keeping unified workspace features by default. */
+  final List<String> buildCargoScope
   /** The arguments of {@code -PtestArgs="<args>"}, which go to the test binary after {@code --}. */
   final List<String> testArgs
   /** With {@code --continue}, cargo runs each test binary and reports all failures. */
@@ -48,13 +66,23 @@ class RustSdkBuild {
 
   final List<File> modelProtoDirs
   final List<File> workspaceRootFiles
+  final File workspaceTestManifest
   /** The {@code test_<pkg>} task of each crate. */
-  final Map<String, TaskProvider<Exec>> testTasks = new LinkedHashMap<>()
+  final Map<String, TaskProvider<Task>> testTasks = new LinkedHashMap<>()
+  /** Extra environment variables passed to each crate's test run. */
+  final Map<String, Map<String, String>> crateExtraEnv = new LinkedHashMap<>()
+  /** Extra environment variables passed to {@code testWorkspaceDoctests}. */
+  final Map<String, String> doctestExtraEnv = new LinkedHashMap<>()
+  /** The {@code testWorkspaceDoctests} task. */
+  TaskProvider<Task> testWorkspaceDoctestsTask
+  /** Subdirectories under {@code sdks/rust} whose {@code *_test.py} files {@code pythonScriptsTest} runs. */
+  final List<String> pythonScriptSubdirs = new ArrayList<>(['scripts/cargo'])
 
   RustSdkBuild(Project project, RustSdkExtension extension) {
     this.project = project
     this.extension = extension
     versions = new BeamVersions(project)
+    workerExecutor = project.objects.newInstance(RustWorkerAccess).workerExecutor
     rustDir = new File(project.rootDir, 'sdks/rust')
 
     selectedPkg = (project.findProperty('pkg') ?: project.findProperty('package'))?.toString()
@@ -71,6 +99,7 @@ class RustSdkBuild {
     memberTomls.exclude('Cargo.toml', 'target/**', 'container/**', 'build/**', 'examples/build/**')
     workspace = new CargoWorkspace(
         rustDir, memberTomls.files.sort { File f -> f.absolutePath }, selectedPkg, onlyFeatures)
+    buildCargoScope = resolveBuildCargoScope()
 
     modelProtoDirs = [
       'model/pipeline/src/main/proto',
@@ -82,16 +111,70 @@ class RustSdkBuild {
       new File(rustDir, 'Cargo.lock'),
       new File(project.rootDir, 'gradle.properties'),
     ]
+    workspaceTestManifest = buildFile('test-results/cargo/workspace-test-manifest.tsv')
+  }
+
+  private List<String> resolveBuildCargoScope() {
+    if (selectedPkg == null || workspace.topoOrder.isEmpty()) {
+      return cargoScope
+    }
+    if (onlyFeatures != null || !workspace.crateDir.containsKey(selectedPkg)) {
+      return cargoScope
+    }
+    List<String> bins = (workspace.crateBinTargets[selectedPkg] ?: new ArrayList<String>())
+        .collectMany { String b -> ['--bin', b] }
+    List<String> libFlag = (Boolean.TRUE == workspace.crateHasLibTarget[selectedPkg] || bins.isEmpty())
+        ? ['--lib'] : new ArrayList<String>()
+    return workspaceScope + libFlag + bins
   }
 
   /** Registers an Exec task that runs {@code cargo <args>} in the workspace root. */
   TaskProvider<Exec> cargoTask(String name, String taskGroup, String text, List<String> args) {
+    Map<String, String> env = versions.cargoEnv()
     return project.tasks.register(name, Exec) { Exec task ->
       task.group = taskGroup
       task.description = text
       task.workingDir(rustDir)
+      task.environment(env)
       task.commandLine(['cargo'] + args)
     }
+  }
+
+  /** Prunes superseded executables, duplicate workspace rlibs and stale incremental state. */
+  void pruneCargoTarget(Map<String, Object> opts = [:]) {
+    List<File> targetDirs = [new File(rustDir, 'target'), buildFile('cross-target')]
+        .findAll { File d -> d.isDirectory() }
+    if (targetDirs.isEmpty()) {
+      return
+    }
+    List<String> cmd = [
+      'python3',
+      new File(rustDir, 'scripts/cargo/prune_target.py').absolutePath,
+      "--workspace-root=${rustDir.absolutePath}".toString(),
+    ]
+    targetDirs.each { File d -> cmd.add("--target-dir=${d.absolutePath}".toString()) }
+    if (workspaceTestManifest.isFile()) {
+      cmd.add("--manifest=${workspaceTestManifest.absolutePath}".toString())
+    }
+    if (opts.keepExe != null) {
+      cmd.add("--keep-exe=${opts.keepExe}".toString())
+    }
+    if (opts.keepLib != null) {
+      cmd.add("--keep-lib=${opts.keepLib}".toString())
+    }
+    if (opts.incrementalDays != null) {
+      cmd.add("--incremental-days=${opts.incrementalDays}".toString())
+    }
+    if (Boolean.TRUE == opts.dryRun) {
+      cmd.add('--dry-run')
+    }
+    if (Boolean.TRUE == opts.quietIfEmpty) {
+      cmd.add('--quiet-if-empty')
+    }
+    project.exec({ ExecSpec spec ->
+      spec.workingDir(rustDir)
+      spec.commandLine(cmd)
+    } as Action<ExecSpec>)
   }
 
   /** The crates of the default {@code test}: all but the benchmark crates. */
@@ -107,6 +190,13 @@ class RustSdkBuild {
       tree.exclude('python/**', '**/__pycache__/**', '**/.pytest_cache/**')
       return tree
     }
+  }
+
+  /** The library inputs of these crates. */
+  List<File> libInputs(Collection<String> packages) {
+    List<File> inputs = []
+    packages.each { String pkg -> inputs.addAll(workspace.libInputFiles(pkg)) }
+    return inputs
   }
 
   /** The library and test inputs of these crates. */
