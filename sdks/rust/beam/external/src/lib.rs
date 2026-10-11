@@ -20,10 +20,13 @@
 //! Cross-language transform support for remote Beam transforms (Java, Python, Go)
 //! through the Beam Portability Expansion Service.
 
-pub mod artifact;
-pub mod client;
-pub mod error;
-pub mod service;
+mod artifact;
+mod client;
+mod error;
+mod payload;
+mod service;
+mod splicing;
+mod transform;
 
 pub use artifact::{
     AutoServiceError, GCP_EXPANSION_SERVICE_TARGET, IO_EXPANSION_SERVICE_TARGET,
@@ -36,12 +39,18 @@ pub use artifact::{
 };
 pub use client::ExpansionClient;
 pub use error::ExpansionError;
-pub use service::*;
-
-/// Automated Java expansion service management.
-///
-/// JAR resolution and caching live in [`artifact`]. Process startup lives in [`service`].
-pub mod expansionx {
-    pub use super::artifact::*;
-    pub use super::service::*;
-}
+pub use payload::{
+    JavaBuilderMethodCall, encode_external_configuration_payload, encode_java_class_lookup_payload,
+    encode_schema_transform_payload,
+};
+pub use service::{JavaExpansionServer, find_java_executable};
+#[doc(hidden)]
+pub use service::{
+    MAX_STARTUP_ATTEMPTS, Readiness, StartupAttempt, drive_startup, drive_startup_blocking,
+};
+#[doc(hidden)]
+pub use splicing::{extract_input_components, splice_expansion_response};
+pub use transform::{
+    ExternalOutputs, ExternalSink, ExternalSource, ExternalTransform, MultiOutputSink,
+    MultiOutputSource,
+};
