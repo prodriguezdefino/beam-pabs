@@ -1,0 +1,279 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+//! Throughput of the fused operator chain, for measuring per-element harness cost.
+//!
+//! Run with:
+//!
+//! ```text
+//! ./gradlew :sdks:rust:harnessBenchmark -Pbench=chain_throughput
+//! ```
+//!
+//! The chain models WordCount's hot stage: split lines, pair each word with one, count at
+//! bundle end. The user code is trivial, so harness work between operators dominates. A second
+//! chain also increments a user counter for each word, which measures the cost of a metric.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant as WallClock;
+
+use beam::coders::{Coder, Context, StringUtf8Coder, WindowedValue, WindowedValueCoder};
+use beam::internals::{DoFnHandler, TransformFn};
+use beam::metrics::Metrics;
+use beam::transforms::{DoFn, FinishBundleContext, ProcessContext};
+use beam::windowing::{BoundedWindow, GlobalWindow};
+use harness::control::ControlClient;
+use harness::data::DataManager;
+use model::fn_execution::{
+    Elements, InstructionRequest, ProcessBundleRequest, RegisterRequest, elements,
+    instruction_request::Request,
+};
+
+#[path = "../tests/common/mod.rs"]
+mod common;
+use common::{DescriptorBuilder, SINK_ID, SOURCE_ID, TestBundle};
+
+const LINES: usize = 200_000;
+const WORDS_PER_LINE: usize = 10;
+const RUNS: usize = 5;
+
+#[derive(Clone)]
+struct SplitWords;
+
+impl DoFn for SplitWords {
+    type In = String;
+    type Out = String;
+
+    fn process_element(&mut self, line: String, out: &mut ProcessContext<String>) -> beam::Result {
+        line.split(' ')
+            .try_for_each(|word| out.emit(word.to_string()))
+    }
+}
+
+#[derive(Clone)]
+struct PairWithOne;
+
+impl DoFn for PairWithOne {
+    type In = String;
+    type Out = (String, i64);
+
+    fn process_element(
+        &mut self,
+        word: String,
+        out: &mut ProcessContext<(String, i64)>,
+    ) -> beam::Result {
+        out.emit((word, 1))
+    }
+}
+
+/// [`PairWithOne`] that also increments an unbound user counter for each word.
+#[derive(Clone)]
+struct PairAndCount;
+
+impl DoFn for PairAndCount {
+    type In = String;
+    type Out = (String, i64);
+
+    fn process_element(
+        &mut self,
+        word: String,
+        out: &mut ProcessContext<(String, i64)>,
+    ) -> beam::Result {
+        Metrics::counter("bench", "words").inc();
+        out.emit((word, 1))
+    }
+}
+
+/// Sums the counts it sees and emits the total when the bundle finishes.
+#[derive(Clone, Default)]
+struct CountAtFinish {
+    total: i64,
+}
+
+impl DoFn for CountAtFinish {
+    type In = (String, i64);
+    type Out = String;
+
+    fn start_bundle(&mut self) -> beam::Result {
+        self.total = 0;
+        Ok(())
+    }
+
+    fn process_element(
+        &mut self,
+        (_, count): (String, i64),
+        _out: &mut ProcessContext<String>,
+    ) -> beam::Result {
+        self.total += count;
+        Ok(())
+    }
+
+    fn finish_bundle(&mut self, out: &mut FinishBundleContext<'_, String>) -> beam::Result {
+        out.emit(
+            self.total.to_string(),
+            BoundedWindow::Global(GlobalWindow),
+            beam::Instant::END_OF_GLOBAL_WINDOW,
+        )
+    }
+}
+
+fn handler<F: DoFn>(f: F) -> TransformFn {
+    Arc::new(DoFnHandler::new(f))
+}
+
+fn encoded_input() -> Vec<u8> {
+    let coder = WindowedValueCoder::new(StringUtf8Coder);
+    let line = (0..WORDS_PER_LINE)
+        .map(|i| format!("word{i}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut bytes = Vec::new();
+    (0..LINES).for_each(|_| {
+        coder
+            .encode(
+                &WindowedValue::global(line.clone(), 0),
+                &mut bytes,
+                Context::Nested,
+            )
+            .expect("encode input line");
+    });
+    bytes
+}
+
+async fn run_bundle(
+    control: &ControlClient,
+    dm: &DataManager,
+    descriptor_id: &str,
+    bundle: usize,
+    input: Vec<u8>,
+) -> Duration {
+    let instruction_id = format!("bundle-{bundle}");
+    let feed = {
+        let dm = dm.clone();
+        let instruction_id = instruction_id.clone();
+        async move {
+            dm.handle_inbound_elements(Elements {
+                data: vec![elements::Data {
+                    instruction_id,
+                    transform_id: SOURCE_ID.to_string(),
+                    data: input,
+                    is_last: true,
+                }],
+                timers: Vec::new(),
+            })
+            .await;
+        }
+    };
+    let started = WallClock::now();
+    let (resp, ()) = tokio::join!(
+        control.handle_instruction(InstructionRequest {
+            instruction_id,
+            request: Some(Request::ProcessBundle(ProcessBundleRequest {
+                process_bundle_descriptor_id: descriptor_id.to_string(),
+                ..Default::default()
+            })),
+        }),
+        feed
+    );
+    let elapsed = started.elapsed();
+    assert!(resp.error.is_empty(), "bundle failed: {}", resp.error);
+    elapsed
+}
+
+/// Runs the chain with `pair` as its second step for [`RUNS`] bundles. Returns the best and
+/// all times in nanoseconds per word.
+async fn measure(pair: TransformFn) -> (f64, Vec<f64>) {
+    let handlers = HashMap::from([
+        ("split".to_string(), handler(SplitWords)),
+        ("pair".to_string(), pair),
+        ("count".to_string(), handler(CountAtFinish::default())),
+    ]);
+    let TestBundle {
+        mut data_out_rx,
+        data_manager,
+        control_client: control,
+        ..
+    } = TestBundle::new(handlers);
+    let descriptor = DescriptorBuilder::new("wordcount_chain")
+        .stage("split", "pcoll_input", "words")
+        .stage("pair", "words", "pairs")
+        .stage("count", "pairs", "total")
+        .sink(SINK_ID, "total")
+        .build();
+    let descriptor_id = descriptor.id.clone();
+    let reg = control
+        .handle_instruction(InstructionRequest {
+            instruction_id: "register".to_string(),
+            request: Some(Request::Register(RegisterRequest {
+                process_bundle_descriptor: vec![descriptor],
+            })),
+        })
+        .await;
+    assert!(reg.error.is_empty(), "register failed: {}", reg.error);
+
+    let input = encoded_input();
+    let words = (LINES * WORDS_PER_LINE) as f64;
+    let mut timings = Vec::with_capacity(RUNS);
+    for bundle in 0..RUNS {
+        let elapsed = run_bundle(
+            &control,
+            &data_manager,
+            &descriptor_id,
+            bundle,
+            input.clone(),
+        )
+        .await;
+        timings.push(elapsed.as_nanos() as f64 / words);
+        let mut output = Vec::new();
+        while let Ok(elements) = data_out_rx.try_recv() {
+            elements
+                .data
+                .into_iter()
+                .for_each(|d| output.extend(d.data));
+        }
+        let expected = (LINES * WORDS_PER_LINE).to_string();
+        assert!(
+            output
+                .windows(expected.len())
+                .any(|w| w == expected.as_bytes()),
+            "bundle {bundle} did not count {expected} words"
+        );
+    }
+    let best = timings.iter().copied().fold(f64::INFINITY, f64::min);
+    (best, timings)
+}
+
+#[tokio::main]
+async fn main() {
+    let words = LINES * WORDS_PER_LINE;
+    let (plain, plain_runs) = measure(handler(PairWithOne)).await;
+    let (counted, counted_runs) = measure(handler(PairAndCount)).await;
+    let runs = |all: &[f64]| all.iter().map(|t| format!("{t:.1}")).collect::<Vec<_>>();
+    println!(
+        "fused chain: {LINES} lines, {words} words; best {plain:.1} ns/word; all runs: {:?}",
+        runs(&plain_runs)
+    );
+    println!(
+        "fused chain with a user counter per word: best {counted:.1} ns/word (+{:.1} ns/word); \
+         all runs: {:?}",
+        counted - plain,
+        runs(&counted_runs)
+    );
+}
