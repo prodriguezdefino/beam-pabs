@@ -434,6 +434,17 @@ impl DescriptorBuilder {
     }
 
     /// Builds a source-to-sink descriptor exercising the raw-forwarding path.
+    /// Builds a descriptor without a sink: its stages emit to PCollections that nothing
+    /// consumes, like a terminal ParDo. Panics without a stage.
+    pub fn build_terminal(self) -> ProcessBundleDescriptor {
+        assert!(
+            !self.stages.is_empty(),
+            "descriptor '{}' has no intermediate transform",
+            self.id
+        );
+        self.checked()
+    }
+
     pub fn build_raw_forwarding(self) -> ProcessBundleDescriptor {
         assert!(
             self.stages.is_empty(),
