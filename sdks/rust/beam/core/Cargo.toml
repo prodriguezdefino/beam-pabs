@@ -49,9 +49,15 @@ derive = ["dep:derive"]
 [dev-dependencies]
 beam = { workspace = true, features = ["derive"] }
 model = { workspace = true }
+testutils = { workspace = true }
+# Integration tests only (core/tests/*.rs): `testing` depends on this crate, so it
+# cannot be used from `#[cfg(test)]` modules inside core/src.
+testing = { workspace = true, features = ["prism"] }
 proptest = { workspace = true }
 serde = { workspace = true }
 serde-saphyr = { workspace = true }
+tokio-stream = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true
