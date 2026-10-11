@@ -37,3 +37,4 @@ pub use time::Instant;
 pub mod options;
 pub mod pipeline;
 pub mod transforms;
+pub mod windowing;
