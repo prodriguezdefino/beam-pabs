@@ -23,6 +23,8 @@
 
 use std::collections::HashMap;
 
+pub use crate::values::SideInputKind;
+
 /// A foldhash `HashMap` for tables hashed per element. Crate-private, so public APIs
 /// keep the standard `HashMap` and foldhash stays out of the SDK's semver surface.
 pub(crate) type FastHashMap<K, V> = HashMap<K, V, foldhash::fast::RandomState>;
@@ -37,3 +39,21 @@ pub use crate::metrics::system::{
     data_channel_read_index, element_count, finish_bundle_msecs, process_bundle_msecs,
     sampled_byte_size, start_bundle_msecs, total_msecs, work_completed, work_remaining,
 };
+pub use crate::pipeline::graph::PipelineInner;
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for crate::pipeline::Pipeline {}
+}
+
+/// Runner and transform-crate plumbing for pipeline graph inspection; not part of the pipeline-author API.
+pub trait PipelineInternals: sealed::Sealed {
+    /// Acquires a lock on the pipeline's internal graph representation.
+    fn lock(&self) -> std::sync::MutexGuard<'_, PipelineInner>;
+}
+
+impl PipelineInternals for crate::pipeline::Pipeline {
+    fn lock(&self) -> std::sync::MutexGuard<'_, PipelineInner> {
+        self.lock()
+    }
+}

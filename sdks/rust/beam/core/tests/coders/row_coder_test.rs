@@ -19,7 +19,11 @@
 
 use std::sync::Arc;
 
-use beam::coders::{Coder, CoderError, Context, RowCoder};
+use beam::coders::{
+    BeamIterable, Coder, CoderError, Context, DefaultCoder, LengthPrefixed, RowCoder,
+    extract_row_schema,
+};
+use beam::pipeline::Pipeline;
 use beam::schema::{FieldType, FieldValue, Row, Schema};
 
 #[test]
@@ -312,4 +316,33 @@ fn a_value_of_the_wrong_type_is_rejected_on_encode() {
         matches!(&err, CoderError::Format(msg) if msg.starts_with("Atomic type mismatch: expected Int64")),
         "{err:?}"
     );
+}
+
+/// `BeamIterable` and `LengthPrefixed` pass the schema to the rows they hold, and register
+/// the coder of the row value with its schema.
+#[test]
+fn row_wrappers_decode_and_register_with_the_row_schema() {
+    let schema = Arc::new(Schema::builder().field("n", FieldType::int64()).build());
+    let row = Row::new(Arc::clone(&schema), vec![Some(FieldValue::Int64(7))]).unwrap();
+
+    let iterable = BeamIterable::from_vec(vec![row.clone()]);
+    let bytes = iterable.encode().unwrap();
+    assert!(BeamIterable::<Row>::decode(&bytes).is_err());
+    let decoded = BeamIterable::<Row>::decode_with_schema(&bytes, Some(&schema)).unwrap();
+    assert_eq!(decoded.into_vec().unwrap(), vec![row.clone()]);
+
+    let prefixed = LengthPrefixed(row.clone());
+    let bytes = prefixed.encode().unwrap();
+    let decoded = LengthPrefixed::<Row>::decode_with_schema(&bytes, Some(&schema)).unwrap();
+    assert_eq!(decoded.0, row);
+
+    let p = Pipeline::new();
+    let coders = |id: &str| {
+        let proto = p.to_proto();
+        extract_row_schema(id, &proto.components.unwrap_or_default().coders)
+    };
+    let iterable_id = BeamIterable::from_vec(vec![row]).register_value_coder(&p);
+    assert_eq!(coders(&iterable_id).as_deref(), Some(schema.as_ref()));
+    let prefixed_id = prefixed.register_value_coder(&p);
+    assert_eq!(coders(&prefixed_id).as_deref(), Some(schema.as_ref()));
 }
