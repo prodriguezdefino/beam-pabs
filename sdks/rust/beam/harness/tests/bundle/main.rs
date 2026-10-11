@@ -17,7 +17,14 @@
  * under the License.
  */
 
+#[path = "../common/mod.rs"]
+mod common;
+
+mod bundle_finalization_test;
 mod bundle_split_test;
 mod chain_internals_test;
 mod handler_lookup_test;
+mod processor_cache_test;
+mod roots_test;
+mod row_framing_test;
 mod to_string_test;

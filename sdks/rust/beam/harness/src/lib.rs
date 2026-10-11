@@ -21,6 +21,8 @@
 //! logging streams, and bundle execution).
 
 pub mod bundle_processor;
+mod bundle_threads;
+pub mod control;
 pub mod data;
 pub mod grpc;
 pub mod logging;
@@ -33,6 +35,7 @@ pub mod user_state;
 pub use model;
 
 pub use bundle_processor::BundleProcessor;
+pub use control::ControlClient;
 pub use data::DataManager;
 pub use logging::{
     BeamFnLoggingHandle, BeamFnLoggingLayer, LoggingClient, create_layer, init_logging,
