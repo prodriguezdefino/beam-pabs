@@ -125,6 +125,20 @@ impl ResourceHints {
         ResourceHints { hints: merged }
     }
 
+    /// Merges `inner` hints on top of `self`.
+    pub(crate) fn merge_inner(mut self, inner: ResourceHints) -> Self {
+        if inner.is_empty() {
+            return self;
+        }
+        if self.is_empty() {
+            return inner;
+        }
+        for (urn, payload) in inner.hints {
+            merge_hint_entry(&mut self.hints, urn, Cow::Owned(payload));
+        }
+        self
+    }
+
     /// Parses `<name_or_urn>=<value>` into a canonical URN and payload.
     pub fn parse_hint(raw: &str) -> Result<(String, Vec<u8>), ResourceHintError> {
         let (key, value) = raw

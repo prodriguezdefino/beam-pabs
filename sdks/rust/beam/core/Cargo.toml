@@ -36,6 +36,7 @@ rust_decimal = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+async-trait = { workspace = true }
 clap = { workspace = true }
 inventory = { workspace = true }
 serde_json = { workspace = true }

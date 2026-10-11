@@ -19,22 +19,29 @@
 
 //! Core types, traits, and pipeline model for the Apache Beam Rust SDK.
 //!
+//! - [`values`] — what flows through a pipeline: `PBegin`, `PCollection`, `PDone`.
+//! - [`transforms`] — the [`PTransform`](transforms::PTransform) trait that builds the graph.
 //! - [`coders`] — how elements are serialized on the wire.
-//! - [`error`] — the standard error type.
-//! - [`metrics`] — pipeline metrics API.
-//! - [`schema`] — the language-independent schema of rows.
-
-mod error;
+//! - [`pipeline`] — the graph itself, and its translation to the Runner API.
+//! - [`options`] and [`runners`] — configuring and dispatching execution.
+//! - [`internals`] — runner and worker-harness plumbing. Pipeline authors do not need it.
+//!
+//! Start with [`prelude`]. This crate uses `apply` style (`pcoll.apply(.., Map::new())`); the
+//! `apache-beam-fluent` crate adds `pcoll.map(..)`, and the `apache-beam` prelude has both.
 
 pub mod coders;
+mod error;
 pub mod internals;
 pub mod metrics;
+pub mod options;
+pub mod pipeline;
+pub mod prelude;
+pub mod runners;
 pub mod schema;
-pub mod time;
+pub(crate) mod time;
+pub mod transforms;
+pub mod values;
+pub mod windowing;
 
 pub use error::{Error, Result};
 pub use time::Instant;
-pub mod options;
-pub mod pipeline;
-pub mod transforms;
-pub mod windowing;
