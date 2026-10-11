@@ -55,5 +55,9 @@ tokio = { workspace = true, features = ["full", "test-util"] }
 name = "boot"
 path = "src/boot.rs"
 
+[[bench]]
+name = "chain_throughput"
+harness = false
+
 [lints]
 workspace = true
