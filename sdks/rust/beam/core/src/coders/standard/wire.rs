@@ -129,11 +129,14 @@ pub(crate) fn read_f64(reader: &mut &[u8]) -> Result<f64, std::io::Error> {
 }
 
 /// Encodes big-endian milliseconds with the sign bit flipped, so byte order matches time order.
-pub(crate) fn encode_timestamp(millis: i64) -> [u8; 8] {
+#[doc(hidden)]
+pub fn encode_timestamp(millis: i64) -> [u8; 8] {
     ((millis as u64) ^ (1 << 63)).to_be_bytes()
 }
 
-pub(crate) fn decode_timestamp(bytes: [u8; 8]) -> i64 {
+/// Decodes a timestamp written by [`encode_timestamp`].
+#[doc(hidden)]
+pub fn decode_timestamp(bytes: [u8; 8]) -> i64 {
     (u64::from_be_bytes(bytes) ^ (1 << 63)) as i64
 }
 

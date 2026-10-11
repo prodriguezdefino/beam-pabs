@@ -23,12 +23,12 @@ mod wire;
 
 use wire::unexpected_eof;
 pub(crate) use wire::with_scratch_buffer;
-pub use wire::{consumed, take_bytes};
+pub use wire::{consumed, decode_timestamp, encode_timestamp, take_bytes};
 pub(crate) use wire::{
-    decode_iterable, decode_timestamp, encode_timestamp, read_array, read_be_i32, read_bool,
-    read_bytes, read_count, read_exact_vec, read_f32, read_f64, read_i8, read_i16, read_i32_varint,
-    read_nested_bytes, read_timestamp, read_varint_len, state_backed_iterable_message, write_bool,
-    write_bytes, write_count, write_f32, write_f64, write_i8, write_i16, write_i32_varint,
+    decode_iterable, read_array, read_be_i32, read_bool, read_bytes, read_count, read_exact_vec,
+    read_f32, read_f64, read_i8, read_i16, read_i32_varint, read_nested_bytes, read_timestamp,
+    read_varint_len, state_backed_iterable_message, write_bool, write_bytes, write_count,
+    write_f32, write_f64, write_i8, write_i16, write_i32_varint,
 };
 
 use std::io::Write;
