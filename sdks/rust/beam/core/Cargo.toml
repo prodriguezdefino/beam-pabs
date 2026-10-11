@@ -42,6 +42,7 @@ derive = ["dep:derive"]
 [dev-dependencies]
 beam = { workspace = true, features = ["derive"] }
 model = { workspace = true }
+proptest = { workspace = true }
 
 [lints]
 workspace = true
