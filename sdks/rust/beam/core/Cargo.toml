@@ -28,15 +28,20 @@ description = "Core abstractions and pipeline model for Apache Beam Rust SDK"
 name = "beam"
 
 [dependencies]
+chrono = { workspace = true }
 model = { workspace = true }
 derive = { workspace = true, optional = true }
 bytes = { workspace = true }
-chrono = { workspace = true }
 rust_decimal = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+clap = { workspace = true }
+inventory = { workspace = true }
+serde_json = { workspace = true }
+prost-types = { workspace = true }
 tracing = { workspace = true }
+tokio = { workspace = true }
 foldhash = { workspace = true }
 
 [features]
@@ -44,12 +49,12 @@ foldhash = { workspace = true }
 derive = ["dep:derive"]
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
 beam = { package = "apache-beam-core", path = ".", features = ["derive"] }
 model = { workspace = true }
 proptest = { workspace = true }
 serde = { workspace = true }
 serde-saphyr = { workspace = true }
-serde_json = { workspace = true }
 
 [lints]
 workspace = true
