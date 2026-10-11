@@ -62,6 +62,10 @@ pub use model;
 #[cfg(feature = "fluent")]
 pub use fluent;
 
+#[cfg(feature = "external")]
+pub use external;
+
+/// Logging setup for pipeline binaries.
 #[cfg(feature = "harness")]
 pub mod logging {
     pub use harness::logging::init_logging;
