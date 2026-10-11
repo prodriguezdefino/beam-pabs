@@ -26,10 +26,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use beam::coders::{
-    BoolCoder, BytesCoder, Coder, Context, DoubleCoder, IntervalWindow, IntervalWindowCoder,
-    IterableCoder, KvCoder, NullableCoder, PageStream, PaneInfo, ParamWindowedValueCoder, RowCoder,
-    StateStreamReader, StringUtf8Coder, Timing, VarIntCoder, WindowedValue, WindowedValueCoder,
-    decode_beam_iterable,
+    BoolCoder, BytesCoder, Coder, CoderError, Context, DoubleCoder, IntervalWindow,
+    IntervalWindowCoder, IterableCoder, KvCoder, NullableCoder, PageStream, PaneInfo,
+    ParamWindowedValueCoder, RowCoder, StateStreamReader, StringUtf8Coder, Timing, VarIntCoder,
+    WindowedValue, WindowedValueCoder, decode_beam_iterable,
 };
 use beam::schema::{BeamField, FieldType, FieldValue, Row, Schema, TypeInfo, URN_DECIMAL};
 use beam_model::pipeline as proto;
@@ -107,12 +107,12 @@ impl YamlState {
 }
 
 impl StateStreamReader for YamlState {
-    fn stream_runner_pages(&self, token: &[u8]) -> Result<PageStream, String> {
+    fn stream_runner_pages(&self, token: &[u8]) -> Result<PageStream, CoderError> {
         let page = self
             .0
             .get(token)
             .cloned()
-            .ok_or_else(|| format!("no state for token {token:?}"))?;
+            .ok_or_else(|| CoderError::Format(format!("no state for token {token:?}")))?;
         Ok(Box::new(std::iter::once(Ok(page))))
     }
 }
@@ -132,7 +132,7 @@ fn assert_state_backed_roundtrip<T, C>(
     let decoder = element_coder.clone();
     let decoded = decode_beam_iterable(
         &mut &expected_bytes[..],
-        Arc::new(move |r| decoder.decode(r, Context::Nested)),
+        move |r| decoder.decode(r, Context::Nested),
         Some(state),
     )
     .unwrap()
