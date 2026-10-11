@@ -32,6 +32,7 @@ mod channel_split_test;
 mod data_sampling_test;
 mod elements_embedding_test;
 mod execution_time_test;
+mod expansion_replay_test;
 mod finalization_logging_test;
 mod handler_lookup_test;
 mod harness_monitoring_test;
