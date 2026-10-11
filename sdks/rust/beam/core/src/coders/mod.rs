@@ -21,6 +21,7 @@
 //! exchange PCollection elements, window metadata and KV records.
 
 mod composite;
+pub(crate) mod display;
 mod header;
 mod iterable;
 mod metadata;
