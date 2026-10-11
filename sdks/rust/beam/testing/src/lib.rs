@@ -19,7 +19,14 @@
 
 //! Tools for testing Apache Beam pipelines.
 //!
-//! - [`require_env!`] / [`env_or_skip`] — visible, CI-enforceable skipping for tests
+//! As a test-support crate, assertion helpers and drop guards intentionally panic
+//! on test failure.
+//!
+//! - [`passert`] — assertions that run inside the pipeline and fail the job if a
+//!   collection does not match expectations.
+//! - [`TestPipeline`] — pipeline configured from the environment. After it runs, it
+//!   verifies that all assertions ran. It panics if it is never run.
+//! - [`require_env!`] / [`env_or_skip`] — visible, CI-enforceable skip messages for tests
 //!   that need external resources named by environment variables.
 //!
 //! Pipeline authors reach this crate as `beam::testing` through the `testing` feature
@@ -33,7 +40,8 @@
 //! # Running on Prism without the facade
 //!
 //! A crate that depends on `testing` directly, not through the facade, can enable its
-//! `prism` feature. This links the Prism runner.
+//! `prism` feature. This links the Prism runner, so that [`TestPipeline::new`] (whose
+//! default runner is `prism`) finds it:
 //!
 //! ```toml
 //! [dev-dependencies]
@@ -43,8 +51,14 @@
 //! The runner finds the Prism binary through `BEAM_PRISM_PATH`, or downloads it.
 
 mod env;
+pub mod passert;
+mod test_pipeline;
 
 pub use env::{EnvRequirement, STRICT_ENV_VAR, check_env, env_or_skip};
+pub use test_pipeline::{
+    TEST_PIPELINE_OPTIONS_ENV, TestPipeline, TestPipelineError, parse_test_pipeline_options,
+    test_pipeline_options,
+};
 
 /// Force-links the runner so that its `inventory` registration stays.
 #[cfg(feature = "prism")]
