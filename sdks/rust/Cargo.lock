@@ -102,6 +102,7 @@ dependencies = [
  "apache-beam-core",
  "apache-beam-derive",
  "apache-beam-model",
+ "async-trait",
  "bytes",
  "chrono",
  "clap",
