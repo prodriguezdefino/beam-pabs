@@ -28,15 +28,22 @@ description = "Core abstractions and pipeline model for Apache Beam Rust SDK"
 name = "beam"
 
 [dependencies]
-chrono = { workspace = true }
 model = { workspace = true }
+derive = { workspace = true, optional = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
+rust_decimal = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
+[features]
+# Opt-in, mirroring `serde`'s `derive` feature.
+derive = ["dep:derive"]
+
 [dev-dependencies]
-beam = { package = "apache-beam-core", path = "." }
+beam = { package = "apache-beam-core", path = ".", features = ["derive"] }
 model = { workspace = true }
 
 [lints]
