@@ -19,12 +19,12 @@
 
 //! Tests for the `CombineFn` adapters: `on`, `map_output` and `Compose`.
 
-mod combine_support;
+mod support;
 
 use beam::prelude::*;
 use beam::schema::BeamRow;
 use beam::transforms::{CombineFn, CombinePerKey, Compose, Max, Min, Sum};
-use combine_support::combine_in_parts;
+use support::combine::combine_in_parts;
 
 #[derive(Clone, Debug, PartialEq, BeamRow)]
 #[beam(crate = "::beam")]

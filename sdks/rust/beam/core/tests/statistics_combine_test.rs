@@ -20,10 +20,10 @@
 //! Tests for the `Mean`, `Top`, `Sample` and `AnySample` combine functions, and for `Decimal`
 //! in the numeric combine functions.
 
-mod combine_support;
+mod support;
 
-use combine_support::combine_in_parts;
 use std::collections::HashSet;
+use support::combine::combine_in_parts;
 
 use beam::prelude::*;
 use beam::transforms::{AnySample, CombineFn, Max, Mean, Min, Sample, Sum, Top};

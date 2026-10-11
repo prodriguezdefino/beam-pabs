@@ -24,16 +24,17 @@ use std::io::{Read, Write};
 
 use beam::coders::{BeamIterable, Coder, CoderError, CoderRegistry, Context, DefaultCoder};
 use beam::internals::{
-    BundleHandler, HandlerContext, PipelineInternals, registered_combine_handler,
+    BundleHandler, HandlerContext, PipelineInternals, TypedElement, registered_combine_handler,
 };
 use beam::pipeline::{
-    CombineStage, URN_COMBINE_GLOBALLY, URN_COMBINE_PER_KEY, URN_PAR_DO, URN_RUST_COMBINE_FN,
-    URN_RUST_COMBINE_FN_REGISTERED, stage_key,
+    CombineStage, URN_COMBINE_GLOBALLY, URN_COMBINE_GROUPED_VALUES, URN_COMBINE_PER_KEY,
+    URN_PAR_DO, URN_RUST_COMBINE_FN, URN_RUST_COMBINE_FN_REGISTERED, stage_key,
 };
 use beam::prelude::*;
 use model::pipeline as proto;
 use prost::Message;
 use serde::{Deserialize, Serialize};
+use testing::{TestPipeline, passert};
 
 /// Sums the values of a key, each times `factor`.
 #[derive(Clone, Serialize, Deserialize, Register)]
@@ -144,6 +145,56 @@ fn kvs(pairs: &[(&str, i64)]) -> Vec<(String, i64)> {
     pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
 }
 
+#[tokio::test]
+async fn registered_combine_fn_runs_on_prism_without_registered_handlers() {
+    let p = TestPipeline::new();
+    let out = p
+        .apply("Create", Create::new(kvs(&[("a", 1), ("b", 2), ("a", 3)])))
+        .apply("Sum", CombinePerKey::new(ScaledSum { factor: 10 }));
+    passert::that("PerKeyTotals", &out).contains_in_any_order(kvs(&[("a", 40), ("b", 20)]));
+
+    assert_eq!(
+        combine_fn_spec(p.pipeline(), "Sum").urn,
+        URN_RUST_COMBINE_FN_REGISTERED
+    );
+    assert_eq!(
+        transform(p.pipeline(), "Sum/CombineGroupedValues")
+            .spec
+            .expect("spec")
+            .urn,
+        URN_COMBINE_GROUPED_VALUES
+    );
+    assert_eq!(
+        combine_fn_spec(p.pipeline(), "Sum/CombineGroupedValues"),
+        combine_fn_spec(p.pipeline(), "Sum")
+    );
+    // The assertions register closure handlers; the combine adds none.
+    assert!(
+        p.pipeline()
+            .transform_handlers()
+            .keys()
+            .all(|key| !key.starts_with("Sum")),
+        "{:?}",
+        p.pipeline().transform_handlers().keys()
+    );
+    p.run().await.expect("pipeline and assertions pass");
+}
+
+#[tokio::test]
+async fn registered_combine_fn_runs_globally() {
+    let p = TestPipeline::new();
+    let out = p
+        .apply("Create", Create::new(vec![1i64, 2, 3]))
+        .apply("Total", CombineGlobally::new(ScaledSum { factor: 2 }));
+    passert::that("AssertTotal", &out).contains_in_any_order([12i64]);
+
+    assert_eq!(
+        combine_fn_spec(p.pipeline(), "Total/Combine").urn,
+        URN_RUST_COMBINE_FN_REGISTERED
+    );
+    p.run().await.expect("pipeline and assertions pass");
+}
+
 #[test]
 fn a_key_coder_the_worker_cannot_delimit_keeps_the_rebuild_path() {
     let p = Pipeline::new();
@@ -193,41 +244,155 @@ fn run_bundle(handler: &dyn BundleHandler, elements: &[Vec<u8>]) -> Vec<Vec<u8>>
     sink
 }
 
-#[test]
-fn the_stages_combine_keys_as_encoded_bytes() {
+/// Runs `handler` over `elements` via `process_value` and asserts whether each slot was taken.
+fn run_fused_bundle<T: DefaultCoder>(
+    handler: &dyn BundleHandler,
+    elements: Vec<T>,
+    expect_taken: bool,
+) -> Vec<Vec<u8>> {
+    let mut instance = handler.instantiate();
+    let mut sink = Vec::<Vec<u8>>::new();
+    instance.setup().expect("setup");
+    instance.start_bundle().expect("start_bundle");
+    {
+        let mut ctx = HandlerContext::new(&mut sink);
+        for element in elements {
+            let mut slot = Some(element);
+            instance
+                .process_value(TypedElement::new(&mut slot), &mut ctx)
+                .expect("process_value");
+            assert_eq!(slot.is_none(), expect_taken);
+        }
+        instance.finish_bundle(&mut ctx).expect("finish_bundle");
+    }
+    instance.teardown().expect("teardown");
+    sink
+}
+
+/// Asserts that `Precombine` takes fused `(K, i64)` values for key type `K`.
+fn assert_standard_key_takes_fused<K>(k1: K, k2: K)
+where
+    K: DefaultCoder + Clone + Eq + Ord + std::hash::Hash + std::fmt::Debug,
+{
     let p = Pipeline::new();
     let _ = p
-        .apply("Create", Create::new(kvs(&[("a", 1)])))
+        .apply("Create", Create::new(vec![(k1.clone(), 1i64)]))
+        .apply("Sum", CombinePerKey::new(ScaledSum { factor: 10 }));
+    let combine_fn = combine_fn_spec(&p, "Sum");
+    let precombine =
+        registered_combine_handler(&combine_fn.payload, CombineStage::Precombine.as_str())
+            .expect("precombine");
+    let inputs = vec![(k1.clone(), 1i64), (k2.clone(), 2), (k1.clone(), 3)];
+    let mut partials = run_fused_bundle(precombine.as_ref(), inputs, true)
+        .iter()
+        .map(|bytes| <(K, i64)>::decode(bytes).expect("decode"))
+        .collect::<Vec<_>>();
+    partials.sort();
+    let mut expected = if k1 == k2 {
+        vec![(k1, 60)]
+    } else {
+        vec![(k1, 40), (k2, 20)]
+    };
+    expected.sort();
+    assert_eq!(partials, expected);
+}
+
+#[test]
+fn standard_keys_take_fused_values_without_encoding() {
+    assert_standard_key_takes_fused((), ());
+    assert_standard_key_takes_fused(false, true);
+    assert_standard_key_takes_fused(1i32, 2i32);
+    assert_standard_key_takes_fused(1i64, 2i64);
+    assert_standard_key_takes_fused("a".to_string(), "b".to_string());
+    assert_standard_key_takes_fused(b"a".to_vec(), b"b".to_vec());
+}
+
+#[derive(BeamRow, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct RowKey {
+    group: String,
+    bucket: i32,
+}
+
+#[test]
+fn the_stages_combine_keys_as_encoded_bytes() {
+    let k1 = RowKey {
+        group: "a".to_string(),
+        bucket: 1,
+    };
+    let k2 = RowKey {
+        group: "b".to_string(),
+        bucket: 2,
+    };
+    let p = Pipeline::new();
+    let _ = p
+        .apply("Create", Create::new(vec![(k1.clone(), 1i64)]))
         .apply("Sum", CombinePerKey::new(ScaledSum { factor: 10 }));
     let combine_fn = combine_fn_spec(&p, "Sum/CombineGroupedValues");
 
     let precombine =
         registered_combine_handler(&combine_fn.payload, CombineStage::Precombine.as_str())
             .expect("precombine");
-    let inputs = kvs(&[("a", 1), ("b", 2), ("a", 3)])
+    let raw = vec![(k1.clone(), 1i64), (k2.clone(), 2), (k1.clone(), 3)];
+    let encoded = raw
         .iter()
         .map(|kv| kv.encode().expect("encode"))
         .collect::<Vec<_>>();
-    let mut partials = run_bundle(precombine.as_ref(), &inputs)
-        .iter()
-        .map(|bytes| <(String, i64)>::decode(bytes).expect("decode"))
-        .collect::<Vec<_>>();
-    partials.sort();
-    assert_eq!(partials, kvs(&[("a", 40), ("b", 20)]));
+    for emitted in [
+        run_bundle(precombine.as_ref(), &encoded),
+        run_fused_bundle(precombine.as_ref(), raw, false),
+    ] {
+        let mut partials = emitted
+            .iter()
+            .map(|bytes| <(RowKey, i64)>::decode(bytes).expect("decode"))
+            .collect::<Vec<_>>();
+        partials.sort();
+        assert_eq!(partials, vec![(k1.clone(), 40), (k2.clone(), 20)]);
+    }
 
     let combine = registered_combine_handler(
         &combine_fn.payload,
         CombineStage::CombineGroupedValues.as_str(),
     )
     .expect("combine_grouped_values");
-    let grouped = ("a".to_string(), BeamIterable::from_vec(vec![4i64, 5]))
+    let grouped = (k1.clone(), BeamIterable::from_vec(vec![4i64, 5]))
         .encode()
         .expect("encode");
     let combined = run_bundle(combine.as_ref(), &[grouped])
         .iter()
-        .map(|bytes| <(String, i64)>::decode(bytes).expect("decode"))
+        .map(|bytes| <(RowKey, i64)>::decode(bytes).expect("decode"))
         .collect::<Vec<_>>();
-    assert_eq!(combined, kvs(&[("a", 90)]));
+    assert_eq!(combined, vec![(k1, 90)]);
+}
+
+#[tokio::test]
+async fn row_key_runs_on_prism_without_registered_handlers() {
+    let k1 = RowKey {
+        group: "a".to_string(),
+        bucket: 1,
+    };
+    let k2 = RowKey {
+        group: "b".to_string(),
+        bucket: 2,
+    };
+    let p = TestPipeline::new();
+    let out = p
+        .apply(
+            "Create",
+            Create::new(vec![(k1.clone(), 1i64), (k2.clone(), 2), (k1.clone(), 3)]),
+        )
+        .apply("Sum", CombinePerKey::new(ScaledSum { factor: 10 }));
+    passert::that("Totals", &out).contains_in_any_order(vec![(k1, 40), (k2, 20)]);
+    assert_eq!(
+        combine_fn_spec(p.pipeline(), "Sum").urn,
+        URN_RUST_COMBINE_FN_REGISTERED
+    );
+    assert!(
+        p.pipeline()
+            .transform_handlers()
+            .keys()
+            .all(|key| !key.starts_with("Sum"))
+    );
+    p.run().await.expect("pipeline and assertions pass");
 }
 
 #[test]

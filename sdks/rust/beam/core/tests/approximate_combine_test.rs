@@ -20,12 +20,12 @@
 //! Tests for `ApproximateQuantiles` and `ApproximateUnique`. The quantile cases and the
 //! buffer table are the reference values of the Java SDK, so both SDKs give the same results.
 
-mod combine_support;
+mod support;
 
 use beam::coders::DefaultCoder;
 use beam::prelude::*;
 use beam::transforms::{ApproximateQuantiles, ApproximateUnique, Compare};
-use combine_support::combine_in_parts;
+use support::combine::combine_in_parts;
 
 /// Runs `combine_fn` with 1, 2 and 7 partial accumulators, so the result does not depend on
 /// how the runner splits the input.
