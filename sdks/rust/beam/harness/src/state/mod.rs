@@ -27,7 +27,7 @@ pub(crate) mod channel;
 pub(crate) mod side_input_cache;
 pub(crate) mod tables;
 
-pub use cache::{CacheTokens, DEFAULT_STATE_CACHE_BYTES, StateCache};
+pub use cache::{CacheStats, CacheTokens, DEFAULT_STATE_CACHE_BYTES, StateCache};
 pub use channel::{StateChannel, StateClients};
 pub(crate) use side_input_cache::split_concatenated_elements;
 pub use side_input_cache::{FnApiSideInputReader, SideInputSpecs};

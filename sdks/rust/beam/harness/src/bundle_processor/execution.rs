@@ -42,6 +42,12 @@ pub enum BundleError {
     /// Indicates a missing DATA_SOURCE transform in the descriptor.
     #[error("Missing DATA_SOURCE transform in ProcessBundleDescriptor '{0}'")]
     MissingSource(String),
+    /// The descriptor reads more than one DATA_SOURCE transform. The worker reads one.
+    #[error("ProcessBundleDescriptor '{descriptor}' has more than one DATA_SOURCE: {sources:?}")]
+    MultipleSources {
+        descriptor: String,
+        sources: Vec<String>,
+    },
     /// Indicates a missing transform handler in the registry.
     #[error("Missing transform handler: {0}")]
     MissingHandler(String),

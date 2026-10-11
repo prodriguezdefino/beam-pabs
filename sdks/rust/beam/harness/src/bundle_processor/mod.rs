@@ -40,6 +40,7 @@ mod timers;
 mod tracker;
 
 pub use beam::internals::TransformFn;
+pub use cache::{BATCH_PROCESSOR_IDLE_TIMEOUT, STREAMING_PROCESSOR_IDLE_TIMEOUT};
 pub use execution::BundleError;
 pub use handlers::{lookup_handler, resolve_handler};
 pub use processor::{BundleProcessor, URN_DATA_SINK, URN_DATA_SOURCE};
@@ -76,7 +77,9 @@ pub use chain::instances::{Downstream, Instances};
 #[doc(hidden)]
 pub use decoding::PortFraming;
 #[doc(hidden)]
-pub use processor::{PROGRESS_SYNC_INTERVAL, spawn_finalizer_sweeper};
+pub use processor::{
+    PROGRESS_SYNC_INTERVAL, spawn_finalizer_sweeper, spawn_idle_processor_sweeper,
+};
 #[doc(hidden)]
 pub use roots::RootEncoder;
 #[doc(hidden)]

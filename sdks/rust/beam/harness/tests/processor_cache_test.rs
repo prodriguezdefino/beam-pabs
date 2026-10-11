@@ -102,6 +102,14 @@ struct Worker {
 
 impl Worker {
     async fn start() -> Self {
+        Self::start_with(windowed_linear_descriptor(DESCRIPTOR_ID), None).await
+    }
+
+    /// Starts a worker for `descriptor`, with `idle_timeout` when it is set.
+    async fn start_with(
+        descriptor: model::fn_execution::ProcessBundleDescriptor,
+        idle_timeout: Option<Duration>,
+    ) -> Self {
         let log = Arc::new(Mutex::new(Vec::new()));
         let prototype: TransformFn = Arc::new(Recorder {
             id: 0,
@@ -110,17 +118,21 @@ impl Worker {
         });
         let (tx, outbound) = mpsc::channel(64);
         let data = DataManager::new(tx);
-        let processor = Arc::new(BundleProcessor::with_handlers(
+        let processor = BundleProcessor::with_handlers(
             data.clone(),
             HashMap::from([(STAGE_ID.to_string(), prototype)]),
-        ));
+        );
+        let processor = Arc::new(match idle_timeout {
+            Some(timeout) => processor.with_processor_idle_timeout(timeout),
+            None => processor,
+        });
         let control = ControlClient::new(Arc::clone(&processor));
 
         let registered = control
             .handle_instruction(InstructionRequest {
                 instruction_id: "register".to_string(),
                 request: Some(Request::Register(RegisterRequest {
-                    process_bundle_descriptor: vec![windowed_linear_descriptor(DESCRIPTOR_ID)],
+                    process_bundle_descriptor: vec![descriptor],
                 })),
             })
             .await;
@@ -265,4 +277,42 @@ async fn shutdown_tears_down_idle_instances() {
     worker.processor.shutdown();
 
     assert_eq!(worker.log(), ["setup:1", "start:1", "teardown:1"]);
+}
+
+#[tokio::test]
+async fn a_sweep_tears_down_instances_idle_past_the_timeout() {
+    let descriptor = windowed_linear_descriptor(DESCRIPTOR_ID);
+    let worker = Worker::start_with(descriptor, Some(Duration::from_millis(20))).await;
+    worker.bundle("b1", &["a"]).await.unwrap();
+    assert_eq!(worker.processor.sweep_idle_processors(), 0, "still fresh");
+
+    tokio::time::sleep(Duration::from_millis(40)).await;
+
+    assert_eq!(worker.processor.sweep_idle_processors(), 1);
+    assert_eq!(worker.log(), ["setup:1", "start:1", "teardown:1"]);
+    assert!(worker.processor.idle_processors().is_empty());
+}
+
+/// The worker reads one data source for each descriptor, so a second one is an error, not
+/// lost data.
+#[tokio::test]
+async fn a_descriptor_with_two_data_sources_fails_its_bundles() {
+    let mut descriptor = windowed_linear_descriptor(DESCRIPTOR_ID);
+    let source = descriptor.transforms[SOURCE_ID].clone();
+    descriptor
+        .transforms
+        .insert("second_source".to_string(), source);
+    let worker = Worker::start_with(descriptor, None).await;
+
+    let error = worker.process("b1").await.unwrap_err();
+
+    assert!(
+        error.contains("more than one DATA_SOURCE") && error.contains("second_source"),
+        "{error}"
+    );
+    assert!(
+        worker.log().is_empty(),
+        "no handler is set up: {:?}",
+        worker.log()
+    );
 }

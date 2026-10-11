@@ -49,6 +49,20 @@ pub(crate) struct WeightedCache<K, V> {
     next_stamp: u64,
     total_bytes: usize,
     max_bytes: usize,
+    hits: u64,
+    misses: u64,
+    evictions: u64,
+}
+
+/// The size and the counts of a cache, for the status page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CacheStats {
+    pub entries: usize,
+    pub bytes: usize,
+    pub max_bytes: usize,
+    pub hits: u64,
+    pub misses: u64,
+    pub evictions: u64,
 }
 
 struct Entry<K, V> {
@@ -66,6 +80,9 @@ impl<K: Clone + Eq + Hash, V: Clone + Weight> WeightedCache<K, V> {
             next_stamp: 0,
             total_bytes: 0,
             max_bytes,
+            hits: 0,
+            misses: 0,
+            evictions: 0,
         }
     }
 
@@ -76,10 +93,14 @@ impl<K: Clone + Eq + Hash, V: Clone + Weight> WeightedCache<K, V> {
         Q: Hash + Eq + ?Sized,
     {
         let stamp = self.stamp();
-        let entry = self.entries.get_mut(key)?;
+        let Some(entry) = self.entries.get_mut(key) else {
+            self.misses += 1;
+            return None;
+        };
         entry.stamp = stamp;
         let k = entry.key.clone();
         let value = entry.value.clone();
+        self.hits += 1;
         self.order.push_back((k, stamp));
         self.compact();
         Some(value)
@@ -122,6 +143,17 @@ impl<K: Clone + Eq + Hash, V: Clone + Weight> WeightedCache<K, V> {
         self.total_bytes
     }
 
+    pub(crate) fn stats(&self) -> CacheStats {
+        CacheStats {
+            entries: self.entries.len(),
+            bytes: self.total_bytes,
+            max_bytes: self.max_bytes,
+            hits: self.hits,
+            misses: self.misses,
+            evictions: self.evictions,
+        }
+    }
+
     fn stamp(&mut self) -> u64 {
         self.next_stamp += 1;
         self.next_stamp
@@ -134,6 +166,7 @@ impl<K: Clone + Eq + Hash, V: Clone + Weight> WeightedCache<K, V> {
             };
             if self.entries.get(&key).is_some_and(|e| e.stamp == stamp) {
                 self.remove(&key);
+                self.evictions += 1;
             }
         }
     }
@@ -311,6 +344,11 @@ impl StateCache {
     /// The bytes that the cache holds.
     pub fn total_bytes(&self) -> usize {
         self.lock().total_bytes()
+    }
+
+    /// The size and the hit, miss and eviction counts of the cache.
+    pub fn stats(&self) -> CacheStats {
+        self.lock().stats()
     }
 
     pub(crate) fn get<Q>(&self, key: &Q) -> Option<CachedValue>

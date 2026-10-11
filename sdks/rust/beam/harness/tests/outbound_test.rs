@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-use harness::data::{DataManager, OUTBOUND_FLUSH_BYTES, Outbound};
+use harness::data::{DataManager, FlushLimits, OUTBOUND_FLUSH_BYTES, Outbound};
 use model::fn_execution::Elements;
 
 mod common;
@@ -307,7 +307,10 @@ async fn outbound_streams_timers_and_flushes_at_a_megabyte() {
 #[tokio::test]
 async fn outbound_time_based_flush() {
     let (tx, mut rx) = mpsc::channel(100);
-    let dm = DataManager::new(tx).with_flush_time_limit(Some(Duration::from_millis(50)));
+    let dm = DataManager::new(tx).with_flush_limits(FlushLimits {
+        time: Some(Duration::from_millis(50)),
+        ..FlushLimits::default()
+    });
     let mut out = dm.outbound("", "inst", std::iter::empty(), [("t_id", "f_id")]);
 
     out.write_timer("t_id", "f_id", |buf| {
@@ -335,7 +338,10 @@ async fn outbound_time_based_flush() {
 #[tokio::test]
 async fn a_write_after_the_time_limit_flushes_the_buffer() {
     let (tx, mut rx) = mpsc::channel(100);
-    let dm = DataManager::new(tx).with_flush_time_limit(Some(Duration::from_millis(50)));
+    let dm = DataManager::new(tx).with_flush_limits(FlushLimits {
+        time: Some(Duration::from_millis(50)),
+        ..FlushLimits::default()
+    });
     let mut out = dm.outbound(
         "",
         INSTRUCTION,
@@ -375,4 +381,24 @@ async fn without_a_time_limit_a_late_write_stays_buffered() {
 
     assert!(queued(&mut rx).is_empty());
     assert_eq!(out.buffered_bytes(), 200);
+}
+
+/// A worker can lower the size at which a bundle sends its buffer.
+#[tokio::test]
+async fn a_smaller_byte_limit_flushes_earlier() {
+    let (tx, mut rx) = mpsc::channel(100);
+    let dm = DataManager::new(tx).with_flush_limits(FlushLimits {
+        bytes: 10,
+        time: None,
+    });
+    let mut out = dm.outbound(
+        "",
+        INSTRUCTION,
+        ["sink"],
+        std::iter::empty::<(&str, &str)>(),
+    );
+    write(&mut out, 0, 9, 1);
+    assert!(queued(&mut rx).is_empty(), "9 bytes stay buffered");
+    write(&mut out, 0, 1, 2);
+    assert_eq!(queued(&mut rx).len(), 1, "the 10th byte sends the buffer");
 }

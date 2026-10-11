@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::fmt::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use beam::internals::{ShortIdCache, process_wide_container};
 use model::fn_execution::WorkerStatusResponse;
@@ -147,6 +147,12 @@ pub fn format_status_info(
         );
     }
 
+    out.push_str("\n============Threads============\n");
+    format_threads(&mut out);
+
+    out.push_str("\n============Caches============\n");
+    format_caches(&mut out, bundles);
+
     out.push_str("\n============Data & State Streams============\n");
     let named_streams = bundles
         .map(BundleProcessor::open_named_streams)
@@ -165,25 +171,178 @@ pub fn format_status_info(
 }
 
 fn format_memory_usage(out: &mut String) {
+    let reading = crate::memory::current();
+    let _ = writeln!(
+        out,
+        "Resident: {}, Peak: {}, Limit: {}{}",
+        crate::memory::mib(reading.rss_bytes),
+        crate::memory::mib(reading.peak_rss_bytes),
+        crate::memory::mib(reading.limit_bytes),
+        if reading.near_limit() {
+            " (near the limit)"
+        } else {
+            ""
+        },
+    );
     #[cfg(target_os = "linux")]
-    {
-        if let Ok(content) = std::fs::read_to_string("/proc/self/status") {
-            const PREFIXES: &[&str] = &["VmRSS:", "VmSize:", "VmPeak:", "Threads:"];
-            let mut found = false;
-            for line in content
-                .lines()
-                .filter(|l| PREFIXES.iter().any(|p| l.starts_with(p)))
-            {
-                out.push_str(line.trim());
-                out.push('\n');
-                found = true;
-            }
-            if found {
-                return;
+    if let Ok(content) = std::fs::read_to_string("/proc/self/status") {
+        const PREFIXES: &[&str] = &["VmSize:", "VmPeak:", "VmHWM:"];
+        content
+            .lines()
+            .filter(|l| PREFIXES.iter().any(|p| l.starts_with(p)))
+            .for_each(|line| {
+                let _ = writeln!(out, "{}", line.trim());
+            });
+    }
+}
+
+/// The threads of the process by name and state, with how many share both.
+fn format_threads(out: &mut String) {
+    match thread_states() {
+        Some(threads) => {
+            let total: usize = threads.values().sum();
+            let _ = writeln!(out, "Threads: {total}");
+            threads.iter().for_each(|((name, state), count)| {
+                let _ = writeln!(out, "  {name} ({state}) x{count}");
+            });
+        }
+        None => out.push_str("Thread list: not available on this platform\n"),
+    }
+    match tokio::runtime::Handle::try_current() {
+        Ok(runtime) => {
+            let metrics = runtime.metrics();
+            let _ = writeln!(
+                out,
+                "Tokio runtime: {} workers, {} alive tasks, {} tasks in the global queue",
+                metrics.num_workers(),
+                metrics.num_alive_tasks(),
+                metrics.global_queue_depth()
+            );
+        }
+        Err(_) => out.push_str("Tokio runtime: none on this thread\n"),
+    }
+}
+
+/// The name and the state of each thread from `/proc/self/task`, counted. `None` where the
+/// platform has no `/proc`.
+fn thread_states() -> Option<std::collections::BTreeMap<(String, String), usize>> {
+    let tasks = std::fs::read_dir("/proc/self/task").ok()?;
+    Some(
+        tasks
+            .filter_map(Result::ok)
+            .filter_map(|task| {
+                let status = std::fs::read_to_string(task.path().join("status")).ok()?;
+                let field = |key: &str| {
+                    status
+                        .lines()
+                        .find_map(|line| line.strip_prefix(key))
+                        .map(|value| value.trim().to_string())
+                };
+                Some((field("Name:")?, field("State:").unwrap_or_default()))
+            })
+            .fold(std::collections::BTreeMap::new(), |mut counts, thread| {
+                *counts.entry(thread).or_insert(0) += 1;
+                counts
+            }),
+    )
+}
+
+/// The state cache, the idle bundle processors and the short ids.
+fn format_caches(out: &mut String, bundles: Option<&BundleProcessor>) {
+    let Some(bundles) = bundles else {
+        out.push_str("Caches: no bundle processor\n");
+        return;
+    };
+    let cache = bundles.state_cache_stats();
+    let _ = writeln!(
+        out,
+        "State cache: {} entries, {} of {} bytes, {} hits, {} misses, {} evictions",
+        cache.entries, cache.bytes, cache.max_bytes, cache.hits, cache.misses, cache.evictions
+    );
+    let idle = bundles.idle_processors();
+    if idle.is_empty() {
+        out.push_str("Idle bundle processors: none\n");
+    } else {
+        let listed = idle
+            .iter()
+            .map(|(descriptor, count)| format!("{descriptor}={count}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(out, "Idle bundle processors: {listed}");
+    }
+    let _ = writeln!(out, "Short ids: {}", bundles.short_id_count());
+}
+
+/// The first wait before the status stream reconnects. It doubles up to [`RECONNECT_MAX`].
+const RECONNECT_MIN: Duration = Duration::from_secs(1);
+const RECONNECT_MAX: Duration = Duration::from_secs(30);
+
+/// What a status stream needs to answer requests, across reconnects.
+struct StatusStream {
+    endpoint: String,
+    worker_id: String,
+    start_time: Instant,
+    metrics: WorkerMetrics,
+    bundles: Weak<BundleProcessor>,
+    shutdown: Arc<AtomicBool>,
+}
+
+impl StatusStream {
+    fn stopped(&self) -> bool {
+        self.shutdown.load(Ordering::SeqCst)
+    }
+
+    /// Opens one stream and answers its requests until it ends. `Ok` if the stream opened.
+    async fn serve(&self) -> Result<(), String> {
+        let channel = grpc::channel(&self.endpoint)
+            .await
+            .map_err(|e| format!("cannot connect: {e}"))?;
+        let mut client = BeamFnWorkerStatusClient::new(channel)
+            .max_decoding_message_size(grpc::MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(grpc::MAX_MESSAGE_BYTES);
+        let (tx, rx) = mpsc::unbounded_channel::<WorkerStatusResponse>();
+        let mut request = tonic::Request::new(UnboundedReceiverStream::new(rx));
+        grpc::attach_worker_id(&mut request, &self.worker_id);
+        let mut inbound = client
+            .worker_status(request)
+            .await
+            .map_err(|e| format!("the runner rejected the stream: {e}"))?
+            .into_inner();
+        info!(
+            "Connected to BeamFnWorkerStatus at '{}' (worker_id: '{}')",
+            self.endpoint, self.worker_id
+        );
+        while !self.stopped() {
+            match inbound.message().await {
+                Ok(Some(req)) => {
+                    debug!("Received WorkerStatusRequest id='{}'", req.id);
+                    let status_info = format_status_info(
+                        self.start_time,
+                        &self.metrics,
+                        self.bundles.upgrade().as_deref(),
+                    );
+                    let response = WorkerStatusResponse {
+                        id: req.id,
+                        error: String::new(),
+                        status_info,
+                    };
+                    if tx.send(response).is_err() {
+                        return Ok(());
+                    }
+                }
+                Ok(None) => {
+                    debug!("BeamFnWorkerStatus stream closed by runner");
+                    return Ok(());
+                }
+                Err(e) if self.stopped() => {
+                    debug!("BeamFnWorkerStatus stream ended at shutdown: {e}");
+                    return Ok(());
+                }
+                Err(e) => return Err(format!("the stream failed: {e}")),
             }
         }
+        Ok(())
     }
-    out.push_str("Memory usage: not available on this platform\n");
 }
 
 /// Handle to an active WorkerStatus client loop.
@@ -208,65 +367,27 @@ impl WorkerStatusHandler {
         let start_time = Instant::now();
 
         let handle = tokio::spawn(async move {
-            let channel = match grpc::channel(&endpoint_str).await {
-                Ok(chan) => chan,
-                Err(e) => {
-                    warn!("Could not connect to WorkerStatus endpoint '{endpoint_str}': {e}");
+            let stream = StatusStream {
+                endpoint: endpoint_str,
+                worker_id: worker_id_str,
+                start_time,
+                metrics,
+                bundles,
+                shutdown: shutdown_clone,
+            };
+            let mut backoff = RECONNECT_MIN;
+            while !stream.stopped() {
+                match stream.serve().await {
+                    // The stream was open, so the next one may open quickly.
+                    Ok(()) => backoff = RECONNECT_MIN,
+                    Err(e) => warn!("BeamFnWorkerStatus at '{}': {e}", stream.endpoint),
+                }
+                if stream.stopped() {
                     return;
                 }
-            };
-
-            let mut client = BeamFnWorkerStatusClient::new(channel)
-                .max_decoding_message_size(grpc::MAX_MESSAGE_BYTES)
-                .max_encoding_message_size(grpc::MAX_MESSAGE_BYTES);
-
-            let (tx, rx) = mpsc::unbounded_channel::<WorkerStatusResponse>();
-            let out_stream = UnboundedReceiverStream::new(rx);
-            let mut request = tonic::Request::new(out_stream);
-
-            grpc::attach_worker_id(&mut request, &worker_id_str);
-
-            info!(
-                "Connected to BeamFnWorkerStatus at '{endpoint_str}' (worker_id: '{worker_id_str}')"
-            );
-            let mut inbound = match client.worker_status(request).await {
-                Ok(resp) => resp.into_inner(),
-                Err(e) => {
-                    warn!("BeamFnWorkerStatus stream rejected by runner at '{endpoint_str}': {e}");
-                    return;
-                }
-            };
-
-            while !shutdown_clone.load(Ordering::SeqCst) {
-                match inbound.message().await {
-                    Ok(Some(req)) => {
-                        debug!(
-                            "Received WorkerStatusRequest id='{}', sending diagnostics response",
-                            req.id
-                        );
-                        let status_info =
-                            format_status_info(start_time, &metrics, bundles.upgrade().as_deref());
-                        let resp = WorkerStatusResponse {
-                            id: req.id,
-                            error: String::new(),
-                            status_info,
-                        };
-                        if let Err(e) = tx.send(resp) {
-                            warn!("Failed to send WorkerStatusResponse: {e}");
-                            break;
-                        }
-                    }
-                    Ok(None) => {
-                        debug!("BeamFnWorkerStatus stream closed by runner");
-                        break;
-                    }
-                    Err(e) => {
-                        if !shutdown_clone.load(Ordering::SeqCst) {
-                            warn!("Error reading from BeamFnWorkerStatus stream: {e}");
-                        }
-                        break;
-                    }
-                }
+                debug!("Reconnecting to BeamFnWorkerStatus in {backoff:?}");
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(RECONNECT_MAX);
             }
         });
 

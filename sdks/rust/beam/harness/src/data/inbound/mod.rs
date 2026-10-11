@@ -33,7 +33,7 @@
 mod limit;
 mod routes;
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 use tracing::debug;
@@ -83,6 +83,8 @@ pub struct DataChannelState {
     /// Why the default data stream ended. Once set, no more data can arrive, so new
     /// registrations start out closed.
     closed: Option<String>,
+    /// The named stream of each instruction that uses one. The default stream has no entry.
+    named: HashMap<String, Arc<str>>,
     stats: InboundStats,
 }
 
@@ -95,6 +97,7 @@ impl DataChannelState {
             ended: VecDeque::new(),
             ended_set: HashSet::new(),
             closed: None,
+            named: HashMap::new(),
             stats: InboundStats::default(),
         }
     }
@@ -160,6 +163,19 @@ impl DataChannelState {
         (data, timers)
     }
 
+    /// Records that the instructions of `elements` use named stream `stream`.
+    fn tag(&mut self, elements: &Elements, stream: &Arc<str>) {
+        let ids = elements.data.iter().map(|d| &d.instruction_id);
+        let ids = ids.chain(elements.timers.iter().map(|t| &t.instruction_id));
+        ids.for_each(|id| self.tag_one(id, stream));
+    }
+
+    fn tag_one(&mut self, id: &str, stream: &Arc<str>) {
+        if !self.named.contains_key(id) {
+            self.named.insert(id.to_string(), Arc::clone(stream));
+        }
+    }
+
     /// Remembers that `id` ended, forgetting the oldest once [`ENDED_INSTRUCTIONS`] are kept.
     fn end(&mut self, id: &str) {
         if self.ended_set.insert(id.to_string()) {
@@ -189,6 +205,7 @@ impl DataChannelState {
             );
             self.data.unregister(id, &self.limit);
             self.timers.unregister(id, &self.limit);
+            self.named.remove(id.as_ref());
             self.end(id);
         });
     }
@@ -196,6 +213,13 @@ impl DataChannelState {
     /// Whether the stream is up and `id` has not ended or been dropped.
     fn accepts(&self, id: &str) -> bool {
         self.closed.is_none() && !self.ended_set.contains(id)
+    }
+
+    /// Records that `id` reads named stream `stream`, so the end of that stream fails it.
+    pub(super) fn register_stream(&mut self, id: &str, stream: &str) {
+        if !stream.is_empty() {
+            self.tag_one(id, &Arc::from(stream));
+        }
     }
 
     /// Takes `id`'s data queue, with whatever arrived early.
@@ -217,6 +241,7 @@ impl DataChannelState {
     /// Drops `id`'s data queue; anything the runner still sends it is dropped from then on.
     pub(super) fn unregister_data(&mut self, id: &str) {
         self.data.unregister(id, &self.limit);
+        self.named.remove(id);
         self.end(id);
     }
 
@@ -246,6 +271,26 @@ impl DataChannelState {
         }
     }
 
+    /// Fails the bundles of named stream `stream` after it ends. Their queues close before
+    /// `is_last`, and a later registration of the same instruction starts out closed.
+    pub fn fail_stream(&mut self, stream: &str, reason: &str) {
+        let ids: Vec<String> = self
+            .named
+            .iter()
+            .filter(|(_, named)| named.as_ref() == stream)
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.iter().for_each(|id| {
+            self.data.unregister(id, &self.limit);
+            self.timers.unregister(id, &self.limit);
+            self.named.remove(id);
+            self.end(id);
+        });
+        if !ids.is_empty() {
+            tracing::warn!("Failing {} instruction(s): {reason}", ids.len());
+        }
+    }
+
     /// Fails every waiting bundle and every later one: the default data stream is gone.
     pub fn close(&mut self, reason: String) {
         self.fail_all(&reason);
@@ -260,8 +305,19 @@ pub fn lock_state(state: &Mutex<DataChannelState>) -> MutexGuard<'_, DataChannel
 
 /// Routes one inbound message to the bundles it is for. The routing lock is released before
 /// sending, and the send waits only for room in the stream's limit.
-pub(super) async fn deliver(state: &Arc<Mutex<DataChannelState>>, elements: Elements) {
-    let (data, timers) = lock_state(state).dispatch(elements);
+/// `stream` names the named stream that the message came on; `None` is the default stream.
+pub(super) async fn deliver(
+    state: &Arc<Mutex<DataChannelState>>,
+    elements: Elements,
+    stream: Option<&Arc<str>>,
+) {
+    let (data, timers) = {
+        let mut state = lock_state(state);
+        if let Some(stream) = stream {
+            state.tag(&elements, stream);
+        }
+        state.dispatch(elements)
+    };
     // While the stream waits, an instruction that never registers must not hold the room.
     let stalled = || lock_state(state).drop_unregistered();
     send_all(data, stalled).await;
