@@ -18,4 +18,6 @@
  */
 
 mod element_timeout_test;
+mod finalization_logging_test;
 mod logging_init_test;
+mod worker_logging_test;

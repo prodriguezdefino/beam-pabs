@@ -731,3 +731,175 @@ async fn an_error_field_named_err_populates_trace_and_message() {
         "root error\nmiddle error\npermission denied"
     );
 }
+
+#[tokio::test]
+async fn shutdown_waits_for_queued_log_batches_to_arrive_on_a_slow_stream() {
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use beam::options::HarnessOptions;
+    use beam_harness::logging::global_handle;
+    use beam_harness::worker::Worker;
+    use beam_model::fn_execution::beam_fn_control_server::{BeamFnControl, BeamFnControlServer};
+    use beam_model::fn_execution::beam_fn_data_server::{BeamFnData, BeamFnDataServer};
+    use beam_model::fn_execution::beam_fn_logging_server::{BeamFnLogging, BeamFnLoggingServer};
+    use beam_model::fn_execution::{
+        Elements, GetProcessBundleDescriptorRequest, InstructionRequest, InstructionResponse,
+        LogControl, ProcessBundleDescriptor,
+    };
+    use tokio::net::TcpListener;
+    use tokio::sync::Notify;
+    use tokio_stream::Stream;
+    use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
+    use tonic::{Request, Response, Status, Streaming};
+
+    type Replies<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
+    type DataStreams = Arc<Mutex<Vec<mpsc::Sender<Result<Elements, Status>>>>>;
+
+    #[derive(Clone, Default)]
+    struct SlowLoggingRunner {
+        logging_connected: Arc<Notify>,
+        data_connected: Arc<Notify>,
+        close_control: Arc<Notify>,
+        received: Arc<Mutex<Vec<String>>>,
+        saw_eof: Arc<AtomicBool>,
+        open_data: DataStreams,
+    }
+
+    #[tonic::async_trait]
+    impl BeamFnControl for SlowLoggingRunner {
+        type ControlStream = Replies<InstructionRequest>;
+
+        async fn control(
+            &self,
+            request: Request<Streaming<InstructionResponse>>,
+        ) -> Result<Response<Self::ControlStream>, Status> {
+            let mut responses = request.into_inner();
+            tokio::spawn(async move { while let Ok(Some(_)) = responses.message().await {} });
+            let (tx, rx) = mpsc::channel(1);
+            let close_control = Arc::clone(&self.close_control);
+            tokio::spawn(async move {
+                close_control.notified().await;
+                drop(tx);
+            });
+            Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
+        }
+
+        async fn get_process_bundle_descriptor(
+            &self,
+            _request: Request<GetProcessBundleDescriptorRequest>,
+        ) -> Result<Response<ProcessBundleDescriptor>, Status> {
+            Err(Status::unimplemented("not used"))
+        }
+    }
+
+    #[tonic::async_trait]
+    impl BeamFnData for SlowLoggingRunner {
+        type DataStream = Replies<Elements>;
+
+        async fn data(
+            &self,
+            request: Request<Streaming<Elements>>,
+        ) -> Result<Response<Self::DataStream>, Status> {
+            let mut inbound = request.into_inner();
+            tokio::spawn(async move { while let Ok(Some(_)) = inbound.message().await {} });
+            let (tx, rx) = mpsc::channel(1);
+            self.open_data.lock().expect("open data lock").push(tx);
+            self.data_connected.notify_one();
+            Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
+        }
+    }
+
+    #[tonic::async_trait]
+    impl BeamFnLogging for SlowLoggingRunner {
+        type LoggingStream = Replies<LogControl>;
+
+        async fn logging(
+            &self,
+            request: Request<Streaming<log_entry::List>>,
+        ) -> Result<Response<Self::LoggingStream>, Status> {
+            let mut inbound = request.into_inner();
+            let (tx, rx) = mpsc::channel(1);
+            let received = Arc::clone(&self.received);
+            let saw_eof = Arc::clone(&self.saw_eof);
+            self.logging_connected.notify_one();
+            tokio::spawn(async move {
+                while let Ok(Some(batch)) = inbound.message().await {
+                    // Delay each batch so shutdown must wait for the wire drain to finish.
+                    tokio::time::sleep(Duration::from_millis(60)).await;
+                    received
+                        .lock()
+                        .expect("received lock")
+                        .extend(batch.log_entries.into_iter().map(|entry| entry.message));
+                }
+                saw_eof.store(true, Ordering::SeqCst);
+                drop(tx);
+            });
+            Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
+        }
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind local port");
+    let addr = listener.local_addr().expect("local addr").to_string();
+    let runner = SlowLoggingRunner::default();
+    let logging_connected = Arc::clone(&runner.logging_connected);
+    let data_connected = Arc::clone(&runner.data_connected);
+    let close_control = Arc::clone(&runner.close_control);
+    let received = Arc::clone(&runner.received);
+    let saw_eof = Arc::clone(&runner.saw_eof);
+
+    let server = tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(BeamFnControlServer::new(runner.clone()))
+            .add_service(BeamFnDataServer::new(runner.clone()))
+            .add_service(BeamFnLoggingServer::new(runner))
+            .serve_with_incoming(TcpListenerStream::new(listener))
+            .await
+            .expect("mock logging server failed");
+    });
+
+    let worker = Worker::new(HarnessOptions {
+        id: Some("worker-slow-log".to_string()),
+        control_endpoint: Some(addr.clone()),
+        logging_endpoint: Some(addr),
+        ..Default::default()
+    });
+    let worker_task = tokio::spawn(async move { worker.run().await });
+
+    within("logging stream to connect", logging_connected.notified()).await;
+    within("data stream to connect", data_connected.notified()).await;
+
+    const QUEUED: usize = 250;
+    for i in 0..QUEUED {
+        global_handle().send(LogEntry {
+            severity: log_entry::severity::Enum::Info as i32,
+            message: format!("queued-{i}"),
+            ..Default::default()
+        });
+    }
+    close_control.notify_one();
+
+    let result = within("worker shutdown to drain slow logging stream", worker_task)
+        .await
+        .expect("worker task");
+    assert!(result.is_ok(), "{result:?}");
+
+    assert!(
+        saw_eof.load(Ordering::SeqCst),
+        "shutdown must close the logging stream and wait for the slow server to finish reading"
+    );
+    let messages = received.lock().expect("received lock").clone();
+    for i in 0..QUEUED {
+        let expected = format!("queued-{i}");
+        assert!(
+            messages.contains(&expected),
+            "missing '{expected}' after shutdown; received {} entries",
+            messages.len()
+        );
+    }
+
+    server.abort();
+}

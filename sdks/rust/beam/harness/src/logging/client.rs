@@ -38,9 +38,45 @@ const LOG_BATCH_ENTRIES: usize = 100;
 /// Batches queued for gRPC. Past this the batching task waits, and new entries are dropped.
 pub const LOG_QUEUE_BATCHES: usize = 100;
 
-/// Longest [`LoggingClient::flush`] waits, so shutdown does not hang on a runner that
-/// stopped reading the stream without closing it.
-const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
+/// Longest [`LoggingClient::flush`] and worker shutdown wait, so neither hangs on a runner
+/// that stopped reading the stream without closing it.
+pub(crate) const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// One outbound item sent from the micro-batching task to the gRPC logging stream.
+pub(crate) enum LogCommand {
+    /// A batch of log entries to send on the stream.
+    Batch(log_entry::List),
+    /// Acknowledges after every earlier batch is sent onto the gRPC request stream.
+    Flush(oneshot::Sender<()>),
+}
+
+/// Sink for the micro-batching task: raw lists for direct callers, or commands with flush
+/// barriers for the gRPC streaming task.
+#[derive(Clone)]
+enum Outbound {
+    Lists(mpsc::Sender<log_entry::List>),
+    Commands(mpsc::Sender<LogCommand>),
+}
+
+impl Outbound {
+    async fn send_batch(&self, list: log_entry::List) -> bool {
+        match self {
+            Self::Lists(tx) => tx.send(list).await.is_ok(),
+            Self::Commands(tx) => tx.send(LogCommand::Batch(list)).await.is_ok(),
+        }
+    }
+
+    async fn acknowledge_flush(&self, ack: oneshot::Sender<()>) -> bool {
+        match self {
+            Self::Lists(_) => {
+                // The caller may have stopped waiting.
+                let _ = ack.send(());
+                true
+            }
+            Self::Commands(tx) => tx.send(LogCommand::Flush(ack)).await.is_ok(),
+        }
+    }
+}
 
 /// Client for streaming worker logs to the runner's logging service.
 #[derive(Clone)]
@@ -53,10 +89,19 @@ pub struct LoggingClient {
 impl LoggingClient {
     /// `outbound_tx` should be bounded, at about [`LOG_QUEUE_BATCHES`].
     pub fn new(outbound_tx: mpsc::Sender<log_entry::List>) -> Self {
+        Self::with_outbound(Outbound::Lists(outbound_tx))
+    }
+
+    /// Creates a client feeding [`LogCommand`]s to the gRPC logging streaming task.
+    pub(crate) fn with_commands(outbound_tx: mpsc::Sender<LogCommand>) -> Self {
+        Self::with_outbound(Outbound::Commands(outbound_tx))
+    }
+
+    fn with_outbound(outbound: Outbound) -> Self {
         let (entry_tx, entry_rx) = mpsc::channel::<LogEntry>(LOG_QUEUE_ENTRIES);
         let (flush_tx, flush_rx) = mpsc::unbounded_channel();
         let dropped = Arc::new(AtomicU64::new(0));
-        spawn_batching_task(entry_rx, outbound_tx, flush_rx, Arc::clone(&dropped));
+        spawn_batching_task(entry_rx, outbound, flush_rx, Arc::clone(&dropped));
         Self {
             entry_tx,
             flush_tx,
@@ -166,7 +211,7 @@ fn dropped_entries_warning(count: u64) -> LogEntry {
 /// Runs a background micro-batching loop for log entries.
 fn spawn_batching_task(
     mut entry_rx: mpsc::Receiver<LogEntry>,
-    grpc_tx: mpsc::Sender<log_entry::List>,
+    outbound: Outbound,
     mut flush_rx: mpsc::UnboundedReceiver<oneshot::Sender<()>>,
     dropped: Arc<AtomicU64>,
 ) {
@@ -184,15 +229,14 @@ fn spawn_batching_task(
                 .into_iter()
                 .chain(std::mem::take(batch))
                 .collect();
-            let grpc_tx = grpc_tx.clone();
+            let outbound = outbound.clone();
             async move {
                 entries.is_empty()
-                    || grpc_tx
-                        .send(log_entry::List {
+                    || outbound
+                        .send_batch(log_entry::List {
                             log_entries: entries,
                         })
                         .await
-                        .is_ok()
             }
         };
 
@@ -206,10 +250,7 @@ fn spawn_batching_task(
                     while let Ok(e) = entry_rx.try_recv() {
                         batch.push(e);
                     }
-                    let open = send(&mut batch).await;
-                    // The caller may have stopped waiting.
-                    let _ = ack.send(());
-                    open
+                    send(&mut batch).await && outbound.acknowledge_flush(ack).await
                 }
                 _ = ticker.tick() => send(&mut batch).await,
                 entry = entry_rx.recv() => match entry {

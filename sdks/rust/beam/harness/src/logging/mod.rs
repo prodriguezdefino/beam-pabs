@@ -28,6 +28,7 @@ use std::time::SystemTime;
 use thiserror::Error;
 use tracing_subscriber::filter::{LevelFilter, Targets};
 
+pub(crate) use client::{FLUSH_TIMEOUT, LogCommand};
 pub use client::{LOG_QUEUE_BATCHES, LOG_QUEUE_ENTRIES, LoggingClient};
 pub use handle::BeamFnLoggingHandle;
 pub use layer::BeamFnLoggingLayer;

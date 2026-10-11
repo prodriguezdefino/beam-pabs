@@ -21,6 +21,7 @@
 mod common;
 mod state_mock;
 
+mod multi_window_timer_test;
 mod state_cache_test;
 mod state_channel_test;
 mod state_protocol_test;

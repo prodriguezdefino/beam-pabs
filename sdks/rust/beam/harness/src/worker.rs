@@ -44,11 +44,11 @@ use crate::data::{
     OUTBOUND_QUEUE_MESSAGES, lock_state, read_stream,
 };
 use crate::grpc::{self, attach_header, attach_worker_id};
-use crate::logging::{LOG_QUEUE_BATCHES, LoggingClient};
+use crate::logging::{FLUSH_TIMEOUT, LOG_QUEUE_BATCHES, LogCommand, LoggingClient};
 use crate::provisioning::RunnerCapabilities;
 use beam_model::fn_execution::{
     Elements, InstructionRequest, InstructionResponse, beam_fn_control_client::BeamFnControlClient,
-    beam_fn_data_client::BeamFnDataClient, beam_fn_logging_client::BeamFnLoggingClient, log_entry,
+    beam_fn_data_client::BeamFnDataClient, beam_fn_logging_client::BeamFnLoggingClient,
 };
 
 #[derive(Error, Debug)]
@@ -141,16 +141,17 @@ impl Worker {
 
         // Set up logging first, so later failures show in the runner's console and not only
         // on the container's stderr.
-        let logging_client = match &endpoints.logging {
-            Some(endpoint) => Some(connect_logging(endpoint, &worker_id)),
+        let logging = match &endpoints.logging {
+            Some(endpoint) => Some(GlobalLoggingClient::set(connect_logging(
+                endpoint, &worker_id,
+            ))),
             None => {
                 warn!("No logging endpoint supplied; worker logs stay local to the container");
                 None
             }
         };
 
-        if let Some(client) = &logging_client {
-            crate::logging::set_global_client(client.clone());
+        if let Some(client) = logging.as_ref().and_then(GlobalLoggingClient::client) {
             let _ = client.info(format!(
                 "Rust SDK worker '{worker_id}' starting with {} registered transform handlers",
                 self.transform_handlers.len()
@@ -227,8 +228,8 @@ impl Worker {
         if let Some(handler) = &status_handler {
             handler.stop();
         }
-        if let Some(client) = &logging_client {
-            client.flush().await;
+        if let Some(logging) = logging {
+            logging.shutdown().await;
         }
         control_result
     }
@@ -507,6 +508,52 @@ async fn serve_control(
     }
 }
 
+/// The worker's client on the global logging handle and its streaming task. Drop removes
+/// the client from the handle, unless a later worker replaced it, so the next worker in the
+/// process can log.
+struct GlobalLoggingClient {
+    client: Option<LoggingClient>,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl GlobalLoggingClient {
+    fn set((client, task): (LoggingClient, tokio::task::JoinHandle<()>)) -> Self {
+        crate::logging::set_global_client(client.clone());
+        Self {
+            client: Some(client),
+            task: Some(task),
+        }
+    }
+
+    fn client(&self) -> Option<&LoggingClient> {
+        self.client.as_ref()
+    }
+
+    /// Removes the global handle, drops the client so queued entries drain, and waits for
+    /// the streaming task up to [`FLUSH_TIMEOUT`].
+    async fn shutdown(mut self) {
+        if let Some(client) = self.client.take() {
+            crate::logging::clear_global_client(&client);
+            drop(client);
+        }
+        if let Some(mut task) = self.task.take()
+            && tokio::time::timeout(FLUSH_TIMEOUT, &mut task)
+                .await
+                .is_err()
+        {
+            task.abort();
+        }
+    }
+}
+
+impl Drop for GlobalLoggingClient {
+    fn drop(&mut self) {
+        if let Some(client) = self.client.take() {
+            crate::logging::clear_global_client(&client);
+        }
+    }
+}
+
 /// First wait before reconnecting a failed logging stream; it doubles up to
 /// [`LOG_RECONNECT_MAX`].
 const LOG_RECONNECT_MIN: Duration = Duration::from_millis(500);
@@ -514,25 +561,32 @@ const LOG_RECONNECT_MAX: Duration = Duration::from_secs(10);
 
 /// Opens the `BeamFnLogging` stream, and reopens it whenever it fails.
 ///
-/// The stream opens on a background task and the client returns at once. Awaiting it would
-/// deadlock: the server never sends on `BeamFnLogging`, so it never flushes its response
-/// headers and the call never resolves. The outbound half still sends log entries.
+/// The stream opens on a background task and returns the client and task handle at once.
+/// Awaiting the stream would deadlock: the server never sends on `BeamFnLogging`, so it
+/// never flushes its response headers and the call never resolves. The outbound half still
+/// sends log entries.
 ///
 /// Logging is best-effort: a worker that cannot log can still process bundles, so failures
 /// are logged locally and never propagate. Entries logged while disconnected wait in the
 /// client's bounded queue.
-fn connect_logging(endpoint: &str, worker_id: &str) -> LoggingClient {
+fn connect_logging(
+    endpoint: &str,
+    worker_id: &str,
+) -> (LoggingClient, tokio::task::JoinHandle<()>) {
     let (tx, mut rx) = mpsc::channel(LOG_QUEUE_BATCHES);
     let endpoint = endpoint.to_string();
     let worker_id = worker_id.to_string();
 
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         let mut backoff = LOG_RECONNECT_MIN;
         loop {
             let started = Instant::now();
             let Err(e) = stream_logs(&endpoint, &worker_id, &mut rx).await else {
                 return;
             };
+            if rx.is_closed() && rx.is_empty() {
+                return;
+            }
             // A stream that stayed up a while starts the backoff over.
             if started.elapsed() > LOG_RECONNECT_MAX {
                 backoff = LOG_RECONNECT_MIN;
@@ -543,15 +597,16 @@ fn connect_logging(endpoint: &str, worker_id: &str) -> LoggingClient {
         }
     });
 
-    LoggingClient::new(tx)
+    (LoggingClient::with_commands(tx), task)
 }
 
-/// Forwards `batches` over one `BeamFnLogging` stream: `Ok` once the client is gone, `Err`
-/// when the stream fails. Unsent batches stay in `batches` for the next stream.
+/// Forwards `commands` over one `BeamFnLogging` stream: `Ok` once the client is gone and the
+/// stream has drained, `Err` when the stream fails. Unsent commands stay in `commands` for
+/// the next stream.
 async fn stream_logs(
     endpoint: &str,
     worker_id: &str,
-    batches: &mut mpsc::Receiver<log_entry::List>,
+    commands: &mut mpsc::Receiver<LogCommand>,
 ) -> Result<(), String> {
     let channel = grpc::channel(endpoint).await.map_err(|e| e.to_string())?;
     let mut client = BeamFnLoggingClient::new(channel)
@@ -581,18 +636,26 @@ async fn stream_logs(
     loop {
         tokio::select! {
             ended = &mut call => return ended,
-            sent = async {
+            next = async {
                 let permit = stream_tx
                     .reserve()
                     .await
                     .map_err(|_| "request stream closed".to_string())?;
-                Ok::<_, String>(batches.recv().await.map(|batch| permit.send(batch)))
-            } => match sent? {
-                Some(()) => {}
-                None => return Ok(()),
+                Ok::<_, String>(commands.recv().await.map(|cmd| (permit, cmd)))
+            } => match next? {
+                Some((permit, LogCommand::Batch(batch))) => permit.send(batch),
+                Some((_permit, LogCommand::Flush(ack))) => {
+                    let _ = ack.send(());
+                }
+                None => break,
             },
         }
     }
+    // Close the outbound stream to send HTTP/2 END_STREAM after every queued batch, then
+    // wait for the server to drain the wire, bounded by FLUSH_TIMEOUT.
+    drop(stream_tx);
+    let _ = tokio::time::timeout(FLUSH_TIMEOUT, call).await;
+    Ok(())
 }
 
 /// gRPC connector establishing dynamic named data streams for `BeamFnData`.
