@@ -35,9 +35,12 @@ use google_cloud_bigquery::write::format::Arrow;
 use tokio::task::JoinHandle;
 
 use super::append::Failure;
+use super::buffer::{InFlightLimit, RowBuffer};
 use super::client::{APPEND_RETRY, is_transient, with_retries, write_client};
 use super::emit_global;
-use super::encode::{Encoded, Encoder, InFlightLimit, Request, RowBuffer};
+use super::encode::{Encoded, Encoder};
+use super::encoded_batch::Request;
+use super::projection::Selection;
 use super::table::Destination;
 use crate::runtime::{block_on_async, client_runtime};
 
@@ -59,7 +62,7 @@ struct InFlight {
 /// that BigQuery rejects.
 pub(super) struct WriteDefaultFn {
     destination: SingletonView<Destination>,
-    input: Arc<Schema>,
+    selection: Arc<Selection>,
     errors: Arc<Schema>,
     client: Option<Arc<Write>>,
     append_timeout: Duration,
@@ -72,14 +75,14 @@ pub(super) struct WriteDefaultFn {
 impl WriteDefaultFn {
     pub(super) fn new(
         destination: SingletonView<Destination>,
-        input: Arc<Schema>,
+        selection: Arc<Selection>,
         errors: Arc<Schema>,
         client: Option<Arc<Write>>,
         append_timeout: Duration,
     ) -> Self {
         Self {
             destination,
-            input,
+            selection,
             errors,
             client,
             append_timeout,
@@ -95,11 +98,7 @@ impl WriteDefaultFn {
             return Ok(Arc::clone(writer));
         }
         let destination = ctx.side_input(&self.destination)?;
-        let encoder = Encoder::new(
-            Arc::clone(&self.input),
-            Arc::clone(&self.errors),
-            &destination,
-        )?;
+        let encoder = Encoder::new(&self.selection, Arc::clone(&self.errors), &destination)?;
         let (client, schema, table, timeout) = (
             self.client.clone(),
             encoder.writer_schema(),
@@ -209,7 +208,7 @@ impl Clone for WriteDefaultFn {
     fn clone(&self) -> Self {
         Self::new(
             self.destination.clone(),
-            Arc::clone(&self.input),
+            Arc::clone(&self.selection),
             Arc::clone(&self.errors),
             self.client.clone(),
             self.append_timeout,

@@ -19,6 +19,7 @@
 
 //! The splittable DoFn that reads the Arrow responses of one stream into rows.
 
+use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,8 +27,8 @@ use arrow_io::arrow_array::RecordBatch;
 use arrow_io::arrow_buffer::Buffer;
 use arrow_io::arrow_ipc::reader::StreamDecoder;
 use beam::schema::{RowElement, Schema};
-use beam::transforms::ProcessContext;
 use beam::transforms::sdf::{ProcessContinuation, RestrictionTracker, SplittableDoFn};
+use beam::transforms::{Outputs, ProcessContext};
 use google_cloud_bigquery::client::Read;
 use google_cloud_bigquery::model::ReadRowsResponse;
 use tokio::sync::mpsc;
@@ -145,31 +146,69 @@ impl BatchDecoder {
     }
 }
 
-/// Reads one stream of a session, from the start offset of its restriction. Emits each row
-/// as a row, or as its row coder bytes if `encoded` is set.
-#[derive(Clone)]
-pub(super) struct ReadStreamFn {
-    pub(super) schema: Arc<Schema>,
-    pub(super) client: Option<Read>,
-    pub(super) encoded: bool,
+/// The elements that a stream reader emits for the rows of a record batch.
+pub(super) trait StreamOutput: Outputs + Sized {
+    /// Emits the rows of `batch` as rows of `schema`, or as their row coder bytes if `encoded`
+    /// is set. `first_row` is the stream and the offset of the first row of `batch`.
+    fn emit_batch(
+        batch: &RecordBatch,
+        schema: &Arc<Schema>,
+        encoded: bool,
+        first_row: (&str, i64),
+        ctx: &mut ProcessContext<'_, Self>,
+    ) -> beam::Result;
 }
 
-impl ReadStreamFn {
-    fn emit(&self, batch: &RecordBatch, ctx: &mut ProcessContext<'_, RowElement>) -> beam::Result {
-        match self.encoded {
-            true => batch_to_encoded_rows(batch, &self.schema)?
+/// Fails on the first row that does not convert, with no work for each row.
+impl StreamOutput for RowElement {
+    fn emit_batch(
+        batch: &RecordBatch,
+        schema: &Arc<Schema>,
+        encoded: bool,
+        _first_row: (&str, i64),
+        ctx: &mut ProcessContext<'_, Self>,
+    ) -> beam::Result {
+        match encoded {
+            true => batch_to_encoded_rows(batch, schema)?
                 .into_iter()
                 .try_for_each(|row| ctx.emit(RowElement::Encoded(row))),
-            false => batch_to_rows(batch, &self.schema)?
+            false => batch_to_rows(batch, schema)?
                 .into_iter()
                 .try_for_each(|row| ctx.emit(RowElement::Row(row))),
         }
     }
 }
 
-impl SplittableDoFn for ReadStreamFn {
+/// Reads one stream of a session, from the start offset of its restriction. Emits the rows of
+/// each batch as `O`. A row that does not convert is in a claimed range, so the restriction
+/// counts it as read.
+pub(super) struct ReadStreamFn<O> {
+    schema: Arc<Schema>,
+    client: Option<Read>,
+    encoded: bool,
+    output: PhantomData<fn() -> O>,
+}
+
+impl<O> ReadStreamFn<O> {
+    pub(super) fn new(schema: Arc<Schema>, client: Option<Read>, encoded: bool) -> Self {
+        Self {
+            schema,
+            client,
+            encoded,
+            output: PhantomData,
+        }
+    }
+}
+
+impl<O> Clone for ReadStreamFn<O> {
+    fn clone(&self) -> Self {
+        Self::new(Arc::clone(&self.schema), self.client.clone(), self.encoded)
+    }
+}
+
+impl<O: StreamOutput> SplittableDoFn for ReadStreamFn<O> {
     type In = (StreamRestriction, Vec<u8>);
-    type Out = RowElement;
+    type Out = O;
     type Restriction = StreamRestriction;
     type Tracker = StreamTracker;
 
@@ -190,7 +229,7 @@ impl SplittableDoFn for ReadStreamFn {
         &mut self,
         (_, schema): Self::In,
         tracker: &StreamTracker,
-        ctx: &mut ProcessContext<'_, RowElement>,
+        ctx: &mut ProcessContext<'_, O>,
     ) -> beam::Result<ProcessContinuation> {
         let mut decoder = BatchDecoder::new(&schema)?;
         let restriction = tracker.current_restriction();
@@ -231,7 +270,10 @@ impl SplittableDoFn for ReadStreamFn {
             decoder
                 .decode(bytes)?
                 .iter()
-                .try_for_each(|batch| self.emit(batch, ctx))?;
+                .try_fold(offset, |first, batch| {
+                    O::emit_batch(batch, &self.schema, self.encoded, (&stream, first), ctx)?;
+                    Ok::<_, beam::Error>(first + batch.num_rows() as i64)
+                })?;
             offset = end;
         }
         drop(task);

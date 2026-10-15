@@ -61,269 +61,49 @@
 //! ));
 //! ```
 //!
-//! Column types map to Beam types as [`super::schema`] describes. `session` creates the read
-//! session, `query` runs the query jobs, [`restriction`] tracks and splits one stream, and
-//! `reader` reads it.
+//! Column types map to Beam types as [`super::schema`] describes. `options` holds what to read,
+//! `session` creates the read session, `query` runs the query jobs, [`restriction`] tracks and
+//! splits one stream, `reader` reads it, and `failures` makes the error output of
+//! [`ReadRows::try_expand_with_failures`].
 
+#[doc(hidden)]
+pub mod failures;
+mod options;
 mod query;
 mod reader;
 pub mod restriction;
 mod session;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use arrow_io::arrow_ipc::convert::try_schema_from_ipc_buffer;
 use beam::Instant;
 use beam::coders::DefaultCoder;
 use beam::schema::{BeamRow, Row, RowElement, Schema};
 use beam::transforms::sdf::SplittableParDo;
-use beam::transforms::{DoFn, FinishBundleContext, PTransform, ParDo, ProcessContext, Reshuffle};
+use beam::transforms::{
+    DoFn, FinishBundleContext, PTransform, ParDo, ProcessContext, Reshuffle, WithFailures,
+};
 use beam::values::{PBegin, PCollection};
 use beam::windowing::{BoundedWindow, GlobalWindow};
 use google_cloud_bigquery::client::Read;
 use google_cloud_bigquery_v2::client::{DatasetService, JobService, TableService};
 
+pub use failures::error_schema;
+pub use options::{ArrowCompression, ReadOptions};
 pub use query::QueryPriority;
 pub use restriction::{StreamRestriction, StreamRestrictionCoder, StreamTracker};
 
-use crate::bigquery::storage::schema::beam_schema;
 use crate::bigquery::storage::{add_composite, transform_ids};
 use crate::options::GcpOptions;
-use crate::runtime::block_on_async;
-use query::{QueryClients, query_schema};
+use options::Source;
+use query::{QueryClients, TempTable};
 use reader::ReadStreamFn;
-use session::{
-    CreateQuerySessionFn, CreateSessionFn, DeleteTempTableFn, RunQueryFn, create_session,
-    session_schema,
-};
+use session::{CreateQuerySessionFn, CreateSessionFn, DeleteTempTableFn, RunQueryFn};
 
-/// The compression of the Arrow buffers in read responses. Compression costs CPU on both sides,
-/// and sends fewer bytes from BigQuery to the workers.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ArrowCompression {
-    /// No compression.
-    #[default]
-    None,
-    /// LZ4 frames: fast, with a lower ratio. The native Python read uses it.
-    Lz4Frame,
-    /// Zstandard: a higher ratio, with more CPU.
-    Zstd,
-}
-
-impl ArrowCompression {
-    /// The name in configurations: `NONE`, `LZ4_FRAME` or `ZSTD`.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::None => "NONE",
-            Self::Lz4Frame => "LZ4_FRAME",
-            Self::Zstd => "ZSTD",
-        }
-    }
-}
-
-impl std::str::FromStr for ArrowCompression {
-    type Err = String;
-
-    /// Parses a name of [`as_str`](Self::as_str), in any case.
-    fn from_str(name: &str) -> Result<Self, String> {
-        match name.to_ascii_uppercase().as_str() {
-            "NONE" | "" => Ok(Self::None),
-            "LZ4_FRAME" | "LZ4" => Ok(Self::Lz4Frame),
-            "ZSTD" => Ok(Self::Zstd),
-            _ => Err(format!(
-                "Unknown compression '{name}': expected NONE, LZ4_FRAME or ZSTD"
-            )),
-        }
-    }
-}
-
-/// What a read reads.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Source {
-    /// A table spec: `[project:]dataset.table` or `project.dataset.table`.
-    Table(String),
-    /// The result of a query.
-    Query(String),
-}
-
-/// What to read: a table or a query, with optional column, filter, query and session settings.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ReadOptions {
-    source: Source,
-    row_restriction: Option<String>,
-    selected_fields: Vec<String>,
-    billing_project: Option<String>,
-    max_stream_count: i32,
-    compression: ArrowCompression,
-    kms_key: Option<String>,
-    query_priority: QueryPriority,
-    query_location: Option<String>,
-    temp_dataset: Option<String>,
-    use_legacy_sql: bool,
-    flatten_results: bool,
-}
-
-impl ReadOptions {
-    /// Reads the table `table_spec` (`[project:]dataset.table` or `project.dataset.table`).
-    pub fn new(table_spec: impl Into<String>) -> Self {
-        Self::with_source(Source::Table(table_spec.into()))
-    }
-
-    /// Reads the result of `query`. The read runs the query into a temporary table, reads that
-    /// table, and then deletes it.
-    pub fn from_query(query: impl Into<String>) -> Self {
-        Self::with_source(Source::Query(query.into()))
-    }
-
-    fn with_source(source: Source) -> Self {
-        Self {
-            source,
-            row_restriction: None,
-            selected_fields: Vec::new(),
-            billing_project: None,
-            max_stream_count: 0,
-            compression: ArrowCompression::None,
-            kms_key: None,
-            query_priority: QueryPriority::Batch,
-            query_location: None,
-            temp_dataset: None,
-            use_legacy_sql: false,
-            flatten_results: true,
-        }
-    }
-
-    /// Reads only the rows that match `filter`, a GoogleSQL boolean expression. Table reads
-    /// only.
-    pub fn with_row_restriction(mut self, filter: impl Into<String>) -> Self {
-        self.row_restriction = Some(filter.into());
-        self
-    }
-
-    /// Reads only these columns. The default reads all columns. Table reads only.
-    pub fn with_selected_fields<I, S>(mut self, fields: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        self.selected_fields = fields.into_iter().map(Into::into).collect();
-        self
-    }
-
-    /// The project that pays for the read sessions and query jobs. [`ReadRows`] uses the
-    /// `--project` of the pipeline when this is not set, and then the project of the table. A
-    /// public table or a query read needs one of the first two.
-    pub fn with_billing_project(mut self, project: impl Into<String>) -> Self {
-        self.billing_project = Some(project.into());
-        self
-    }
-
-    /// The most streams for the session. The default, `0`, lets the server choose.
-    pub fn with_max_stream_count(mut self, count: i32) -> Self {
-        self.max_stream_count = count.max(0);
-        self
-    }
-
-    /// Compresses the Arrow buffers of the responses. The default is no compression.
-    pub fn with_compression(mut self, compression: ArrowCompression) -> Self {
-        self.compression = compression;
-        self
-    }
-
-    /// The Cloud KMS key that encrypts the temporary table of a query read.
-    pub fn with_kms_key(mut self, kms_key: impl Into<String>) -> Self {
-        self.kms_key = Some(kms_key.into());
-        self
-    }
-
-    /// The priority of the query job. The default is [`QueryPriority::Batch`].
-    pub fn with_query_priority(mut self, priority: QueryPriority) -> Self {
-        self.query_priority = priority;
-        self
-    }
-
-    /// The location where the query runs. The default is the location of the first table that
-    /// the query reads.
-    pub fn with_query_location(mut self, location: impl Into<String>) -> Self {
-        self.query_location = Some(location.into());
-        self
-    }
-
-    /// The dataset (`[project:]dataset` or `project.dataset`) of the temporary table of a query
-    /// read. By default, the read creates a temporary dataset and deletes it at the end.
-    pub fn with_temp_dataset(mut self, dataset: impl Into<String>) -> Self {
-        self.temp_dataset = Some(dataset.into());
-        self
-    }
-
-    /// Runs the query as legacy SQL. The default is GoogleSQL.
-    pub fn with_use_legacy_sql(mut self, use_legacy_sql: bool) -> Self {
-        self.use_legacy_sql = use_legacy_sql;
-        self
-    }
-
-    /// Flattens the repeated fields of legacy SQL results. The default is `true`.
-    pub fn with_flatten_results(mut self, flatten_results: bool) -> Self {
-        self.flatten_results = flatten_results;
-        self
-    }
-
-    /// These options, with `project` as the billing project if none is set.
-    fn with_default_billing_project(mut self, project: Option<String>) -> Self {
-        if self.billing_project.is_none() {
-            self.billing_project = project;
-        }
-        self
-    }
-
-    /// Checks the options without a call to BigQuery. A query read fails if the query is empty,
-    /// or if it sets `row_restriction` or `selected_fields`, which apply to table reads only.
-    pub fn validate(&self) -> beam::Result {
-        let Source::Query(query) = &self.source else {
-            return Ok(());
-        };
-        if query.is_empty() {
-            return Err(beam::Error::msg("The query of a BigQuery read is empty"));
-        }
-        if self.row_restriction.is_some() || !self.selected_fields.is_empty() {
-            return Err(beam::Error::msg(
-                "row_restriction and selected_fields apply to table reads only",
-            ));
-        }
-        Ok(())
-    }
-
-    /// Returns the Beam schema of the rows that [`ReadRows`] reads with these options. A table
-    /// read creates a read session with one stream. A query read runs a dry-run job.
-    pub fn schema(&self) -> beam::Result<Schema> {
-        self.schema_with(None, None)
-    }
-
-    fn schema_with(
-        &self,
-        client: Option<Read>,
-        query_clients: Option<QueryClients>,
-    ) -> beam::Result<Schema> {
-        self.validate()?;
-        let table_spec = match &self.source {
-            Source::Query(query) => return query_schema(self, query, query_clients),
-            Source::Table(spec) => spec.clone(),
-        };
-        let options = Self {
-            max_stream_count: 1,
-            ..self.clone()
-        };
-        let session =
-            block_on_async(async move { create_session(&table_spec, &options, client).await })
-                .map_err(|e| {
-                    beam::Error::from(e).context("Failed to create a BigQuery read session")
-                })?;
-        let arrow_schema = try_schema_from_ipc_buffer(&session_schema(&session)?)
-            .map_err(|e| beam::Error::msg(format!("Invalid Arrow schema from BigQuery: {e}")))?;
-        beam_schema(&arrow_schema)
-    }
-}
+/// The output name of the error rows of a read.
+const FAILURES_TAG: &str = "failures";
 
 /// Reads a BigQuery table or query through the Storage Read API into Beam rows.
 ///
@@ -338,6 +118,15 @@ pub struct ReadRows {
     client: Option<Read>,
     query_clients: Option<QueryClients>,
     encoded: bool,
+}
+
+/// The steps of a read up to the reshuffled streams, and what the later steps need.
+struct Streams {
+    name: String,
+    existing: HashSet<String>,
+    schema: Arc<Schema>,
+    streams: PCollection<(StreamRestriction, Vec<u8>)>,
+    temp_table: Option<PCollection<TempTable>>,
 }
 
 impl ReadRows {
@@ -408,8 +197,46 @@ impl ReadRows {
     }
 
     /// Fallible form of [`PTransform::expand`]: fails if the options are invalid or the schema
-    /// lookup fails.
+    /// lookup fails. The first row that does not convert fails the pipeline.
     pub fn try_expand(&self, input: &PBegin) -> beam::Result<PCollection<Row>> {
+        let streams = self.expand_streams(input)?;
+        let rows = streams
+            .streams
+            .apply(SplittableParDo::new(
+                format!("{}/ReadStreams", streams.name),
+                ReadStreamFn::<RowElement>::new(
+                    Arc::clone(&streams.schema),
+                    self.client.clone(),
+                    self.encoded,
+                ),
+            ))
+            .as_rows()
+            .with_row_schema(&streams.schema);
+        self.finish(input, streams, &rows, None);
+        Ok(rows)
+    }
+
+    /// Like [`try_expand`](Self::try_expand), but a row that does not convert goes to
+    /// [`failures`](WithFailures::failures) as a row of [`error_schema`], and the read
+    /// continues. A batch with such a row converts again one row at a time.
+    pub fn try_expand_with_failures(&self, input: &PBegin) -> beam::Result<WithFailures<Row, Row>> {
+        let streams = self.expand_streams(input)?;
+        let WithFailures { output, failures } = streams.streams.apply(SplittableParDo::new(
+            format!("{}/ReadStreams", streams.name),
+            ReadStreamFn::<Result<RowElement, Row>>::new(
+                Arc::clone(&streams.schema),
+                self.client.clone(),
+                self.encoded,
+            ),
+        ));
+        let output = output.as_rows().with_row_schema(&streams.schema);
+        let failures = failures.with_row_schema(error_schema());
+        self.finish(input, streams, &output, Some(&failures));
+        Ok(WithFailures { output, failures })
+    }
+
+    /// Checks the options, gets the schema, and adds the steps up to the reshuffled streams.
+    fn expand_streams(&self, input: &PBegin) -> beam::Result<Streams> {
         let pipeline = input.pipeline();
         let project = pipeline
             .options()
@@ -460,18 +287,31 @@ impl ReadRows {
                 (streams, Some(temp_table))
             }
         };
-        let rows = streams
-            .apply(Reshuffle::new(format!("{name}/Reshuffle")))
-            .apply(SplittableParDo::new(
-                format!("{name}/ReadStreams"),
-                ReadStreamFn {
-                    schema: Arc::clone(&schema),
-                    client: self.client.clone(),
-                    encoded: self.encoded,
-                },
-            ))
-            .as_rows()
-            .with_row_schema(&schema);
+        let streams = streams.apply(Reshuffle::new(format!("{name}/Reshuffle")));
+        Ok(Streams {
+            name,
+            existing,
+            schema,
+            streams,
+            temp_table,
+        })
+    }
+
+    /// Deletes the temporary table of a query read after all `rows` are read, and groups the
+    /// steps of the read under its name.
+    fn finish(
+        &self,
+        input: &PBegin,
+        streams: Streams,
+        rows: &PCollection<Row>,
+        failures: Option<&PCollection<Row>>,
+    ) {
+        let Streams {
+            name,
+            existing,
+            temp_table,
+            ..
+        } = streams;
         if let Some(temp_table) = temp_table {
             let done = rows
                 .as_row_elements()
@@ -485,13 +325,12 @@ impl ReadRows {
                 },
             ));
         }
-        add_composite(
-            pipeline,
-            &name,
-            &existing,
-            HashMap::from([("out".to_string(), rows.id().to_string())]),
-        );
-        Ok(rows)
+        let outputs = [("out", rows)]
+            .into_iter()
+            .chain(failures.map(|failures| (FAILURES_TAG, failures)))
+            .map(|(tag, output)| (tag.to_string(), output.id().to_string()))
+            .collect::<HashMap<_, _>>();
+        add_composite(input.pipeline(), &name, &existing, outputs);
     }
 }
 

@@ -36,10 +36,13 @@ use google_cloud_bigquery::write::format::Arrow;
 use tokio::task::JoinHandle;
 
 use super::append::{Failure, append_at};
+use super::buffer::{InFlightLimit, RowBuffer};
 use super::client::{APPEND_RETRY, CALL_RETRY, is_transient, with_retries, write_client};
 use super::commit::commit_streams;
 use super::emit_global;
-use super::encode::{Encoded, EncodedBatch, Encoder, InFlightLimit, Request, RowBuffer};
+use super::encode::{Encoded, Encoder};
+use super::encoded_batch::{EncodedBatch, Request};
+use super::projection::Selection;
 use super::table::Destination;
 use crate::runtime::{block_on_async, client_runtime};
 
@@ -82,7 +85,7 @@ struct Bundle {
 /// and writes the failed batches again in order.
 pub(super) struct WritePendingFn {
     destination: SingletonView<Destination>,
-    input: Arc<Schema>,
+    selection: Arc<Selection>,
     errors: Arc<Schema>,
     connect: Connect,
     encoder: Option<Arc<(Encoder, String)>>,
@@ -146,14 +149,14 @@ impl Connect {
 impl WritePendingFn {
     pub(super) fn new(
         destination: SingletonView<Destination>,
-        input: Arc<Schema>,
+        selection: Arc<Selection>,
         errors: Arc<Schema>,
         client: Option<Arc<Write>>,
         append_timeout: Duration,
     ) -> Self {
         Self {
             destination,
-            input,
+            selection,
             errors,
             connect: Connect {
                 client,
@@ -171,11 +174,7 @@ impl WritePendingFn {
             return Ok(Arc::clone(encoder));
         }
         let destination = ctx.side_input(&self.destination)?;
-        let encoder = Encoder::new(
-            Arc::clone(&self.input),
-            Arc::clone(&self.errors),
-            &destination,
-        )?;
+        let encoder = Encoder::new(&self.selection, Arc::clone(&self.errors), &destination)?;
         let encoder = Arc::new((encoder, destination.table));
         self.encoder = Some(Arc::clone(&encoder));
         Ok(encoder)
@@ -399,7 +398,7 @@ impl Clone for WritePendingFn {
     fn clone(&self) -> Self {
         Self::new(
             self.destination.clone(),
-            Arc::clone(&self.input),
+            Arc::clone(&self.selection),
             Arc::clone(&self.errors),
             self.connect.client.clone(),
             self.connect.append_timeout,

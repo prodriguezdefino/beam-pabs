@@ -30,6 +30,8 @@ use beam::pipeline::Pipeline;
 use beam::schema::{BeamRow, Row, Schema};
 use beam::transforms::{DoFn, ParDo, ProcessContext};
 use expansion::{PCollectionId, SchemaTransformProvider, register_schema_transform};
+#[cfg(doc)]
+use gcp::bigquery::storage::read::error_schema;
 use gcp::bigquery::storage::read::{ReadOptions, ReadRows};
 use gcp::bigquery::storage::write::{Semantics, WriteOptions, WriteRows, is_unbounded};
 use gcp::bigquery::{CreateDisposition, WriteDisposition};
@@ -58,6 +60,12 @@ pub struct BigQueryStorageReadConfig {
     pub temp_dataset: Option<String>,
     pub use_legacy_sql: Option<bool>,
     pub flatten_results: Option<bool>,
+    /// An RFC 3339 timestamp, such as `2024-05-01T12:30:00Z`. Table reads only.
+    pub snapshot_time: Option<String>,
+    pub preferred_min_stream_count: Option<i64>,
+    /// The output for rows that do not convert to Beam rows. See
+    /// [`BigQueryStorageReadProvider`].
+    pub error_handling: Option<ErrorHandling>,
 }
 
 impl BigQueryStorageReadConfig {
@@ -104,6 +112,18 @@ impl BigQueryStorageReadConfig {
         if let Some(flatten) = self.flatten_results {
             options = options.with_flatten_results(flatten);
         }
+        if let Some(time) = set(self.snapshot_time) {
+            options = options.with_snapshot_time(time);
+        }
+        if let Some(count) = self.preferred_min_stream_count {
+            let count = i32::try_from(count)
+                .ok()
+                .filter(|count| *count >= 0)
+                .ok_or_else(|| {
+                    format!("preferred_min_stream_count {count} is negative or too large")
+                })?;
+            options = options.with_preferred_min_stream_count(count);
+        }
         options.validate().map_err(|e| e.to_string())?;
         Ok(options)
     }
@@ -111,6 +131,10 @@ impl BigQueryStorageReadConfig {
 
 /// Reads a BigQuery table or query with the Storage Read API. See
 /// [`BigQueryStorageReadConfig`] for the configuration.
+///
+/// The rows go to the output `output`. With `error_handling`, rows that do not convert go to
+/// the output that it names, with the fields of [`error_schema`]. Without it, such a row
+/// fails the pipeline.
 #[derive(Default)]
 pub struct BigQueryStorageReadProvider;
 
@@ -140,18 +164,31 @@ impl SchemaTransformProvider for BigQueryStorageReadProvider {
         _inputs: HashMap<String, PCollectionId>,
         pipeline: &mut Pipeline,
     ) -> Result<HashMap<String, PCollectionId>, String> {
-        let options = BigQueryStorageReadConfig::from_row(&config)
-            .map_err(|e| e.to_string())?
-            .read_options()?;
+        let mut config = BigQueryStorageReadConfig::from_row(&config).map_err(|e| e.to_string())?;
+        let errors = config
+            .error_handling
+            .take()
+            .map(|handling| handling.output)
+            .filter(|output| !output.is_empty());
         // The rows go to another SDK, so they leave the reader as row coder bytes.
-        let rows = ReadRows::new("ReadFromBigQuery", options)
-            .with_encoded_rows()
-            .try_expand(&pipeline.begin())
-            .map_err(|e| e.to_string())?;
-        Ok(HashMap::from([(
-            "output".to_string(),
-            rows.id().to_string(),
-        )]))
+        let read = ReadRows::new("ReadFromBigQuery", config.read_options()?).with_encoded_rows();
+        let begin = pipeline.begin();
+        let outputs = match errors {
+            Some(errors) => {
+                let outputs = read
+                    .try_expand_with_failures(&begin)
+                    .map_err(|e| e.to_string())?;
+                HashMap::from([
+                    ("output".to_string(), outputs.output.id().to_string()),
+                    (errors, outputs.failures.id().to_string()),
+                ])
+            }
+            None => {
+                let rows = read.try_expand(&begin).map_err(|e| e.to_string())?;
+                HashMap::from([("output".to_string(), rows.id().to_string())])
+            }
+        };
+        Ok(outputs)
     }
 }
 
@@ -185,10 +222,20 @@ pub struct BigQueryStorageWriteConfig {
     /// in the Java provider, it is on unless `num_streams` is set, and `false` needs
     /// `num_streams`.
     pub auto_sharding: Option<bool>,
-    /// `INT64`, because Python sends every integer as `INT64`.
-    pub num_streams: Option<i64>,
+    /// `INT32`, as in the Java configuration. The expansion service accepts an `INT64` from
+    /// Python when the value fits.
+    pub num_streams: Option<i32>,
     pub kms_key: Option<String>,
     pub clustering_fields: Option<Vec<String>>,
+    /// Writes only these input fields. Set at most one of `keep`, `drop` and `only`.
+    pub keep: Option<Vec<String>>,
+    /// Writes all input fields except these.
+    pub drop: Option<Vec<String>>,
+    /// Writes the fields of this input row field as the columns of the table.
+    pub only: Option<String>,
+    /// Does not write the fields that the table has no column for. Without it, such a field
+    /// fails the write.
+    pub ignore_unknown_values: Option<bool>,
     pub error_handling: Option<ErrorHandling>,
 }
 
@@ -228,8 +275,8 @@ impl BigQueryStorageWriteConfig {
             options = options.with_semantics(Semantics::AtLeastOnce);
         }
         if let Some(count) = self.num_streams {
-            let count = u32::try_from(count)
-                .map_err(|_| format!("num_streams {count} is negative or too large"))?;
+            let count =
+                u32::try_from(count).map_err(|_| format!("num_streams {count} is negative"))?;
             options = options.with_num_streams(count);
         }
         if let Some(key) = set(self.kms_key) {
@@ -237,6 +284,18 @@ impl BigQueryStorageWriteConfig {
         }
         if let Some(fields) = self.clustering_fields.filter(|f| !f.is_empty()) {
             options = options.with_clustering_fields(fields);
+        }
+        if let Some(fields) = self.keep.filter(|f| !f.is_empty()) {
+            options = options.with_keep(fields);
+        }
+        if let Some(fields) = self.drop.filter(|f| !f.is_empty()) {
+            options = options.with_drop(fields);
+        }
+        if let Some(field) = set(self.only) {
+            options = options.with_only(field);
+        }
+        if self.ignore_unknown_values == Some(true) {
+            options = options.with_ignore_unknown_values(true);
         }
         options.validate().map_err(|e| e.to_string())?;
         Ok(options)

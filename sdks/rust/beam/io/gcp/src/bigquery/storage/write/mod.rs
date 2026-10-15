@@ -56,13 +56,18 @@
 
 #[doc(hidden)]
 pub mod append;
+mod buffer;
 mod buffered;
 mod client;
 mod commit;
 mod default_stream;
 #[doc(hidden)]
 pub mod encode;
+mod encoded_batch;
+mod options;
 mod pending;
+#[doc(hidden)]
+pub mod projection;
 mod table;
 
 use std::collections::HashMap;
@@ -81,13 +86,16 @@ use google_cloud_bigquery_v2::client::TableService;
 
 use crate::bigquery::storage::{add_composite, transform_ids};
 use crate::bigquery::table::TableRef;
-use crate::bigquery::{CreateDisposition, WriteDisposition};
 use crate::options::GcpOptions;
 use buffered::WriteBufferedFn;
 use default_stream::WriteDefaultFn;
-use encode::{EncodeFn, EncodedBatch, Sharding};
+use encode::{EncodeFn, Sharding};
+use encoded_batch::EncodedBatch;
 use pending::{CommitFn, WritePendingFn};
+use projection::Selection;
 use table::{Destination, PrepareTableFn};
+
+pub use options::{Semantics, WriteOptions};
 
 /// The output tag of the rows that a write step rejects.
 const ERRORS_TAG: &str = "errors";
@@ -95,130 +103,6 @@ const ERRORS_TAG: &str = "errors";
 /// The flush interval of an unbounded exactly-once write when the options set none, as the
 /// Java SDK default.
 const DEFAULT_TRIGGERING_FREQUENCY: Duration = Duration::from_secs(5);
-
-/// How long an append waits for its answer when the options set no time, as the Storage Write
-/// client of the Java SDK waits for a request callback.
-const DEFAULT_APPEND_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-
-/// How many times a row can arrive in the table.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Semantics {
-    /// Each row arrives once. The write commits or flushes streams, and an unbounded write
-    /// costs a shuffle.
-    #[default]
-    ExactlyOnce,
-    /// A retried bundle can write its rows again. The write has no shuffle and the rows are
-    /// visible at once.
-    AtLeastOnce,
-}
-
-/// Where and how to write.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WriteOptions {
-    table_spec: String,
-    create_disposition: CreateDisposition,
-    write_disposition: WriteDisposition,
-    semantics: Semantics,
-    triggering_frequency: Option<Duration>,
-    num_streams: u32,
-    append_timeout: Duration,
-    kms_key: Option<String>,
-    clustering_fields: Vec<String>,
-}
-
-impl WriteOptions {
-    /// Writes to the table `table_spec` (`[project:]dataset.table` or `project.dataset.table`).
-    /// A spec without a project uses the `--project` of the pipeline.
-    pub fn new(table_spec: impl Into<String>) -> Self {
-        Self {
-            table_spec: table_spec.into(),
-            create_disposition: CreateDisposition::CreateIfNeeded,
-            write_disposition: WriteDisposition::WriteAppend,
-            semantics: Semantics::ExactlyOnce,
-            triggering_frequency: None,
-            num_streams: 0,
-            append_timeout: DEFAULT_APPEND_TIMEOUT,
-            kms_key: None,
-            clustering_fields: Vec::new(),
-        }
-    }
-
-    /// The default is [`CreateDisposition::CreateIfNeeded`].
-    pub fn with_create_disposition(mut self, disposition: CreateDisposition) -> Self {
-        self.create_disposition = disposition;
-        self
-    }
-
-    /// The default is [`WriteDisposition::WriteAppend`]. The Storage Write API cannot replace
-    /// the rows of a table, so [`validate`](Self::validate) rejects
-    /// [`WriteDisposition::WriteTruncate`].
-    pub fn with_write_disposition(mut self, disposition: WriteDisposition) -> Self {
-        self.write_disposition = disposition;
-        self
-    }
-
-    /// The default is [`Semantics::ExactlyOnce`].
-    pub fn with_semantics(mut self, semantics: Semantics) -> Self {
-        self.semantics = semantics;
-        self
-    }
-
-    /// How often an exactly-once write of an unbounded input makes its rows visible. Setting
-    /// it also selects the unbounded shape for a bounded input, as in `BigQueryIO` of the Java
-    /// SDK. The default is 5 seconds.
-    pub fn with_triggering_frequency(mut self, frequency: Duration) -> Self {
-        self.triggering_frequency = Some(frequency);
-        self
-    }
-
-    /// The shards of an exactly-once write of an unbounded input, one buffered stream each.
-    /// The default, `0`, shards automatically: one shard for each DoFn copy that converts rows,
-    /// as the auto-sharding of the Java SDK gives one for each worker thread.
-    pub fn with_num_streams(mut self, count: u32) -> Self {
-        self.num_streams = count;
-        self
-    }
-
-    /// How long an append waits for its answer. After this time, the writer opens a new
-    /// connection and sends the append again. The default is 5 minutes.
-    pub fn with_append_timeout(mut self, timeout: Duration) -> Self {
-        self.append_timeout = timeout;
-        self
-    }
-
-    /// The Cloud KMS key that encrypts a table that the write creates.
-    pub fn with_kms_key(mut self, kms_key: impl Into<String>) -> Self {
-        self.kms_key = Some(kms_key.into());
-        self
-    }
-
-    /// The clustering columns of a table that the write creates.
-    pub fn with_clustering_fields<I, S>(mut self, fields: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        self.clustering_fields = fields.into_iter().map(Into::into).collect();
-        self
-    }
-
-    /// Checks the options without a call to BigQuery.
-    pub fn validate(&self) -> beam::Result {
-        TableRef::parse(&self.table_spec).map_err(beam::Error::from)?;
-        match (self.write_disposition, self.triggering_frequency) {
-            (WriteDisposition::WriteTruncate, _) => Err(beam::Error::msg(
-                "The Storage Write API cannot replace the rows of a table: use WRITE_APPEND or WRITE_EMPTY",
-            )),
-            (_, Some(frequency)) if frequency.is_zero() => Err(beam::Error::msg(
-                "The triggering frequency of a BigQuery write must be positive",
-            )),
-            _ if self.append_timeout.is_zero() => Err(beam::Error::msg(
-                "The append timeout of a BigQuery write must be positive",
-            )),
-            _ => Ok(()),
-        }
-    }
-}
 
 /// The schema of the error output for rows of `schema`: the rejected row and the reason.
 pub fn error_schema(schema: &Schema) -> Schema {
@@ -286,6 +170,14 @@ impl WriteRows {
             })
             .map_err(|e| beam::Error::from(e).context(self.name.clone()))?;
         let errors = Arc::new(error_schema(&schema));
+        let selection = Arc::new(
+            Selection::new(
+                schema,
+                &options.field_selection()?,
+                options.ignore_unknown_values,
+            )
+            .map_err(|e| e.context(self.name.clone()))?,
+        );
         let name = pipeline.unique_transform_name(&self.name);
         let existing = transform_ids(pipeline);
 
@@ -295,7 +187,7 @@ impl WriteRows {
                 format!("{name}/PrepareTable"),
                 PrepareTableFn {
                     table: table.1,
-                    schema: Arc::clone(&schema),
+                    schema: Arc::clone(selection.written()),
                     options: options.clone(),
                     tables: self.tables.clone(),
                 },
@@ -313,7 +205,7 @@ impl WriteRows {
                 format!("{name}/WriteDefaultStream"),
                 WriteDefaultFn::new(
                     destination,
-                    Arc::clone(&schema),
+                    Arc::clone(&selection),
                     Arc::clone(&errors),
                     self.client.clone(),
                     options.append_timeout,
@@ -327,7 +219,7 @@ impl WriteRows {
                     format!("{name}/WritePendingStreams"),
                     WritePendingFn::new(
                         destination,
-                        Arc::clone(&schema),
+                        Arc::clone(&selection),
                         Arc::clone(&errors),
                         self.client.clone(),
                         options.append_timeout,
@@ -346,10 +238,10 @@ impl WriteRows {
                 let WithFailures {
                     output: batches,
                     failures: encode_errors,
-                } = self.encode(&name, &rows, &destination, (&schema, &errors), sharding);
+                } = self.encode(&name, &rows, &destination, (&selection, &errors), sharding);
                 let writer = WriteBufferedFn::new(
                     destination,
-                    Arc::clone(&schema),
+                    Arc::clone(&selection),
                     Arc::clone(&errors),
                     self.client.clone(),
                     options
@@ -388,12 +280,12 @@ impl WriteRows {
         name: &str,
         rows: &PCollection<RowElement>,
         destination: &SingletonView<Destination>,
-        (schema, errors): (&Arc<Schema>, &Arc<Schema>),
+        (selection, errors): (&Arc<Selection>, &Arc<Schema>),
         sharding: Sharding,
     ) -> WithFailures<(i64, EncodedBatch), Row> {
         let encoder = EncodeFn::new(
             destination.clone(),
-            Arc::clone(schema),
+            Arc::clone(selection),
             Arc::clone(errors),
             sharding,
         );

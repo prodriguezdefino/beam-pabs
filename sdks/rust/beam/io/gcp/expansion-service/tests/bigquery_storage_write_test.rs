@@ -21,7 +21,7 @@
 
 use std::time::Duration;
 
-use beam::schema::BeamRow;
+use beam::schema::{BeamRow, FieldType};
 use expansion::{SchemaTransformProvider, SchemaTransformRegistration};
 use gcp::bigquery::storage::write::{Semantics, WriteOptions};
 use gcp::bigquery::{CreateDisposition, WriteDisposition};
@@ -66,10 +66,19 @@ fn the_config_has_the_java_fields() {
             "num_streams",
             "kms_key",
             "clustering_fields",
+            "keep",
+            "drop",
+            "only",
+            "ignore_unknown_values",
             "error_handling",
         ]
     );
     assert!(schema.fields.iter().skip(1).all(|f| f.field_type.nullable));
+    let num_streams = schema.field("num_streams").unwrap();
+    assert_eq!(
+        num_streams.field_type.type_info,
+        FieldType::int32().type_info
+    );
     assert_eq!(provider.input_tags(), ["input"]);
 }
 
@@ -109,6 +118,39 @@ fn every_option_reaches_the_write() {
             .with_num_streams(8)
             .with_kms_key("projects/p/locations/us/keyRings/r/cryptoKeys/k")
             .with_clustering_fields(["id", "name"])
+    );
+}
+
+#[test]
+fn the_field_options_reach_the_write() {
+    let keep = BigQueryStorageWriteConfig {
+        keep: Some(vec!["id".to_string()]),
+        ignore_unknown_values: Some(true),
+        ..table("p.d.t")
+    };
+    assert_eq!(
+        keep.write_options(false).unwrap(),
+        WriteOptions::new("p.d.t")
+            .with_keep(["id"])
+            .with_ignore_unknown_values(true)
+    );
+    let drop = BigQueryStorageWriteConfig {
+        drop: Some(vec!["extra".to_string()]),
+        only: some(""),
+        ..table("p.d.t")
+    };
+    assert_eq!(
+        drop.write_options(false).unwrap(),
+        WriteOptions::new("p.d.t").with_drop(["extra"])
+    );
+    let only = BigQueryStorageWriteConfig {
+        only: some("payload"),
+        keep: Some(Vec::new()),
+        ..table("p.d.t")
+    };
+    assert_eq!(
+        only.write_options(false).unwrap(),
+        WriteOptions::new("p.d.t").with_only("payload")
     );
 }
 
@@ -186,6 +228,14 @@ fn invalid_configs_fail_before_any_call() {
                 ..table("p.d.t")
             },
             "auto_sharding false",
+        ),
+        (
+            BigQueryStorageWriteConfig {
+                keep: Some(vec!["a".to_string()]),
+                only: some("b"),
+                ..table("p.d.t")
+            },
+            "at most one of keep, drop and only",
         ),
     ];
     for (config, expected) in cases {

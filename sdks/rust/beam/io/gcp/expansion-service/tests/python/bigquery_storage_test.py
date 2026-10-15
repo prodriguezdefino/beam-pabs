@@ -247,6 +247,39 @@ class BigQueryStorageTest(unittest.TestCase):
               'id': 1, 'string_col': 'héllo'
           })]))
 
+  def test_snapshot_time_reads_the_table_as_it_was(self):
+    target = self.new_table('snapshot')
+    self.client.query(f'CREATE TABLE `{target}` AS SELECT 1 AS id').result()
+    # The time of BigQuery, so the clock of this machine does not count.
+    (snapshot, ) = next(iter(self.client.query(
+        "SELECT FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%E6SZ', CURRENT_TIMESTAMP())"
+    ).result()))
+    time.sleep(1)
+    self.client.query(f'INSERT INTO `{target}` VALUES (2)').result()
+    with self.pipeline() as p:
+      rows = (
+          p
+          | SchemaAwareExternalTransform(
+              READ,
+              self.service,
+              table_spec=target,
+              billing_project=self.project,
+              snapshot_time=snapshot,
+              preferred_min_stream_count=2)
+          | beam.Map(lambda row: row.id))
+      assert_that(rows, equal_to([1]))
+
+  def test_error_handling_keeps_the_rows_in_the_main_output(self):
+    # A table read converts every row of the session schema, so the error
+    # output is empty. Rust tests cover the rows that do not convert.
+    with self.pipeline() as p:
+      outputs = self.read(p, error_handling=beam.Row(output='errors'))
+      assert_that(
+          outputs['output'] | beam.Map(typed),
+          equal_to([typed(FULL_ROW), typed(NULL_ROW)]),
+          label='Rows')
+      assert_that(outputs['errors'], equal_to([]), label='Errors')
+
   # Write.
 
   def round_trip(self, **config):
@@ -335,6 +368,142 @@ class BigQueryStorageTest(unittest.TestCase):
       assert_that(failed, equal_to([(2, True)]))
     self.assertEqual(
         self.rows_as_json(target), ['{"id":1,"civil":"2024-05-01T12:30:00"}'])
+
+  # Field selection.
+
+  def write_rows(self, rows, **config):
+    """Writes `rows` to a new table and returns the table."""
+    target = self.new_table('fields')
+    with self.pipeline() as p:
+      _ = (
+          p
+          | beam.Create(rows)
+          | SchemaAwareExternalTransform(
+              WRITE, self.service, table=target, **config))
+    return target
+
+  def columns(self, table):
+    return [f.name for f in self.client.get_table(table).schema]
+
+  def test_keep_writes_only_the_named_fields(self):
+    target = self.write_rows([
+        beam.Row(id=1, name='a', extra='x'),
+        beam.Row(id=2, name='b', extra='y'),
+    ], keep=['id', 'name'])
+    self.assertEqual(self.columns(target), ['id', 'name'])
+    self.assertEqual(
+        self.rows_as_json(target),
+        ['{"id":1,"name":"a"}', '{"id":2,"name":"b"}'])
+
+  def test_drop_writes_the_other_fields(self):
+    target = self.write_rows([
+        beam.Row(id=1, name='a', extra='x'),
+        beam.Row(id=2, name='b', extra='y'),
+    ], drop=['extra'])
+    self.assertEqual(self.columns(target), ['id', 'name'])
+    self.assertEqual(
+        self.rows_as_json(target),
+        ['{"id":1,"name":"a"}', '{"id":2,"name":"b"}'])
+
+  def test_only_writes_the_fields_of_a_nested_row(self):
+    target = self.write_rows([
+        beam.Row(meta='m1', payload=beam.Row(id=1, name='a')),
+        beam.Row(meta='m2', payload=beam.Row(id=2, name='b')),
+    ], only='payload')
+    self.assertEqual(self.columns(target), ['id', 'name'])
+    self.assertEqual(
+        self.rows_as_json(target),
+        ['{"id":1,"name":"a"}', '{"id":2,"name":"b"}'])
+
+  def test_an_error_row_of_only_holds_the_input_row(self):
+    target = self.new_table('only_errors')
+    self.client.query(
+        f'CREATE TABLE `{target}` (id INT64, civil DATETIME)').result()
+    with self.pipeline() as p:
+      errors = (
+          p
+          | beam.Create([
+              beam.Row(
+                  meta='m1', payload=beam.Row(id=1, civil='2024-05-01T12:30:00')),
+              beam.Row(meta='m2', payload=beam.Row(id=2, civil='yesterday')),
+          ])
+          | SchemaAwareExternalTransform(
+              WRITE,
+              self.service,
+              table=target,
+              create_disposition='CREATE_NEVER',
+              only='payload',
+              error_handling=beam.Row(output='errors')))
+      failed = errors | beam.Map(
+          lambda error: (error.failed_row.meta, error.failed_row.payload.id))
+      assert_that(failed, equal_to([('m2', 2)]))
+    self.assertEqual(
+        self.rows_as_json(target), ['{"id":1,"civil":"2024-05-01T12:30:00"}'])
+
+  def test_ignore_unknown_values_drops_the_fields_that_the_table_lacks(self):
+    target = self.new_table('ignore')
+    self.client.query(
+        f'CREATE TABLE `{target}` (id INT64, name STRING)').result()
+    rows = [
+        beam.Row(id=1, name='a', unknown='x'),
+        beam.Row(id=2, name='b', unknown='y'),
+    ]
+    with self.pipeline() as p:
+      _ = (
+          p
+          | beam.Create(rows)
+          | SchemaAwareExternalTransform(
+              WRITE,
+              self.service,
+              table=target,
+              create_disposition='CREATE_NEVER',
+              ignore_unknown_values=True))
+    self.assertEqual(
+        self.rows_as_json(target),
+        ['{"id":1,"name":"a"}', '{"id":2,"name":"b"}'])
+
+  def test_without_ignore_unknown_values_a_missing_column_fails(self):
+    target = self.new_table('unknown')
+    self.client.query(
+        f'CREATE TABLE `{target}` (id INT64, name STRING)').result()
+    with self.assertRaisesRegex(Exception, "no column 'unknown'"):
+      with self.pipeline() as p:
+        _ = (
+            p
+            | beam.Create([beam.Row(id=1, name='a', unknown='x')])
+            | SchemaAwareExternalTransform(
+                WRITE,
+                self.service,
+                table=target,
+                create_disposition='CREATE_NEVER'))
+
+  def test_num_streams_shards_an_unbounded_write(self):
+    # Python sends num_streams as INT64. The provider config takes INT32, and
+    # the expansion service narrows the value.
+    target = self.new_table('streams')
+    start = time.time()
+    interval = 0.05
+    with self.pipeline(streaming=True) as p:
+      _ = (
+          p
+          | PeriodicImpulse(
+              start_timestamp=start,
+              stop_timestamp=start + 2,
+              fire_interval=interval)
+          | beam.Map(lambda at: beam.Row(id=round((float(at) - start) / interval))).
+          with_output_types(POSITION)
+          | SchemaAwareExternalTransform(
+              WRITE,
+              self.service,
+              table=target,
+              triggering_frequency_seconds=1,
+              num_streams=2))
+    query = (
+        'SELECT COUNT(*) AS n, COUNT(DISTINCT id) AS ids, MIN(id) AS low, '
+        f'MAX(id) AS high FROM `{target}`')
+    row = next(iter(self.client.query(query).result()))
+    self.assertGreater(row.n, 0)
+    self.assertEqual((row.n, row.ids, row.low), (row.high + 1, row.high + 1, 0))
 
 
 if __name__ == '__main__':

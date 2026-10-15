@@ -41,6 +41,7 @@ bigquery-storage = [
     "bigquery",
     "dep:google-cloud-bigquery",
     "dep:google-cloud-bigquery-v2",
+    "dep:google-cloud-wkt",
     "dep:uuid",
     "dep:arrow_io",
     "dep:arrow-ipc",
@@ -71,6 +72,8 @@ serde = { workspace = true }
 google-cloud-auth = { workspace = true }
 google-cloud-bigquery = { workspace = true, optional = true }
 google-cloud-bigquery-v2 = { workspace = true, optional = true }
+# The snapshot time of a read session.
+google-cloud-wkt = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
 arrow_io = { workspace = true, optional = true }
 # The Arrow IPC codecs of compressed Storage Read responses.

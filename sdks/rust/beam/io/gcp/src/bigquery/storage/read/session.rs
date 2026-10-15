@@ -26,6 +26,7 @@ use beam::transforms::{DoFn, ProcessContext};
 use beam::values::{AnySideInput, IterView};
 use google_cloud_bigquery::client::Read;
 use google_cloud_bigquery::model::arrow_serialization_options::CompressionCodec;
+use google_cloud_bigquery::model::read_session::TableModifiers;
 use google_cloud_bigquery::model::read_session::TableReadOptions;
 use google_cloud_bigquery::model::{ArrowSerializationOptions, DataFormat, ReadSession};
 use tokio::sync::OnceCell;
@@ -82,6 +83,10 @@ pub(super) async fn create_session(
             ArrowSerializationOptions::new().set_buffer_compression(codec),
         );
     }
+    let modifiers = options
+        .snapshot_timestamp()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?
+        .map(|time| TableModifiers::new().set_snapshot_time(time));
     let client = match client {
         Some(client) => client,
         None => read_client().await?,
@@ -93,9 +98,11 @@ pub(super) async fn create_session(
             ReadSession::new()
                 .set_table(resource)
                 .set_data_format(DataFormat::Arrow)
-                .set_read_options(read_options),
+                .set_read_options(read_options)
+                .set_or_clear_table_modifiers(modifiers),
         )
         .set_max_stream_count(options.max_stream_count)
+        .set_preferred_min_stream_count(options.preferred_min_stream_count)
         .send()
         .await
         .map_err(io::Error::other)

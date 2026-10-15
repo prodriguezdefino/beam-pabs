@@ -309,6 +309,7 @@ dependencies = [
  "google-cloud-gax",
  "google-cloud-secretmanager-v1",
  "google-cloud-storage",
+ "google-cloud-wkt",
  "inventory",
  "rustls",
  "serde",

@@ -20,7 +20,6 @@
 //! Conversion of rows into the Arrow IPC batches of append requests, and the DoFn that
 //! converts the rows of an exactly-once write before its shuffle.
 
-use std::io::{Read, Write};
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -33,200 +32,22 @@ use arrow_io::arrow_ipc::writer::{
     write_message,
 };
 use arrow_io::arrow_schema::Schema as ArrowSchema;
-use beam::coders::{Coder, CoderError, CoderRegistry, Context, DefaultCoder, RowCoder, URN_KV};
+use beam::coders::RowCoder;
 use beam::schema::{FieldValue, Row, RowElement, Schema};
 use beam::transforms::{DoFn, FinishBundleContext, ProcessContext};
 use beam::values::{AnySideInput, SingletonView};
 use bytes::Bytes;
-use google_cloud_bigquery::model::{ArrowRecordBatch, ArrowSchema as WriterSchema};
+use google_cloud_bigquery::model::ArrowSchema as WriterSchema;
 
+use super::buffer::{Buffered, RowBuffer};
 use super::emit_global;
+use super::encoded_batch::Request;
+use super::projection::{Selection, TableSelection};
 use super::table::Destination;
 use crate::bigquery::storage::schema::{find_field, write_array, write_batch_to_rows, write_field};
 
-/// The bytes of rows for one append. A writer converts its buffer when the rows reach about
-/// this size.
-#[doc(hidden)]
-pub const APPEND_BYTES: usize = 2 * 1024 * 1024;
-
-/// The most rows for one append.
-const APPEND_ROWS: usize = 150_000;
-
-/// The largest append request, as the Java SDK default `storageWriteApiMaxRequestSize`. A row
-/// larger than a request, with its writer schema, is an error row.
-#[doc(hidden)]
-pub const MAX_REQUEST_BYTES: usize = 10_000_000;
-
-/// The rows that a writer converts together, until they reach [`APPEND_ROWS`] or about
-/// [`APPEND_BYTES`]. The size of encoded rows is the size of their bytes. The size of a row
-/// is an estimate from its values.
-#[derive(Debug, Default)]
-pub(super) struct RowBuffer {
-    rows: Buffered,
-    bytes: usize,
-}
-
-/// The rows of a buffer: the row coder bytes of the rows that arrived encoded, and the rows
-/// that arrived as rows.
-#[derive(Debug, Default)]
-pub(super) struct Buffered {
-    encoded: Vec<Vec<u8>>,
-    rows: Vec<Row>,
-}
-
-impl Buffered {
-    pub(super) fn is_empty(&self) -> bool {
-        self.encoded.is_empty() && self.rows.is_empty()
-    }
-}
-
-impl RowBuffer {
-    /// Adds `row`, and returns whether the buffer is full.
-    pub(super) fn push(&mut self, row: RowElement) -> bool {
-        match row {
-            RowElement::Encoded(bytes) => {
-                self.bytes += bytes.len();
-                self.rows.encoded.push(bytes);
-            }
-            RowElement::Row(row) => {
-                self.bytes += row.values().iter().map(value_bytes).sum::<usize>();
-                self.rows.rows.push(row);
-            }
-        }
-        self.rows.encoded.len() + self.rows.rows.len() >= APPEND_ROWS || self.bytes >= APPEND_BYTES
-    }
-
-    /// Returns the rows and empties the buffer.
-    pub(super) fn take(&mut self) -> Buffered {
-        self.bytes = 0;
-        std::mem::take(&mut self.rows)
-    }
-}
-
-/// About the bytes of a value in an Arrow batch.
-fn value_bytes(value: &Option<FieldValue>) -> usize {
-    match value {
-        None | Some(FieldValue::Byte(_) | FieldValue::Boolean(_)) => 1,
-        Some(FieldValue::Int16(_)) => 2,
-        Some(FieldValue::Int32(_) | FieldValue::Float(_)) => 4,
-        Some(FieldValue::Int64(_) | FieldValue::Double(_)) => 8,
-        Some(FieldValue::String(text)) => text.len() + 4,
-        Some(FieldValue::Bytes(bytes)) => bytes.len() + 4,
-        Some(FieldValue::Array(items)) => items.iter().map(value_bytes).sum::<usize>() + 4,
-        Some(FieldValue::Map(entries)) => entries
-            .iter()
-            .map(|(key, value)| value_bytes(&Some(key.clone())) + value_bytes(value))
-            .sum(),
-        Some(FieldValue::Row(row)) => row.values().iter().map(value_bytes).sum(),
-    }
-}
-
-/// Rows in Arrow IPC format, for one append request. The shuffle of an exactly-once write
-/// moves these, so [`EncodedBatchCoder`] writes the bytes with no copy into a row.
-#[derive(Clone, Debug, PartialEq)]
-#[doc(hidden)]
-pub struct EncodedBatch {
-    pub bytes: Vec<u8>,
-    pub rows: i64,
-}
-
-/// Encodes an [`EncodedBatch`] as `KV<varint, bytes>`. Both parts take the nested context,
-/// as [`DefaultCoder::encode_element`] writes them.
-#[derive(Clone, Debug, Default)]
-#[doc(hidden)]
-pub struct EncodedBatchCoder;
-
-impl Coder<EncodedBatch> for EncodedBatchCoder {
-    fn urn(&self) -> &'static str {
-        URN_KV
-    }
-
-    fn encode(
-        &self,
-        value: &EncodedBatch,
-        writer: &mut dyn Write,
-        _context: Context,
-    ) -> Result<(), CoderError> {
-        value.encode_element(writer)
-    }
-
-    fn decode(&self, reader: &mut dyn Read, _context: Context) -> Result<EncodedBatch, CoderError> {
-        EncodedBatch::decode_element(reader)
-    }
-}
-
-impl DefaultCoder for EncodedBatch {
-    type Coder = EncodedBatchCoder;
-
-    fn coder() -> Self::Coder {
-        EncodedBatchCoder
-    }
-
-    fn encode_element(&self, writer: &mut dyn Write) -> Result<(), CoderError> {
-        self.rows.encode_element(writer)?;
-        self.bytes.encode_element(writer)
-    }
-
-    fn decode_element(reader: &mut dyn Read) -> Result<Self, CoderError> {
-        let rows = i64::decode_element(reader)?;
-        let bytes = Vec::<u8>::decode_element(reader)?;
-        Ok(Self { bytes, rows })
-    }
-
-    fn register_coder<R: CoderRegistry + ?Sized>(registry: &R) -> String {
-        let rows = i64::register_coder(registry);
-        let bytes = Vec::<u8>::register_coder(registry);
-        registry.register_coder(URN_KV, vec![rows, bytes])
-    }
-}
-
-/// The rows of one append request. A clone shares the bytes, so a writer keeps the rows of a
-/// request that it sent with no copy.
-#[derive(Clone, Debug)]
-pub(super) struct Request {
-    pub(super) rows: ArrowRecordBatch,
-    pub(super) count: i64,
-}
-
-/// Appends that a writer sends before it waits for the oldest one: at most 1,000 requests and
-/// 20 MiB. A writer keeps the rows of each append until BigQuery accepts them, so the byte limit
-/// bounds the memory of each bundle.
-#[derive(Debug, Default)]
-pub(super) struct InFlightLimit {
-    requests: usize,
-    bytes: usize,
-}
-
-impl InFlightLimit {
-    const MAX_REQUESTS: usize = 1_000;
-    const MAX_BYTES: usize = 20 * 1024 * 1024;
-
-    pub(super) fn add(&mut self, request: &Request) {
-        self.requests += 1;
-        self.bytes += request.rows.serialized_record_batch.len();
-    }
-
-    pub(super) fn remove(&mut self, request: &Request) {
-        self.requests = self.requests.saturating_sub(1);
-        self.bytes = self
-            .bytes
-            .saturating_sub(request.rows.serialized_record_batch.len());
-    }
-
-    pub(super) fn is_full(&self) -> bool {
-        self.requests > Self::MAX_REQUESTS || self.bytes > Self::MAX_BYTES
-    }
-}
-
-impl From<EncodedBatch> for Request {
-    /// Moves the bytes into the request, with no copy.
-    fn from(batch: EncodedBatch) -> Self {
-        Self {
-            rows: ArrowRecordBatch::new().set_serialized_record_batch(Bytes::from(batch.bytes)),
-            count: batch.rows,
-        }
-    }
-}
+pub use super::buffer::{APPEND_BYTES, MAX_REQUEST_BYTES};
+pub use super::encoded_batch::{EncodedBatch, EncodedBatchCoder};
 
 /// The batches of some rows, and an error row for each row that does not convert.
 #[derive(Default)]
@@ -238,22 +59,28 @@ pub(super) struct Encoded {
 /// Converts rows of one Beam schema into Arrow batches of the column types of one table.
 pub(super) struct Encoder {
     input: Arc<Schema>,
+    /// The fields of the input that go to the table.
+    selection: TableSelection,
     errors: Arc<Schema>,
     schema: Arc<ArrowSchema>,
     schema_bytes: Bytes,
 }
 
 impl Encoder {
-    /// Maps each field of `input` to the column with the same name. Fails if the table has no
-    /// such column, or if the write cannot convert the type.
+    /// Maps each selected field of the input to the column with the same name. Fails if the
+    /// table has no such column and the selection does not ignore it, or if the write cannot
+    /// convert the type.
     pub(super) fn new(
-        input: Arc<Schema>,
+        selection: &Selection,
         errors: Arc<Schema>,
         destination: &Destination,
     ) -> beam::Result<Self> {
         let table = try_schema_from_ipc_buffer(&destination.arrow_schema)
             .map_err(|e| beam::Error::msg(format!("Invalid Arrow schema of the table: {e}")))?;
-        let source = arrow_io::beam_to_arrow_schema(&input).map_err(beam::Error::msg)?;
+        let input = Arc::clone(selection.input());
+        let selection = selection.for_table(table.fields())?;
+        let source =
+            arrow_io::beam_to_arrow_schema(&selection.written).map_err(beam::Error::msg)?;
         let fields = source
             .fields()
             .iter()
@@ -263,6 +90,7 @@ impl Encoder {
         let schema_bytes = Bytes::from(schema_bytes(&schema)?);
         Ok(Self {
             input,
+            selection,
             errors,
             schema,
             schema_bytes,
@@ -308,9 +136,10 @@ impl Encoder {
         let max_bytes = MAX_REQUEST_BYTES.saturating_sub(self.schema_bytes.len());
         split(batch, max_bytes, &mut encoded.batches, &mut too_large)?;
         too_large.iter().try_for_each(|batch| {
-            write_batch_to_rows(batch, &self.input)?
+            write_batch_to_rows(batch, &self.selection.written)?
                 .into_iter()
                 .try_for_each(|row| {
+                    let row = self.selection.input_row(row)?;
                     let error = self.error_row(row, "The row is larger than an append request")?;
                     encoded.errors.push(error);
                     Ok::<_, beam::Error>(())
@@ -331,11 +160,11 @@ impl Encoder {
             .iter()
             .filter(|(index, _)| *index < rows)
             .map(|(index, reason)| {
-                let row = write_batch_to_rows(&decoded.slice(*index, 1), &self.input)?
+                let row = write_batch_to_rows(&decoded.slice(*index, 1), &self.selection.written)?
                     .into_iter()
                     .next()
                     .ok_or_else(|| beam::Error::msg("A rejected row did not decode"))?;
-                self.error_row(row, reason)
+                self.error_row(self.selection.input_row(row)?, reason)
             })
             .collect::<beam::Result<Vec<_>>>()?;
         let mut indexes: Vec<usize> = rejected.into_iter().map(|(index, _)| index).collect();
@@ -347,7 +176,9 @@ impl Encoder {
     }
 
     fn convert(&self, rows: &[Row]) -> beam::Result<RecordBatch> {
-        let batch = arrow_io::rows_to_record_batch(&self.input, rows).map_err(beam::Error::msg)?;
+        let batch =
+            arrow_io::rows_to_projected_batch(&self.input, rows, &self.selection.projection)
+                .map_err(beam::Error::msg)?;
         self.to_column_types(&batch)
     }
 
@@ -355,8 +186,12 @@ impl Encoder {
         &self,
         rows: impl IntoIterator<Item = &'a [u8]>,
     ) -> beam::Result<RecordBatch> {
-        let batch =
-            arrow_io::encoded_rows_to_record_batch(&self.input, rows).map_err(beam::Error::msg)?;
+        let batch = arrow_io::encoded_rows_to_projected_batch(
+            &self.input,
+            rows,
+            &self.selection.projection,
+        )
+        .map_err(beam::Error::msg)?;
         self.to_column_types(&batch)
     }
 
@@ -438,6 +273,9 @@ impl Encoder {
     }
 
     /// A row of the error output: the rejected row and the reason.
+    ///
+    /// A row that does not convert is the input row. A row from a batch, too large or rejected
+    /// by BigQuery, holds only the written fields, and the other fields are null.
     pub(super) fn error_row(&self, row: Row, reason: &str) -> beam::Result<Row> {
         Row::new(
             Arc::clone(&self.errors),
@@ -549,7 +387,7 @@ pub(super) enum Sharding {
 /// few large batches.
 pub(super) struct EncodeFn {
     destination: SingletonView<Destination>,
-    input: Arc<Schema>,
+    selection: Arc<Selection>,
     errors: Arc<Schema>,
     sharding: Sharding,
     encoder: Option<Arc<Encoder>>,
@@ -560,13 +398,13 @@ pub(super) struct EncodeFn {
 impl EncodeFn {
     pub(super) fn new(
         destination: SingletonView<Destination>,
-        input: Arc<Schema>,
+        selection: Arc<Selection>,
         errors: Arc<Schema>,
         sharding: Sharding,
     ) -> Self {
         Self {
             destination,
-            input,
+            selection,
             errors,
             sharding,
             encoder: None,
@@ -600,7 +438,7 @@ impl Clone for EncodeFn {
     fn clone(&self) -> Self {
         Self::new(
             self.destination.clone(),
-            Arc::clone(&self.input),
+            Arc::clone(&self.selection),
             Arc::clone(&self.errors),
             self.sharding,
         )
@@ -636,7 +474,7 @@ impl DoFn for EncodeFn {
         if self.encoder.is_none() {
             let destination = ctx.side_input(&self.destination)?;
             self.encoder = Some(Arc::new(Encoder::new(
-                Arc::clone(&self.input),
+                &self.selection,
                 Arc::clone(&self.errors),
                 &destination,
             )?));

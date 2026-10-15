@@ -38,7 +38,9 @@ use google_cloud_gax::error::rpc::Code;
 
 use super::append::{Failure, append_at};
 use super::client::{APPEND_RETRY, CALL_RETRY, is_transient, with_retries, write_client};
-use super::encode::{Encoded, EncodedBatch, Encoder, Request};
+use super::encode::{Encoded, Encoder};
+use super::encoded_batch::{EncodedBatch, Request};
+use super::projection::Selection;
 use super::table::Destination;
 use crate::runtime::block_on_async;
 
@@ -172,7 +174,7 @@ impl DefaultCoder for StreamState {
 /// of the global window flushes and finalizes the stream when the pipeline drains.
 pub(super) struct WriteBufferedFn {
     destination: SingletonView<Destination>,
-    input: Arc<Schema>,
+    selection: Arc<Selection>,
     errors: Arc<Schema>,
     client: Option<Arc<Write>>,
     frequency: Duration,
@@ -184,7 +186,7 @@ pub(super) struct WriteBufferedFn {
 impl WriteBufferedFn {
     pub(super) fn new(
         destination: SingletonView<Destination>,
-        input: Arc<Schema>,
+        selection: Arc<Selection>,
         errors: Arc<Schema>,
         client: Option<Arc<Write>>,
         frequency: Duration,
@@ -192,7 +194,7 @@ impl WriteBufferedFn {
     ) -> Self {
         Self {
             destination,
-            input,
+            selection,
             errors,
             client,
             frequency,
@@ -207,11 +209,7 @@ impl WriteBufferedFn {
             return Ok(Arc::clone(encoder));
         }
         let destination = ctx.side_input(&self.destination)?;
-        let encoder = Encoder::new(
-            Arc::clone(&self.input),
-            Arc::clone(&self.errors),
-            &destination,
-        )?;
+        let encoder = Encoder::new(&self.selection, Arc::clone(&self.errors), &destination)?;
         let encoder = Arc::new((encoder, destination.table));
         self.encoder = Some(Arc::clone(&encoder));
         Ok(encoder)
@@ -355,7 +353,7 @@ impl Clone for WriteBufferedFn {
     fn clone(&self) -> Self {
         Self::new(
             self.destination.clone(),
-            Arc::clone(&self.input),
+            Arc::clone(&self.selection),
             Arc::clone(&self.errors),
             self.client.clone(),
             self.frequency,

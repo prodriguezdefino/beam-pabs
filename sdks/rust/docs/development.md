@@ -174,6 +174,9 @@ Write functional, data-oriented, idiomatic Rust that follows current practice.
 - **Current Rust.** Use the workspace edition and its idioms: `let`-`else`,
   `async fn` in traits where it fits, `std::sync::LazyLock` instead of
   `lazy_static`. Code must pass `cargo fmt` and `cargo clippy` with no warnings.
+- **Tests in `tests/`.** Put tests in the `tests` directory of the crate, not in
+  a `#[cfg(test)]` module in `src`. To test an internal module, make it
+  `#[doc(hidden)] pub` and keep the user API unchanged.
 - **No `unsafe`** without a `// SAFETY:` comment that states why the code is
   sound.
 

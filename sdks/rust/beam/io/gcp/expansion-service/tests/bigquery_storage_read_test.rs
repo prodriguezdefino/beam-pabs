@@ -23,7 +23,8 @@ use beam::schema::BeamRow;
 use expansion::{SchemaTransformProvider, SchemaTransformRegistration};
 use gcp::bigquery::storage::read::{ArrowCompression, QueryPriority, ReadOptions};
 use gcp_expansion::{
-    BigQueryStorageReadConfig, BigQueryStorageReadProvider, URN_BIGQUERY_STORAGE_READ,
+    BigQueryStorageReadConfig, BigQueryStorageReadProvider, ErrorHandling,
+    URN_BIGQUERY_STORAGE_READ,
 };
 
 fn some(value: &str) -> Option<String> {
@@ -72,6 +73,9 @@ fn the_config_has_the_java_fields_and_the_rust_options() {
             "temp_dataset",
             "use_legacy_sql",
             "flatten_results",
+            "snapshot_time",
+            "preferred_min_stream_count",
+            "error_handling",
         ]
     );
     assert!(schema.fields.iter().all(|f| f.field_type.nullable));
@@ -83,6 +87,10 @@ fn a_config_row_decodes_to_the_config() {
         selected_fields: Some(vec!["title".to_string()]),
         max_stream_count: Some(4),
         use_legacy_sql: Some(true),
+        snapshot_time: some("2024-05-01T12:30:00Z"),
+        error_handling: Some(ErrorHandling {
+            output: "errors".to_string(),
+        }),
         ..table("p.d.t")
     };
     let row = config.to_row().unwrap();
@@ -97,6 +105,8 @@ fn every_table_option_reaches_the_read() {
         billing_project: some("my-project"),
         max_stream_count: Some(16),
         compression: some("lz4_frame"),
+        snapshot_time: some("2024-05-01T12:30:00Z"),
+        preferred_min_stream_count: Some(8),
         ..table("bigquery-public-data.samples.wikipedia")
     }
     .read_options()
@@ -109,6 +119,8 @@ fn every_table_option_reaches_the_read() {
             .with_billing_project("my-project")
             .with_max_stream_count(16)
             .with_compression(ArrowCompression::Lz4Frame)
+            .with_snapshot_time("2024-05-01T12:30:00Z")
+            .with_preferred_min_stream_count(8)
     );
 }
 
@@ -201,6 +213,27 @@ fn invalid_configs_fail_before_any_call() {
                 ..table("p.d.t")
             },
             "max_stream_count",
+        ),
+        (
+            BigQueryStorageReadConfig {
+                preferred_min_stream_count: Some(-1),
+                ..table("p.d.t")
+            },
+            "preferred_min_stream_count",
+        ),
+        (
+            BigQueryStorageReadConfig {
+                snapshot_time: some("yesterday"),
+                ..table("p.d.t")
+            },
+            "snapshot_time",
+        ),
+        (
+            BigQueryStorageReadConfig {
+                snapshot_time: some("2024-05-01T12:30:00Z"),
+                ..query("SELECT 1")
+            },
+            "snapshot_time",
         ),
     ];
     for (config, expected) in cases {
