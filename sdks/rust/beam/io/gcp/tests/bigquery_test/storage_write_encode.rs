@@ -17,13 +17,16 @@
  * under the License.
  */
 
-//! Splitting encoded row batches into appends that fit a request.
+//! Splitting encoded row batches into appends that fit a request, and the rows of a request
+//! that BigQuery accepted.
 
 use std::sync::Arc;
 
 use arrow_io::arrow_array::{RecordBatch, StringArray};
 use arrow_io::arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
-use gcp::bigquery::storage::write::encode::{APPEND_BYTES, EncodedBatch, MAX_REQUEST_BYTES, split};
+use gcp::bigquery::storage::write::encode::{
+    APPEND_BYTES, EncodedBatch, MAX_REQUEST_BYTES, accepted, split,
+};
 
 /// A batch of `rows` strings of `bytes` bytes each.
 fn strings(rows: usize, bytes: usize) -> RecordBatch {
@@ -62,4 +65,52 @@ fn a_row_larger_than_a_request_is_too_large() {
     assert!(batches.is_empty());
     assert_eq!(too_large.len(), 3);
     assert!(too_large.iter().all(|batch| batch.num_rows() == 1));
+}
+
+/// The ranges that `accepted` returns, as `(start, end)` pairs.
+fn accepted_pairs(rejected: &[usize], rows: usize) -> Vec<(usize, usize)> {
+    accepted(rejected, rows)
+        .map(|range| (range.start, range.end))
+        .collect()
+}
+
+/// The rejected rows of a batch of 5 rows, and the accepted ranges.
+type AcceptedCase = (&'static [usize], &'static [(usize, usize)]);
+
+#[test]
+fn accepted_gives_the_ranges_between_the_rejected_rows() {
+    let cases: [AcceptedCase; 7] = [
+        (&[], &[(0, 5)]),
+        (&[0], &[(1, 5)]),
+        (&[4], &[(0, 4)]),
+        (&[1, 3], &[(0, 1), (2, 3), (4, 5)]),
+        (&[1, 2, 3], &[(0, 1), (4, 5)]),
+        (&[0, 1, 2, 3, 4], &[]),
+        // BigQuery can name an index after the last row.
+        (&[2, 9], &[(0, 2), (3, 5)]),
+    ];
+    for (rejected, expected) in cases {
+        assert_eq!(
+            accepted_pairs(rejected, 5),
+            expected,
+            "rejected {rejected:?}"
+        );
+    }
+}
+
+#[test]
+fn accepted_and_rejected_rows_cover_every_row_once() {
+    // Every set of rejected rows of a batch of 8 rows.
+    let rows = 8;
+    for mask in 0u32..1 << rows {
+        let rejected: Vec<usize> = (0..rows).filter(|i| mask & (1 << i) != 0).collect();
+        let mut seen: Vec<usize> = accepted(&rejected, rows).flatten().collect();
+        assert!(
+            seen.iter().all(|row| !rejected.contains(row)),
+            "rejected {rejected:?}: {seen:?}"
+        );
+        seen.extend(&rejected);
+        seen.sort_unstable();
+        assert_eq!(seen, (0..rows).collect::<Vec<_>>(), "rejected {rejected:?}");
+    }
 }

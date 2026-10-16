@@ -95,6 +95,7 @@ google-cloud-bigquery = { workspace = true }
 google-cloud-bigquery-v2 = { workspace = true }
 prost = { workspace = true }
 tonic = { workspace = true }
+tonic-prost = { workspace = true }
 tokio-stream = { workspace = true }
 
 [[test]]

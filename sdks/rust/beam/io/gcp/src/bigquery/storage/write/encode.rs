@@ -57,7 +57,7 @@ pub(super) struct Encoded {
 }
 
 /// Converts rows of one Beam schema into Arrow batches of the column types of one table.
-pub(super) struct Encoder {
+pub struct Encoder {
     input: Arc<Schema>,
     /// The fields of the input that go to the table.
     selection: TableSelection,
@@ -70,7 +70,7 @@ impl Encoder {
     /// Maps each selected field of the input to the column with the same name. Fails if the
     /// table has no such column and the selection does not ignore it, or if the write cannot
     /// convert the type.
-    pub(super) fn new(
+    pub fn new(
         selection: &Selection,
         errors: Arc<Schema>,
         destination: &Destination,
@@ -289,7 +289,8 @@ impl Encoder {
 }
 
 /// The ranges of the rows in `0..rows` that are not in `rejected`, which is sorted.
-fn accepted(rejected: &[usize], rows: usize) -> impl Iterator<Item = Range<usize>> + '_ {
+#[doc(hidden)]
+pub fn accepted(rejected: &[usize], rows: usize) -> impl Iterator<Item = Range<usize>> + '_ {
     rejected
         .iter()
         .copied()
@@ -338,7 +339,8 @@ pub fn split(
 }
 
 /// Returns the IPC message of `schema`, as the `writer_schema` of append requests takes it.
-pub(super) fn schema_bytes(schema: &ArrowSchema) -> beam::Result<Vec<u8>> {
+#[doc(hidden)]
+pub fn schema_bytes(schema: &ArrowSchema) -> beam::Result<Vec<u8>> {
     let options = IpcWriteOptions::default();
     let encoded = IpcDataGenerator::default().schema_to_bytes_with_dictionary_tracker(
         schema,

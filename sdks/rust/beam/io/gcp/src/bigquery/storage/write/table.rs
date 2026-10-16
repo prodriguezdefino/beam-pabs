@@ -41,9 +41,9 @@ use crate::runtime::block_on_async;
 /// The table that the writers write to: its resource name, and the Arrow schema that a read
 /// session gives for its columns, in IPC format.
 #[derive(Clone, Debug, PartialEq, Eq, BeamRow)]
-pub(super) struct Destination {
-    pub(super) table: String,
-    pub(super) arrow_schema: Bytes,
+pub struct Destination {
+    pub table: String,
+    pub arrow_schema: Bytes,
 }
 
 /// Creates the table if needed, checks the write disposition, and emits the [`Destination`].

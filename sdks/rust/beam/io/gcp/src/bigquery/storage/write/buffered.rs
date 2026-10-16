@@ -57,14 +57,14 @@ const MAX_RECONNECTS: u32 = 5;
 
 /// The state of a shard.
 #[derive(State)]
-pub(super) struct ShardState {
+pub struct ShardState {
     /// The buffered stream of the shard.
     stream: ValueState<StreamState>,
 }
 
 /// The timers of a shard.
 #[derive(Timers)]
-pub(super) enum ShardTimer {
+pub enum ShardTimer {
     /// Flushes the rows after the last flush, or finalizes an idle stream.
     #[timer(processing_time, id = "flush")]
     Flush,
@@ -76,16 +76,16 @@ pub(super) enum ShardTimer {
 /// The buffered stream of a shard. Rows before `next_offset` come from committed bundles.
 /// Rows up to `flushed` are visible.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct StreamState {
-    stream: String,
-    next_offset: i64,
-    flushed: i64,
+pub struct StreamState {
+    pub stream: String,
+    pub next_offset: i64,
+    pub flushed: i64,
     /// A flush timer is set for the rows after `flushed`.
-    flush_pending: bool,
+    pub flush_pending: bool,
 }
 
 impl StreamState {
-    fn new(stream: String) -> Self {
+    pub fn new(stream: String) -> Self {
         Self {
             stream,
             next_offset: 0,
@@ -95,7 +95,7 @@ impl StreamState {
     }
 
     /// The last offset that a flush makes visible, if a row is not flushed yet.
-    fn unflushed(&self) -> Option<i64> {
+    pub fn unflushed(&self) -> Option<i64> {
         (self.next_offset - 1 > self.flushed).then_some(self.next_offset - 1)
     }
 }
@@ -104,7 +104,7 @@ impl StreamState {
 /// replace a coder that it does not know, such as a row coder, by a length prefix in state,
 /// and only standard coders keep the state bytes the same on every runner.
 #[derive(Clone, Debug, Default)]
-struct StreamStateCoder;
+pub struct StreamStateCoder;
 
 impl Coder<StreamState> for StreamStateCoder {
     fn urn(&self) -> &'static str {
@@ -172,7 +172,7 @@ impl DefaultCoder for StreamState {
 /// The flush timer fires `frequency` after the first append that it covers. After a flush it
 /// fires again after [`IDLE`], and finalizes the stream if no append came. A timer at the end
 /// of the global window flushes and finalizes the stream when the pipeline drains.
-pub(super) struct WriteBufferedFn {
+pub struct WriteBufferedFn {
     destination: SingletonView<Destination>,
     selection: Arc<Selection>,
     errors: Arc<Schema>,
@@ -184,7 +184,7 @@ pub(super) struct WriteBufferedFn {
 }
 
 impl WriteBufferedFn {
-    pub(super) fn new(
+    pub fn new(
         destination: SingletonView<Destination>,
         selection: Arc<Selection>,
         errors: Arc<Schema>,
@@ -262,7 +262,7 @@ impl WriteBufferedFn {
 
     /// Flushes the committed rows of `state` and finalizes its stream. Fails if BigQuery does
     /// not confirm that every committed row is visible.
-    fn retire(&mut self, encoder: &(Encoder, String), state: &StreamState) -> beam::Result {
+    pub fn retire(&mut self, encoder: &(Encoder, String), state: &StreamState) -> beam::Result {
         let writer = self.writer(encoder, Some(&state.stream))?;
         self.writers.remove(&state.stream);
         let (unflushed, written) = (state.unflushed(), state.next_offset);

@@ -57,7 +57,8 @@
 #[doc(hidden)]
 pub mod append;
 mod buffer;
-mod buffered;
+#[doc(hidden)]
+pub mod buffered;
 mod client;
 mod commit;
 mod default_stream;
@@ -68,7 +69,8 @@ mod options;
 mod pending;
 #[doc(hidden)]
 pub mod projection;
-mod table;
+#[doc(hidden)]
+pub mod table;
 
 use std::collections::HashMap;
 use std::sync::Arc;

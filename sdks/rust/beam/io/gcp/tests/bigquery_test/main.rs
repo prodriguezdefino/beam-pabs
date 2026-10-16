@@ -31,6 +31,7 @@ mod storage_read_restriction;
 mod storage_schema;
 mod storage_write;
 mod storage_write_append;
+mod storage_write_buffered;
 mod storage_write_encode;
 mod storage_write_options;
 mod storage_write_projection;
