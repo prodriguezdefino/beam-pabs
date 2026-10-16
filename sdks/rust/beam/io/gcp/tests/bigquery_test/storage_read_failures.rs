@@ -22,6 +22,7 @@
 
 use std::sync::Arc;
 
+use arrow_io::RowOutput;
 use arrow_io::arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use beam::coders::{DefaultCoder, RowCoder};
 use beam::schema::{Field, FieldType, FieldValue, RowElement, Schema};
@@ -57,8 +58,8 @@ fn only_the_rows_that_fail_become_error_rows() {
         ),
     ])
     .unwrap();
-    for encoded in [false, true] {
-        let outputs = read_outputs(&batch, &schema, encoded, ("stream-1", 10)).unwrap();
+    for output in [RowOutput::Values, RowOutput::Encoded] {
+        let outputs = read_outputs(&batch, &schema, output, ("stream-1", 10)).unwrap();
         assert_eq!(outputs.len(), 3);
         assert!(outputs[0].is_ok());
         assert!(outputs[2].is_ok());
@@ -84,7 +85,7 @@ fn a_batch_that_converts_gives_only_rows() {
     let batch =
         RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef)])
             .unwrap();
-    let outputs = read_outputs(&batch, &schema, true, ("s", 0)).unwrap();
+    let outputs = read_outputs(&batch, &schema, RowOutput::Encoded, ("s", 0)).unwrap();
     assert!(
         outputs
             .iter()

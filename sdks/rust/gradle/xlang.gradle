@@ -16,10 +16,11 @@
  * limitations under the License.
  */
 
-// Cross-language ValidatesRunner tasks (`validatesCrossLanguageRunnerPythonPrism`,
-// `validatesCrossLanguageRunnerPythonDataflow`), the Python tests of the expansion services
-// of the native connectors (`gcpExpansionServicePythonTest` on Prism,
-// `gcpExpansionServicePythonTestDataflow` on Dataflow), and the images that they use.
+// Shared cross-language infrastructure: the expansion service lifecycle (`startExpansionService`,
+// `stopExpansionService`, `execWithExpansionService`, `withPrismJobServer`), the Rust test
+// expansion service images (`testingExpansionServiceImage`, `testingExpansionServiceDataflowImage`),
+// the Python virtualenv (`setupXlangPythonEnv`), and task registration helpers shared by
+// `xlang-*.gradle`, `integration.gradle`, and `benchmarks.gradle`.
 //
 // The suites of other SDKs run unchanged against the Rust test expansion service, which serves
 // the test transforms of beam/runner-tests/src/xlang_transforms.rs. One image is both that
@@ -29,8 +30,143 @@
 
 evaluationDependsOn(':sdks:python')
 
-def xlangArch = (project.findProperty('exampleArch') ?: project.nativeArchitecture()).toString()
-def testingImage = rustImageName('testing_expansion_service')
+ext.xlangArch = (project.findProperty('exampleArch') ?: project.nativeArchitecture()).toString()
+ext.testingImage = rustImageName('testing_expansion_service')
+
+// Dataflow pulls the worker image for linux/amd64 from a registry, so its images have their
+// own root, `dataflowRepositoryRoot`, for example us-central1-docker.pkg.dev/<project>/<repository>.
+// The images of local runs keep the host architecture under the default root. The SDK base
+// image must be in that registry (see validates-runner.md).
+ext.xlangProps = propsFor('xlang')
+ext.dataflowRoot = xlangProps('dataflowRepositoryRoot')?.toString()
+ext.dataflowImage = dataflowRoot ? rustImageName('testing_expansion_service', dataflowRoot) : null
+
+ext.requireDataflowRoot = { String root = dataflowRoot ->
+  if (!root) {
+    throw new GradleException('Set dataflowRepositoryRoot in sdks/rust/.local/sdk.properties or with -P.')
+  }
+}
+
+// Maps each comma-separated name in `-Ptests` through `transform`, or returns `null` when
+// `-Ptests` is not set.
+ext.selectedTests = { Closure transform ->
+  project.findProperty('tests')?.toString()?.tokenize(',')
+      ?.collect { transform(it.trim()).toString() }
+}
+
+// Registers a task that builds the linux/amd64 binary of an expansion service and a task that
+// bakes it into the SDK base image in `root` (by default `dataflowRoot`) and pushes it.
+ext.registerDataflowExpansionImageTasks = { Map cfg ->
+  def root = (cfg.containsKey('root') ? cfg.root : dataflowRoot)?.toString()
+  registerExpansionImageTasks(
+      buildTask: cfg.buildTask,
+      imageTask: cfg.imageTask,
+      pkg: cfg.pkg,
+      bin: cfg.bin,
+      arch: 'amd64',
+      image: root ? rustImageName(cfg.imageName, root) : 'unset',
+      baseImage: root ? rustImageName('sdk', root) : null,
+      push: true,
+      buildDescription: cfg.buildDescription,
+      imageDescription: cfg.imageDescription,
+  )
+  tasks.named(cfg.imageTask) {
+    doFirst { requireDataflowRoot(root) }
+  }
+}
+
+// Registers `<sdk>SdkDataflowImage` to build and push the linux/amd64 container image of another
+// SDK (`Python`, `Java`, `Go`) in this tree for Dataflow cross-language runs, and returns the
+// configured `<sdk>SdkImage` property (or `null` if unset).
+ext.registerSdkDataflowImageTask = { Map cfg ->
+  def sdk = cfg.sdk
+  def sdkLower = sdk.toLowerCase()
+  def prop = "${sdkLower}SdkImage"
+  def tag = (project.rootProject.findProperty('docker-tag') ?: cfg.defaultTag ?: beamSdkVersion).toString()
+  def hint = cfg.extraHint ? "${cfg.extraHint} " : ''
+  tasks.register("${sdkLower}SdkDataflowImage", Exec) {
+    group = 'Build'
+    description = "Build and push the linux/amd64 ${sdk} SDK container of this tree for the Dataflow " +
+        "cross-language suite (${hint}[-PdataflowRepositoryRoot=<registry>])"
+    def image = dataflowRoot ? containerImageName(
+        name: "${project.docker_image_default_repo_prefix}${cfg.imageSuffix}",
+        root: dataflowRoot,
+        tag: tag).toString() : null
+    workingDir rootDir
+    commandLine(["${rootDir}/gradlew", cfg.gradleTask,
+                 '-Pcontainer-architecture-list=amd64',
+                 "-Pdocker-repository-root=${dataflowRoot}",
+                 '-Ppush-containers'] + (cfg.extraArgs ?: []))
+    doFirst { requireDataflowRoot() }
+    doLast {
+      logger.lifecycle("Pushed ${image}. Set example.xlang.${prop}=${image} in sdks/rust/.local/sdk.properties.")
+    }
+  }
+  xlangProps(prop)?.toString()
+}
+
+// Registers `validatesCrossLanguageRunner<Sdk>Prism` and `validatesCrossLanguageRunner<Sdk>Dataflow`
+// with shared descriptions and dependencies.
+ext.registerXlangSuiteTasks = { Map cfg ->
+  def sdk = cfg.sdk
+  def type = cfg.taskType ?: DefaultTask
+  def commonDeps = ['testingExpansionServiceImage'] + (cfg.dependsOn ?: [])
+  def hints = { String extra ->
+    (["[-Ptests=${cfg.testExamples}]"] + (extra ? [extra] : [])).join(' ')
+  }
+
+  tasks.register("validatesCrossLanguageRunner${sdk}Prism", type) {
+    group = 'Verification'
+    description = "Run the ${sdk} cross-language suite against the Rust test expansion service on Prism (${hints(cfg.prismHint)})"
+    dependsOn(commonDeps + ['fetchPrism'] + (cfg.prismDependsOn ?: []))
+    cfg.configurePrism(it)
+  }
+
+  tasks.register("validatesCrossLanguageRunner${sdk}Dataflow", type) {
+    group = 'Verification'
+    description = "Run the ${sdk} cross-language suite against the Rust test expansion service on Dataflow (${hints(cfg.dataflowHint)})"
+    dependsOn(commonDeps + ['testingExpansionServiceDataflowImage'] + (cfg.dataflowDependsOn ?: []))
+    cfg.configureDataflow(it)
+  }
+}
+
+// Builds the Dataflow pipeline flags for a cross-language suite from `xlangProps`.
+// `cfg` may override `runner` ('TestDataflowRunner'), `tempFlag` ('temp_location'),
+// `tempSuffix` (''), `numWorkersFlag` ('num_workers'), `machineTypeFlag` ('machine_type'),
+// and supply `extraFlags` (a List or a Closure taking `gcpTempLocation`).
+ext.xlangDataflowFlags = { Map cfg = [:] ->
+  def gcpProject = gcpProjectFrom(xlangProps)
+  def gcpTempLocation = xlangProps('gcpTempLocation', 'GCP_TEMP_LOCATION')
+  if (!gcpProject || !gcpTempLocation) {
+    throw new GradleException('Set gcpProject and gcpTempLocation in sdks/rust/.local/sdk.properties or with -P.')
+  }
+  def region = xlangProps('gcpRegion', 'GCP_REGION', 'us-central1')
+  def runner = cfg.runner ?: 'TestDataflowRunner'
+  def tempFlag = cfg.tempFlag ?: 'temp_location'
+  def tempSuffix = cfg.tempSuffix ?: ''
+  def numWorkersFlag = cfg.numWorkersFlag ?: 'num_workers'
+  def machineTypeFlag = cfg.machineTypeFlag ?: 'machine_type'
+  def extra = cfg.extraFlags instanceof Closure ? cfg.extraFlags(gcpTempLocation) : (cfg.extraFlags ?: [])
+
+  def opts = [
+    "--runner=${runner}",
+    "--project=${gcpProject}",
+    "--region=${region}",
+    "--${tempFlag}=${gcpTempLocation}${tempSuffix}",
+    "--${numWorkersFlag}=1",
+  ] + extra
+  ['network', 'subnetwork'].each { key ->
+    def value = xlangProps(key)
+    if (value) {
+      opts << "--${key}=${value}"
+    }
+  }
+  def machineType = xlangProps('workerMachineType')
+  if (machineType) {
+    opts << "--${machineTypeFlag}=${machineType}"
+  }
+  opts*.toString()
+}
 
 registerExpansionImageTasks(
     buildTask: 'buildTestingExpansionService',
@@ -43,36 +179,17 @@ registerExpansionImageTasks(
     imageDescription: 'Build the test expansion service image of the cross-language suites, beam_rust_testing_expansion_service ([-PexampleArch=<arch>])',
 )
 
-// Dataflow pulls the worker image for linux/amd64 from a registry, so its images have their
-// own root, `dataflowRepositoryRoot`, for example us-central1-docker.pkg.dev/<project>/<repository>.
-// The images of local runs keep the host architecture under the default root. The SDK base
-// image must be in that registry (see validates-runner.md).
-def xlangProps = propsFor('xlang')
-def dataflowRoot = xlangProps('dataflowRepositoryRoot')?.toString()
-def dataflowBaseImage = dataflowRoot ? rustImageName('sdk', dataflowRoot) : null
-def dataflowImage = dataflowRoot ? rustImageName('testing_expansion_service', dataflowRoot) : null
-
-registerExpansionImageTasks(
+registerDataflowExpansionImageTasks(
     buildTask: 'buildTestingExpansionServiceDataflow',
     imageTask: 'testingExpansionServiceDataflowImage',
     pkg: 'apache-beam-runner-tests',
     bin: 'beam-runner-tests-expansion-service',
-    arch: 'amd64',
-    image: dataflowImage ?: 'unset',
-    baseImage: dataflowBaseImage,
-    push: true,
+    imageName: 'testing_expansion_service',
     buildDescription: 'Build the linux/amd64 test expansion service binary for Dataflow',
     imageDescription: 'Build and push the linux/amd64 test expansion service image for Dataflow ([-PdataflowRepositoryRoot=<registry>])',
 )
-tasks.named('testingExpansionServiceDataflowImage') {
-  doFirst {
-    if (!dataflowRoot) {
-      throw new GradleException('Set dataflowRepositoryRoot in sdks/rust/.local/sdk.properties or with -P.')
-    }
-  }
-}
 
-def waitForPort = { int port, int timeoutSeconds ->
+ext.waitForPort = { int port, int timeoutSeconds ->
   def deadline = System.currentTimeMillis() + timeoutSeconds * 1000L
   while (System.currentTimeMillis() < deadline) {
     try {
@@ -91,6 +208,7 @@ def waitForPort = { int port, int timeoutSeconds ->
 // Application Default Credentials of this machine, for providers that call a cloud service
 // when they expand.
 ext.startExpansionService = { Map cfg ->
+  def image = cfg.image ?: testingImage
   def port = new ServerSocket(0).withCloseable { it.localPort }
   def container = "beam-rust-expansion-${port}"
   def command = ['docker', 'run', '-d', '--rm', '--name', container, '-p', "${port}:8097"]
@@ -100,8 +218,8 @@ ext.startExpansionService = { Map cfg ->
   if (cfg.credentials) {
     command += ['-v', "${cfg.credentials}:/creds.json:ro", '-e', 'GOOGLE_APPLICATION_CREDENTIALS=/creds.json']
   }
-  command += ['--entrypoint', '/opt/apache/beam/worker_binary', cfg.image,
-              '--port', '8097', '--docker-image', cfg.workerImage ?: cfg.image]
+  command += ['--entrypoint', '/opt/apache/beam/worker_binary', image,
+              '--port', '8097', '--docker-image', cfg.workerImage ?: image]
   project.exec { commandLine command*.toString() }
   def service = [port: port, container: container]
   try {
@@ -121,10 +239,48 @@ ext.stopExpansionService = { Map service ->
   }
 }
 
-def pythonSuite = 'apache_beam/transforms/validate_runner_xlang_test.py::ValidateRunnerXlangTest'
-def pythonDir = project.project(':sdks:python').projectDir
-def pythonSdist = file("${pythonDir}/build/apache-beam.tar.gz")
-def xlangVenv = file("${buildDir}/xlang-venv")
+// Starts an expansion service with `cfg`, runs `project.exec` configured by `configureExec(service)`
+// with `DOCKER_HOST` set when needed, and stops the container when `exec` finishes.
+ext.execWithExpansionService = { Map cfg = [:], Closure configureExec ->
+  def service = startExpansionService(cfg)
+  try {
+    def host = dockerHost()
+    project.exec {
+      if (host) {
+        environment 'DOCKER_HOST', host
+      }
+      configureExec.delegate = delegate
+      configureExec.resolveStrategy = Closure.DELEGATE_FIRST
+      configureExec(service)
+    }
+  } finally {
+    stopExpansionService(service)
+  }
+}
+
+// Starts the host-native Prism job server on a free port, runs `body(jobPort)`, and stops the
+// server when `body` returns.
+ext.withPrismJobServer = { Closure body ->
+  def jobPort = new ServerSocket(0).withCloseable { it.localPort }
+  def pb = new ProcessBuilder(
+      prismHostBinary.absolutePath, '--serve_http=false', "--job_port=${jobPort}", '--idle_shutdown_timeout=0s'
+  ).inheritIO()
+  def host = dockerHost()
+  if (host) {
+    pb.environment().put('DOCKER_HOST', host)
+  }
+  def prismProcess = pb.start()
+  try {
+    waitForPort(jobPort, 30)
+    body(jobPort)
+  } finally {
+    prismProcess.destroy()
+  }
+}
+
+ext.pythonDir = project.project(':sdks:python').projectDir
+ext.pythonSdist = file("${pythonDir}/build/apache-beam.tar.gz")
+ext.xlangVenv = file("${buildDir}/xlang-venv")
 def venvExtras = 'gcp,test'
 def venvStamp = file("${xlangVenv}/beam-extras")
 
@@ -149,246 +305,5 @@ tasks.register('setupXlangPythonEnv') {
       commandLine "${xlangVenv}/bin/pip", 'install', '--quiet', "${pythonSdist}[${venvExtras}]"
     }
     venvStamp.text = venvExtras
-  }
-}
-
-// Each name in -Ptests selects one test method. Selection by node id needs no change in the
-// suite.
-def selectedTests = { ->
-  project.findProperty('tests')?.toString()?.tokenize(',')
-      ?.collect { "${pythonSuite}::test_${it.trim()}".toString() } ?: [pythonSuite]
-}
-
-// Starts the expansion service from `serviceImage` on a free port, runs the Python suite with
-// `pipelineOpts`, and removes the container. The service names `workerImage` as the worker.
-def runPythonSuite = { String serviceImage, String workerImage, List pipelineOpts, List testOpts ->
-  def python = project.project(':sdks:python')
-  def service = startExpansionService(image: serviceImage, workerImage: workerImage)
-  try {
-    def args = python.mapToArgString([
-      'pipeline_opts': pipelineOpts,
-      'test_opts': testOpts + selectedTests(),
-      'suite': 'rustXlangValidateRunner',
-    ])
-    def host = dockerHost()
-    project.exec {
-      workingDir pythonDir
-      environment 'EXPANSION_PORT', service.port
-      if (host) {
-        environment 'DOCKER_HOST', host
-      }
-      commandLine 'sh', '-c', ". ${xlangVenv}/bin/activate && ./scripts/run_integration_test.sh ${args}"
-    }
-  } finally {
-    stopExpansionService(service)
-  }
-}
-
-tasks.register('validatesCrossLanguageRunnerPythonPrism') {
-  group = 'Verification'
-  description = 'Run the Python cross-language suite against the Rust test expansion service on Prism ' +
-      '([-Ptests=prefix,group_by_key] [-PpythonVersion=3.12])'
-  dependsOn 'testingExpansionServiceImage', 'fetchPrism', 'setupXlangPythonEnv'
-
-  doLast {
-    runPythonSuite(testingImage, testingImage, [
-      '--runner=PrismRunner',
-      '--environment_type=LOOPBACK',
-      "--prism_location=${prismHostBinary.absolutePath}",
-    ], [])
-  }
-}
-
-// Python tests of the expansion services of the native connectors. Each expansion service
-// keeps its tests in tests/python of its crate, with one module for each connector that it
-// serves: <connector>_test.py, for example bigquery_storage_test.py for the BigQuery Storage
-// read and write. -Ptests selects modules by connector, and -PtestFilter selects test methods
-// with a pytest -k expression. The task starts the
-// service with the credentials of this machine, and Prism mounts the same credentials in the
-// Rust worker. Python runs its own transforms in a loopback worker. The service names
-// `workerImage` (by default `image`) as the Rust worker. The tests read the pipeline options
-// from PIPELINE_OPTIONS in `testEnv`, and use Prism when it is not set.
-def runProviderPythonTests = { String image, File testsDir, Map testEnv, String workerImage = null ->
-  def credentials = googleCredentials()
-  if (!credentials) {
-    throw new GradleException('No Application Default Credentials. Run gcloud auth application-default login.')
-  }
-  def modules = project.findProperty('tests')?.toString()?.tokenize(',')
-      ?.collect { "${testsDir}/${it.trim()}_test.py".toString() } ?: [testsDir.absolutePath]
-  def filter = project.findProperty('testFilter')?.toString()
-  def selection = filter ? ['-k', filter] + modules : modules
-  def service = startExpansionService(image: image, workerImage: workerImage, credentials: credentials)
-  try {
-    def host = dockerHost()
-    project.exec {
-      workingDir testsDir
-      environment testEnv
-      environment 'EXPANSION_SERVICE', "localhost:${service.port}"
-      environment 'PRISM_LOCATION', prismHostBinary.absolutePath
-      environment 'GOOGLE_APPLICATION_CREDENTIALS', credentials
-      if (host) {
-        environment 'DOCKER_HOST', host
-      }
-      commandLine(["${xlangVenv}/bin/python", '-m', 'pytest', '-v', '-p', 'no:cacheprovider'] + selection)
-    }
-  } finally {
-    stopExpansionService(service)
-  }
-}
-
-registerExpansionImageTasks(
-    buildTask: 'buildGcpExpansionServiceTesting',
-    imageTask: 'gcpExpansionServiceTestingImage',
-    pkg: 'apache-beam-io-gcp-expansion-service',
-    bin: 'beam-gcp-expansion-service',
-    arch: xlangArch,
-    image: rustImageName('gcp_expansion_service_testing'),
-    buildDescription: 'Build the Linux expansion service binary of the native Google Cloud connectors for its Python tests ([-PexampleArch=<arch>])',
-    imageDescription: 'Build the image of the native Google Cloud connectors for its Python tests, beam_rust_gcp_expansion_service_testing ([-PexampleArch=<arch>])',
-)
-
-tasks.register('gcpExpansionServicePythonTest') {
-  group = 'Verification'
-  description = 'Run the Python tests of the native Google Cloud providers on Prism; ' +
-      'gcpExpansionServicePythonTestDataflow runs them on Dataflow ' +
-      '([-Ptests=bigquery_storage] [-PtestFilter=<pytest -k>] [-PgcpProject=<project>] [-PpythonVersion=3.12])'
-  dependsOn 'gcpExpansionServiceTestingImage', 'fetchPrism', 'setupXlangPythonEnv'
-
-  doLast {
-    def gcpProject = gcpProjectFrom(propsFor('it'))
-    if (!gcpProject) {
-      throw new GradleException('Set gcpProject in sdks/rust/.local/sdk.properties or with -P.')
-    }
-    runProviderPythonTests(rustImageName('gcp_expansion_service_testing'),
-        file("${rustDir}/beam/io/gcp/expansion-service/tests/python"), [GCP_PROJECT: gcpProject])
-  }
-}
-
-// With the defaults, each Dataflow worker builds the staged SDK of this tree into a wheel before
-// the Python worker starts. `pythonSdkImage` names a Python SDK container that already holds
-// the SDK of this tree, so the task stages nothing. `pythonSdkDataflowImage` builds that
-// container with the Python container tasks and pushes it to `dataflowRepositoryRoot`. The
-// interpreter of the virtualenv must have the same Python version as the container.
-def pythonSdkImage = xlangProps('pythonSdkImage')?.toString()
-def imagePythonVersion = (project.findProperty('pythonVersion') ?: '3.12').toString()
-
-tasks.register('pythonSdkDataflowImage', Exec) {
-  group = 'Build'
-  description = 'Build and push the linux/amd64 Python SDK container of this tree for the Dataflow ' +
-      'cross-language suite ([-PpythonVersion=3.12] [-PdataflowRepositoryRoot=<registry>])'
-  def pythonTag = (project.rootProject.findProperty('docker-tag') ?:
-      project.project(':sdks:python').findProperty('sdk_version') ?: beamSdkVersion).toString()
-  def image = dataflowRoot ? containerImageName(
-      name: "${project.docker_image_default_repo_prefix}python${imagePythonVersion}_sdk",
-      root: dataflowRoot,
-      tag: pythonTag).toString() : null
-  workingDir rootDir
-  commandLine "${rootDir}/gradlew", ":sdks:python:container:py${imagePythonVersion.replace('.', '')}:docker",
-      '-Pcontainer-architecture-list=amd64', "-Pdocker-repository-root=${dataflowRoot}", '-Ppush-containers',
-      "-PpythonVersion=${imagePythonVersion}"
-
-  doFirst {
-    if (!dataflowRoot) {
-      throw new GradleException('Set dataflowRepositoryRoot in sdks/rust/.local/sdk.properties or with -P.')
-    }
-  }
-  doLast {
-    logger.lifecycle("Pushed ${image}. Set example.xlang.pythonSdkImage=${image} in sdks/rust/.local/sdk.properties.")
-  }
-}
-
-// The options of the Dataflow jobs of the Python tests. The Python workers run the SDK of this
-// tree: from `pythonSdkImage`, or else from the staged sdist.
-def dataflowPipelineOptions = { ->
-  def gcpProject = gcpProjectFrom(xlangProps)
-  def gcpTempLocation = xlangProps('gcpTempLocation', 'GCP_TEMP_LOCATION')
-  if (!gcpProject || !gcpTempLocation) {
-    throw new GradleException('Set gcpProject and gcpTempLocation in sdks/rust/.local/sdk.properties or with -P.')
-  }
-  def opts = [
-    '--runner=TestDataflowRunner',
-    "--project=${gcpProject}",
-    "--region=${xlangProps('gcpRegion', 'GCP_REGION', 'us-central1')}",
-    "--temp_location=${gcpTempLocation}",
-    '--num_workers=1',
-  ]
-  if (pythonSdkImage) {
-    opts << "--sdk_container_image=${pythonSdkImage}" << '--sdk_location=container'
-  } else {
-    opts << "--sdk_location=${pythonSdist.absolutePath}"
-  }
-  ['network', 'subnetwork'].each { key ->
-    def value = xlangProps(key)
-    if (value) {
-      opts << "--${key}=${value}"
-    }
-  }
-  def machineType = xlangProps('workerMachineType')
-  if (machineType) {
-    opts << "--machine_type=${machineType}"
-  }
-  opts*.toString()
-}
-
-// Each test is one job, so the tests run in parallel (-PxlangParallelism, 8 by default).
-tasks.register('validatesCrossLanguageRunnerPythonDataflow') {
-  group = 'Verification'
-  description = 'Run the Python cross-language suite against the Rust test expansion service on Dataflow ' +
-      '([-Ptests=prefix,group_by_key] [-PxlangParallelism=8] [-PpythonVersion=3.12] [-PpythonSdkImage=<image>])'
-  dependsOn 'testingExpansionServiceImage', 'testingExpansionServiceDataflowImage', 'setupXlangPythonEnv'
-  if (!pythonSdkImage) {
-    dependsOn ':sdks:python:sdist'
-  }
-
-  doLast {
-    def parallelism = (project.findProperty('xlangParallelism') ?: '8').toString()
-    runPythonSuite(testingImage, dataflowImage, dataflowPipelineOptions(),
-        ["--numprocesses=${parallelism}".toString(), '--timeout=1800'])
-  }
-}
-
-// The Dataflow mode of gcpExpansionServicePythonTest. The service runs on this machine as for
-// Prism, and names a linux/amd64 image in `dataflowRepositoryRoot` as the Rust worker. The Rust
-// workers use the service account of the job. The tests run one by one, one job each.
-def gcpDataflowImage = dataflowRoot ? rustImageName('gcp_expansion_service_testing', dataflowRoot) : null
-
-registerExpansionImageTasks(
-    buildTask: 'buildGcpExpansionServiceTestingDataflow',
-    imageTask: 'gcpExpansionServiceTestingDataflowImage',
-    pkg: 'apache-beam-io-gcp-expansion-service',
-    bin: 'beam-gcp-expansion-service',
-    arch: 'amd64',
-    image: gcpDataflowImage ?: 'unset',
-    baseImage: dataflowBaseImage,
-    push: true,
-    buildDescription: 'Build the linux/amd64 expansion service binary of the native Google Cloud connectors for Dataflow',
-    imageDescription: 'Build and push the linux/amd64 image of the native Google Cloud connectors for its Python tests on Dataflow ([-PdataflowRepositoryRoot=<registry>])',
-)
-tasks.named('gcpExpansionServiceTestingDataflowImage') {
-  doFirst {
-    if (!dataflowRoot) {
-      throw new GradleException('Set dataflowRepositoryRoot in sdks/rust/.local/sdk.properties or with -P.')
-    }
-  }
-}
-
-tasks.register('gcpExpansionServicePythonTestDataflow') {
-  group = 'Verification'
-  description = 'Run the Python tests of the native Google Cloud providers on Dataflow ' +
-      '([-Ptests=bigquery_storage] [-PtestFilter=<pytest -k>] [-PgcpProject=<project>] [-PpythonVersion=3.12] [-PpythonSdkImage=<image>])'
-  dependsOn 'gcpExpansionServiceTestingImage', 'gcpExpansionServiceTestingDataflowImage', 'setupXlangPythonEnv'
-  if (!pythonSdkImage) {
-    dependsOn ':sdks:python:sdist'
-  }
-
-  doLast {
-    def gcpProject = gcpProjectFrom(propsFor('it'))
-    if (!gcpProject) {
-      throw new GradleException('Set gcpProject in sdks/rust/.local/sdk.properties or with -P.')
-    }
-    runProviderPythonTests(rustImageName('gcp_expansion_service_testing'),
-        file("${rustDir}/beam/io/gcp/expansion-service/tests/python"),
-        [GCP_PROJECT: gcpProject, PIPELINE_OPTIONS: dataflowPipelineOptions().join(' ')],
-        gcpDataflowImage)
   }
 }

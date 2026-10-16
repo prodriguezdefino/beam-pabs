@@ -35,25 +35,16 @@ ext.benchReader = (project.findProperty('reader') ?: 'rust').toString()
 ext.benchWriter = project.findProperty('writer')?.toString()
 def benchStamp = file("${benchVenv}/beam-version")
 
-registerExpansionImageTasks(
+registerDataflowExpansionImageTasks(
     buildTask: 'buildGcpExpansionServiceDataflow',
     imageTask: 'gcpExpansionServiceDataflowImage',
     pkg: 'apache-beam-io-gcp-expansion-service',
     bin: 'beam-gcp-expansion-service',
-    arch: 'amd64',
-    image: benchRoot ? rustImageName('gcp_expansion_service', benchRoot) : 'unset',
-    baseImage: benchRoot ? rustImageName('sdk', benchRoot) : null,
-    push: true,
+    imageName: 'gcp_expansion_service',
+    root: benchRoot,
     buildDescription: 'Build the linux/amd64 expansion service binary of the native Google Cloud connectors for Dataflow',
     imageDescription: 'Build and push the linux/amd64 beam_rust_gcp_expansion_service image for Dataflow ([-PdataflowRepositoryRoot=<registry>])',
 )
-tasks.named('gcpExpansionServiceDataflowImage') {
-  doFirst {
-    if (!benchRoot) {
-      throw new GradleException('Set dataflowRepositoryRoot in sdks/rust/.local/sdk.properties or with -P.')
-    }
-  }
-}
 
 def refreshBenchVenv = !benchStamp.exists() || benchStamp.text.trim() != benchBeamVersion
 tasks.register('setupBenchmarkPythonEnv') {

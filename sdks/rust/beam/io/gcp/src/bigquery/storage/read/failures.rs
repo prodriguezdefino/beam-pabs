@@ -25,6 +25,7 @@
 
 use std::sync::{Arc, LazyLock};
 
+use arrow_io::RowOutput;
 use arrow_io::arrow_array::RecordBatch;
 use beam::schema::{Field, FieldType, FieldValue, Row, RowElement, Schema};
 use beam::transforms::ProcessContext;
@@ -47,18 +48,18 @@ pub fn error_schema() -> &'static Arc<Schema> {
     &ERROR_SCHEMA
 }
 
-/// Converts the rows of `batch` into rows of `schema`, or into their row coder bytes.
+/// Converts the rows of `batch` into rows of `schema` in the form that `output` names.
 fn convert(
     batch: &RecordBatch,
     schema: &Arc<Schema>,
-    encoded: bool,
+    output: RowOutput,
 ) -> beam::Result<Vec<RowElement>> {
-    Ok(match encoded {
-        true => batch_to_encoded_rows(batch, schema)?
+    Ok(match output {
+        RowOutput::Encoded => batch_to_encoded_rows(batch, schema)?
             .into_iter()
             .map(RowElement::Encoded)
             .collect(),
-        false => batch_to_rows(batch, schema)?
+        RowOutput::Values => batch_to_rows(batch, schema)?
             .into_iter()
             .map(RowElement::Row)
             .collect(),
@@ -102,17 +103,17 @@ pub fn error_row(
 pub fn read_outputs(
     batch: &RecordBatch,
     schema: &Arc<Schema>,
-    encoded: bool,
+    output: RowOutput,
     (stream, offset): (&str, i64),
 ) -> beam::Result<Vec<Result<RowElement, Row>>> {
-    if let Ok(rows) = convert(batch, schema, encoded) {
+    if let Ok(rows) = convert(batch, schema, output) {
         return Ok(rows.into_iter().map(Ok).collect());
     }
     (offset..)
         .zip(0..batch.num_rows())
         .map(|(offset, index)| {
             let row = batch.slice(index, 1);
-            match convert(&row, schema, encoded) {
+            match convert(&row, schema, output) {
                 Ok(rows) => rows
                     .into_iter()
                     .next()
@@ -128,11 +129,11 @@ impl StreamOutput for Result<RowElement, Row> {
     fn emit_batch(
         batch: &RecordBatch,
         schema: &Arc<Schema>,
-        encoded: bool,
+        output: RowOutput,
         first_row: (&str, i64),
         ctx: &mut ProcessContext<'_, Self>,
     ) -> beam::Result {
-        read_outputs(batch, schema, encoded, first_row)?
+        read_outputs(batch, schema, output, first_row)?
             .into_iter()
             .try_for_each(|output| ctx.emit(output))
     }

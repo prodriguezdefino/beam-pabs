@@ -51,7 +51,19 @@ Run builds and tests through Gradle. The rest of the Beam repository uses it too
 ./gradlew :sdks:rust:validatesRunnerDataflow   # ValidatesRunner conformance suite on Dataflow (also ...Streaming)
 ./gradlew :sdks:rust:validatesCrossLanguageRunnerPythonPrism     # Python xlang suite on Prism against the Rust test expansion service
 ./gradlew :sdks:rust:validatesCrossLanguageRunnerPythonDataflow  # Python xlang suite on Dataflow against the Rust test expansion service
+./gradlew :sdks:rust:validatesCrossLanguageRunnerJavaPrism       # Java xlang suite on Prism against the Rust test expansion service
+./gradlew :sdks:rust:validatesCrossLanguageRunnerJavaDataflow    # Java xlang suite on Dataflow against the Rust test expansion service
+./gradlew :sdks:rust:validatesCrossLanguageRunnerGoPrism         # Go xlang suite on Prism against the Rust test expansion service
+./gradlew :sdks:rust:validatesCrossLanguageRunnerGoDataflow      # Go xlang suite on Dataflow against the Rust test expansion service
+./gradlew :sdks:rust:testingExpansionServiceImage          # Test expansion service image of the xlang suites
+./gradlew :sdks:rust:testingExpansionServiceDataflowImage  # The same image for linux/amd64, pushed for Dataflow
+./gradlew :sdks:rust:pythonSdkDataflowImage      # Python SDK container of this tree for Dataflow (-PpythonVersion=3.12)
+./gradlew :sdks:rust:javaSdkDataflowImage        # Java SDK container of this tree for Dataflow
+./gradlew :sdks:rust:goSdkDataflowImage          # Go SDK container of this tree for Dataflow
 ./gradlew :sdks:rust:gcpExpansionServiceImage    # Expansion service image of the native Google Cloud connectors
+./gradlew :sdks:rust:gcpExpansionServiceDataflowImage  # The same image for linux/amd64, pushed for Dataflow (used by bigQueryBenchmark)
+./gradlew :sdks:rust:gcpExpansionServiceTestingImage   # GCP expansion service image for its Python tests on Prism
+./gradlew :sdks:rust:gcpExpansionServiceTestingDataflowImage  # The same image for linux/amd64, pushed for Dataflow
 ./gradlew :sdks:rust:bigQueryIntegrationTest     # Native BigQuery reads against public tables on Prism
 ./gradlew :sdks:rust:gcpExpansionServicePythonTest  # Python pipelines on Prism against the GCP expansion service
 ./gradlew :sdks:rust:gcpExpansionServicePythonTestDataflow  # The same Python pipelines on Dataflow ([-Ptests=bigquery_storage] [-PtestFilter=unbounded])

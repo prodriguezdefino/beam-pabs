@@ -74,6 +74,7 @@ mod reader;
 pub mod restriction;
 mod session;
 
+use arrow_io::RowOutput;
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -117,7 +118,7 @@ pub struct ReadRows {
     schema: Option<Arc<Schema>>,
     client: Option<Read>,
     query_clients: Option<QueryClients>,
-    encoded: bool,
+    rows: RowOutput,
 }
 
 /// The steps of a read up to the reshuffled streams, and what the later steps need.
@@ -137,7 +138,7 @@ impl ReadRows {
             schema: None,
             client: None,
             query_clients: None,
-            encoded: false,
+            rows: RowOutput::Values,
         }
     }
 
@@ -146,7 +147,7 @@ impl ReadRows {
     /// [`WriteRows`](crate::bigquery::storage::write::WriteRows). A Rust step that takes a
     /// [`Row`] decodes the bytes again.
     pub fn with_encoded_rows(mut self) -> Self {
-        self.encoded = true;
+        self.rows = RowOutput::Encoded;
         self
     }
 
@@ -207,7 +208,7 @@ impl ReadRows {
                 ReadStreamFn::<RowElement>::new(
                     Arc::clone(&streams.schema),
                     self.client.clone(),
-                    self.encoded,
+                    self.rows,
                 ),
             ))
             .as_rows()
@@ -226,7 +227,7 @@ impl ReadRows {
             ReadStreamFn::<Result<RowElement, Row>>::new(
                 Arc::clone(&streams.schema),
                 self.client.clone(),
-                self.encoded,
+                self.rows,
             ),
         ));
         let output = output.as_rows().with_row_schema(&streams.schema);

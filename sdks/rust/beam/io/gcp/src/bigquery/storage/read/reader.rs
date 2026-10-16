@@ -23,6 +23,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 
+use arrow_io::RowOutput;
 use arrow_io::arrow_array::RecordBatch;
 use arrow_io::arrow_buffer::Buffer;
 use arrow_io::arrow_ipc::reader::StreamDecoder;
@@ -148,12 +149,12 @@ impl BatchDecoder {
 
 /// The elements that a stream reader emits for the rows of a record batch.
 pub(super) trait StreamOutput: Outputs + Sized {
-    /// Emits the rows of `batch` as rows of `schema`, or as their row coder bytes if `encoded`
-    /// is set. `first_row` is the stream and the offset of the first row of `batch`.
+    /// Emits the rows of `batch` as rows of `schema` in the form that `output` names.
+    /// `first_row` is the stream and the offset of the first row of `batch`.
     fn emit_batch(
         batch: &RecordBatch,
         schema: &Arc<Schema>,
-        encoded: bool,
+        output: RowOutput,
         first_row: (&str, i64),
         ctx: &mut ProcessContext<'_, Self>,
     ) -> beam::Result;
@@ -164,15 +165,15 @@ impl StreamOutput for RowElement {
     fn emit_batch(
         batch: &RecordBatch,
         schema: &Arc<Schema>,
-        encoded: bool,
+        output: RowOutput,
         _first_row: (&str, i64),
         ctx: &mut ProcessContext<'_, Self>,
     ) -> beam::Result {
-        match encoded {
-            true => batch_to_encoded_rows(batch, schema)?
+        match output {
+            RowOutput::Encoded => batch_to_encoded_rows(batch, schema)?
                 .into_iter()
                 .try_for_each(|row| ctx.emit(RowElement::Encoded(row))),
-            false => batch_to_rows(batch, schema)?
+            RowOutput::Values => batch_to_rows(batch, schema)?
                 .into_iter()
                 .try_for_each(|row| ctx.emit(RowElement::Row(row))),
         }
@@ -185,16 +186,16 @@ impl StreamOutput for RowElement {
 pub(super) struct ReadStreamFn<O> {
     schema: Arc<Schema>,
     client: Option<Read>,
-    encoded: bool,
+    rows: RowOutput,
     output: PhantomData<fn() -> O>,
 }
 
 impl<O> ReadStreamFn<O> {
-    pub(super) fn new(schema: Arc<Schema>, client: Option<Read>, encoded: bool) -> Self {
+    pub(super) fn new(schema: Arc<Schema>, client: Option<Read>, rows: RowOutput) -> Self {
         Self {
             schema,
             client,
-            encoded,
+            rows,
             output: PhantomData,
         }
     }
@@ -202,7 +203,7 @@ impl<O> ReadStreamFn<O> {
 
 impl<O> Clone for ReadStreamFn<O> {
     fn clone(&self) -> Self {
-        Self::new(Arc::clone(&self.schema), self.client.clone(), self.encoded)
+        Self::new(Arc::clone(&self.schema), self.client.clone(), self.rows)
     }
 }
 
@@ -271,7 +272,7 @@ impl<O: StreamOutput> SplittableDoFn for ReadStreamFn<O> {
                 .decode(bytes)?
                 .iter()
                 .try_fold(offset, |first, batch| {
-                    O::emit_batch(batch, &self.schema, self.encoded, (&stream, first), ctx)?;
+                    O::emit_batch(batch, &self.schema, self.rows, (&stream, first), ctx)?;
                     Ok::<_, beam::Error>(first + batch.num_rows() as i64)
                 })?;
             offset = end;
