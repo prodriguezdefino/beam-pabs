@@ -127,6 +127,7 @@ dependencies = [
  "apache-beam-io-avro",
  "apache-beam-io-file",
  "apache-beam-io-gcp",
+ "apache-beam-io-json",
  "apache-beam-io-kafka",
  "apache-beam-io-managed",
  "apache-beam-io-parquet",
@@ -316,6 +317,16 @@ dependencies = [
  "serde",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "apache-beam-io-json"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam-core",
+ "base64 0.22.1",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

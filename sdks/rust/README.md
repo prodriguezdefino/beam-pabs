@@ -173,6 +173,7 @@ The SDK is a Cargo workspace with its root at `sdks/rust`:
 | `apache-beam-io-arrow` | `beam/io/arrow/` | Beam schema/`Row` ⇄ Arrow `Schema`/`RecordBatch` conversion and the `RowCodec` abstraction shared by columnar I/O. |
 | `apache-beam-io-parquet` | `beam/io/parquet/` | `parquetio`: row-group-splittable Parquet reads and sharded Parquet writes on arrow-rs. |
 | `apache-beam-io-avro` | `beam/io/avro/` | `avroio`: block-splittable Avro OCF reads and sharded Avro writes on `arrow-avro`. |
+| `apache-beam-io-json` | `beam/io/json/` | Beam schema/`Row` ⇄ JSON: Beam schemas from JSON Schemas, a reader that decodes each object straight into a row, and a writer. Exposed as `beam::io::json` by the `json` feature. |
 | `apache-beam-io-kafka` | `beam/io/kafka/` | Cross-language `KafkaRead` and `KafkaWrite` over the Java `kafka_read`/`kafka_write` SchemaTransforms, expanded through Managed. Exposed as `beam::io::kafka` by the `kafka` feature. |
 | `apache-beam-io-managed` | `beam/io/managed/` | Managed I/O: `ManagedRead` and `ManagedWrite` over Java's `beam:transform:managed:v1`, plus the `Row`-to-config bridge typed connectors use. Exposed as `beam::io::managed` by the `managed` feature. |
 | `apache-beam-ml` | `beam/ml/` | Machine learning inference framework (`RunInference`, `ModelHandler`, micro-batching, DLQ) and acceleration backends (Candle, ONNX Runtime, Vertex AI remote LLMs). Exposed as `beam::ml` by the `ml` feature. |
@@ -195,8 +196,8 @@ dependencies from each `Cargo.toml`. It does not show dev-dependencies.
 apache-beam-derive (proc-macro, optional) ─┐
 apache-beam-model ─────────────────────────┴─> apache-beam-core
 apache-beam-core ─> apache-beam-fluent, apache-beam-harness, apache-beam-io-file,
-                    apache-beam-io-arrow, apache-beam-external, apache-beam-expansion,
-                    apache-beam-ml, apache-beam-testing
+                    apache-beam-io-arrow, apache-beam-io-json, apache-beam-external,
+                    apache-beam-expansion, apache-beam-ml, apache-beam-testing
 apache-beam-harness                       ─> apache-beam-runner-prism, apache-beam-expansion,
                                              apache-beam-testing (optional, with prism)
 apache-beam-external                      ─> apache-beam-io-managed ─> apache-beam-io-kafka
