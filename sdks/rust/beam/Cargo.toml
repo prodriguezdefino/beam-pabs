@@ -58,6 +58,8 @@ gcp-pubsub = ["dep:gcp", "gcp/pubsub", "external"]
 arrow = ["dep:arrow_io"]
 parquet = ["dep:parquet_io", "arrow", "io-file"]
 avro = ["dep:avro_io", "arrow", "io-file"]
+# Beam schemas and rows to and from JSON. Off by default.
+json = ["dep:json_io"]
 # Cross-language Kafka through the Java expansion service. Off by default.
 kafka = ["dep:kafka_io", "external"]
 # Managed I/O (Iceberg, Kafka, BigQuery, JDBC, Delta Lake) through the Java expansion
@@ -96,6 +98,7 @@ gcp = { workspace = true, optional = true }
 arrow_io = { workspace = true, optional = true }
 parquet_io = { workspace = true, optional = true }
 avro_io = { workspace = true, optional = true }
+json_io = { workspace = true, optional = true }
 kafka_io = { workspace = true, optional = true }
 managed_io = { workspace = true, optional = true }
 external = { workspace = true, optional = true }

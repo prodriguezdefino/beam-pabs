@@ -104,6 +104,10 @@ pub mod io {
     #[cfg(feature = "avro")]
     pub use avro_io as avro;
 
+    /// Beam schema and `Row` bridge to JSON: `beam::io::json::JsonReader` and `write_json`.
+    #[cfg(feature = "json")]
+    pub use json_io as json;
+
     /// Cross-language Kafka I/O: `beam::io::kafka::KafkaRead` and `KafkaWrite`.
     #[cfg(feature = "kafka")]
     pub use kafka_io as kafka;
