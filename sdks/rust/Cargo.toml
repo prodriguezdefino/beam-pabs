@@ -30,6 +30,29 @@ members = [
     "beam/runners/*",
     "beam/io/*",
     "beam/io/gcp/expansion-service",
+    "beam/io/kafka/expansion-service",
+    "beam/runner-tests",
+    "beam/test-utils",
+    "beam/testing",
+    "examples/*",
+    "scripts/benchmarks/kafka/rust",
+]
+# Every member except the benchmark pipelines, so a bare `cargo build`, `cargo clippy` or
+# `cargo test` does not compile them. The benchmark tasks select them with `-p`.
+default-members = [
+    "beam",
+    "beam/model",
+    "beam/core",
+    "beam/derive",
+    "beam/fluent",
+    "beam/harness",
+    "beam/external",
+    "beam/expansion",
+    "beam/ml",
+    "beam/runners/*",
+    "beam/io/*",
+    "beam/io/gcp/expansion-service",
+    "beam/io/kafka/expansion-service",
     "beam/runner-tests",
     "beam/test-utils",
     "beam/testing",
@@ -130,6 +153,9 @@ arrow-schema = { version = "60.0.0", default-features = false }
 arrow-ipc = { version = "60.0.0", default-features = false }
 parquet = { version = "60.0.0", default-features = false, features = ["arrow", "snap", "zstd"] }
 arrow-avro = { version = "60.0.0", default-features = false, features = ["deflate", "snappy", "zstd"] }
+# Static librdkafka, OpenSSL, zlib and zstd: the worker binary links only libc, libm and libgcc_s,
+# which the distroless runtime image has. See docs/rust-native-io-providers.md, Kafka dependencies.
+rdkafka = { version = "0.39", default-features = false, features = ["tokio", "libz-static", "zstd", "ssl-vendored"] }
 
 # Internal workspace crates
 beam = { package = "apache-beam", path = "beam", version = "2.78.0-SNAPSHOT" }

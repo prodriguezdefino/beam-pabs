@@ -27,8 +27,9 @@ description = "Apache Beam :: SDKs :: Rust"
 // The order of these scripts is important. A script can only use the `ext` helpers of the
 // scripts above it. For example, xlang.gradle defines the shared helpers
 // (registerXlangSuiteTasks, registerSdkDataflowImageTask, registerDataflowExpansionImageTasks)
-// that xlang-python/java/go.gradle, integration.gradle and benchmarks.gradle use, and it uses
-// registerExpansionImageTasks from containers.gradle.
+// that xlang-python/java/go.gradle, integration.gradle, io-*.gradle and benchmarks.gradle use,
+// and it uses registerExpansionImageTasks from containers.gradle. io-<crate>.gradle registers
+// the image and test tasks of one connector crate.
 apply from: 'gradle/versions.gradle'
 apply from: 'gradle/cargo.gradle'
 apply from: 'gradle/config.gradle'
@@ -42,6 +43,8 @@ apply from: 'gradle/xlang-python.gradle'
 apply from: 'gradle/xlang-java.gradle'
 apply from: 'gradle/xlang-go.gradle'
 apply from: 'gradle/integration.gradle'
+apply from: 'gradle/io-gcp.gradle'
+apply from: 'gradle/io-kafka.gradle'
 apply from: 'gradle/benchmarks.gradle'
 apply from: 'gradle/quality.gradle'
 

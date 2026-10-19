@@ -36,6 +36,7 @@ Run builds and tests through Gradle. The rest of the Beam repository uses it too
 ./gradlew :sdks:rust:fmt               # Apply code formatting (cargo fmt)
 ./gradlew :sdks:rust:clean             # Remove the cargo target directory (cleanSdk) and build/
 ./gradlew :sdks:rust:coverage          # Line coverage report (or one crate: -Ppkg=apache-beam-core)
+./gradlew :sdks:rust:checkBenchmarks   # Clippy and tests of the benchmark pipelines, which build, check and test leave out
 
 # Pipeline Launchers
 ./gradlew :sdks:rust:prism             # Launch on PrismRunner (-Pexample=wordcount|gaming [-Pdocker])
@@ -67,6 +68,8 @@ Run builds and tests through Gradle. The rest of the Beam repository uses it too
 ./gradlew :sdks:rust:bigQueryIntegrationTest     # Native BigQuery reads against public tables on Prism
 ./gradlew :sdks:rust:gcpExpansionServicePythonTest  # Python pipelines on Prism against the GCP expansion service
 ./gradlew :sdks:rust:gcpExpansionServicePythonTestDataflow  # The same Python pipelines on Dataflow ([-Ptests=bigquery_storage] [-PtestFilter=unbounded])
+./gradlew :sdks:rust:kafkaExpansionServiceImage  # Expansion service image of the native Kafka connector
+./gradlew :sdks:rust:kafkaExpansionServicePythonTest  # Python pipelines on Prism against the Kafka expansion service and a local broker in Docker
 ./gradlew :sdks:rust:bigQueryBenchmark           # BigQuery benchmark on Dataflow ([-Ppipeline=python|java] [-Pshape=count|per_key|copy] -Preader=... [-Pwriter=...] [-PnumWorkers=4] [-PmaxNumWorkers=10])
 ```
 

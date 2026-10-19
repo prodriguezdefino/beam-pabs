@@ -33,11 +33,20 @@ from typing import Dict, List, Set, Optional, Tuple, Any
 
 STAGE_PATTERNS = [
   ("Row bytes -> Arrow", ["apache_beam_io_arrow::convert", "apache_beam_io_arrow::array", "apache_beam_io_arrow::schema"]),
+  ("Kafka JSON", ["json_io::", "apache_beam_io_json::", "kafka_io::native::format::", "apache_beam_io_kafka::native::format::", "serde_json::"]),
+  ("Kafka connector", ["kafka_io::native::", "apache_beam_io_kafka::native::"]),
+  ("librdkafka", ["rdkafka::", "rdkafka_sys::"]),
   ("Harness data plane", ["apache_beam_harness::", "harness::"]),
   ("Core coders", ["apache_beam_core::coders::", "apache_beam_core::coders", "core::coders::"]),
   ("Core transforms", ["apache_beam_core::transforms::", "apache_beam_core::transforms"]),
   ("gRPC / protobuf / TLS", ["tonic::", "h2::", "rustls::", "prost::"]),
   ("Tokio/runtime", ["tokio::"]),
+]
+
+# Prefixes of C symbols, which have no `::` path.
+C_PREFIXES = [
+  ("rd_", "librdkafka"),
+  ("crc32c", "librdkafka"),
 ]
 
 EXACT_MATCHES = {
@@ -117,7 +126,9 @@ def classify(name: str) -> str:
     return EXACT_MATCHES[name]
   if name.startswith("_xzm_"):
     return "Allocation/memcpy"
-
+  for prefix, stage in C_PREFIXES:
+    if name.startswith(prefix):
+      return stage
   segments = name.replace('<', '').replace('>', '').replace(' as ', '::').split("::")
   for stage, prefixes in STAGE_PATTERNS:
     for prefix in prefixes:
@@ -133,6 +144,8 @@ def classify_inclusive(frames: List[str]) -> Set[str]:
   for name in frames:
     if name in EXACT_MATCHES or name.startswith("_xzm_"):
       stages.add("Allocation/memcpy")
+    elif any(name.startswith(prefix) for prefix, _ in C_PREFIXES):
+      stages.add(next(stage for prefix, stage in C_PREFIXES if name.startswith(prefix)))
     else:
       segments = name.replace('<', '').replace('>', '').replace(' as ', '::').split("::")
       matched = False
@@ -246,8 +259,8 @@ def aggregate(prof: Dict[str, Any], syms: Optional[Dict[str, Any]]) -> Totals:
 
       leaf = frames[0]
       # With CPU deltas, a sample weighs the CPU time of its thread since the last sample, so a
-      # thread blocked in any syscall (for example a client library thread in poll()) weighs 0.
-      # Without them, a sample weighs its count, and only the leaves in IDLE_FUNCS are idle.
+      # thread blocked in any syscall (for example librdkafka threads in poll()) weighs 0. Without
+      # them, a sample weighs its count, and only the leaves in IDLE_FUNCS are idle.
       if cpu_delta_data:
         cpu_weight = delta_us
         is_idle = delta_us == 0

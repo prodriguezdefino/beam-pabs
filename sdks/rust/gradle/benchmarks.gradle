@@ -19,8 +19,9 @@
 // Shared Dataflow benchmark harness.
 //
 // scripts/benchmarks holds one directory for each benchmark. Each directory has
-// benchmark.gradle, one pipeline for each SDK (python/, java/), and tools/ holds
-// scripts that all benchmarks share (job_metrics.py prints the result tables).
+// benchmark.gradle, one pipeline for each SDK (python/, java/, and optionally rust/, a crate
+// of the Cargo workspace), and tools/ holds scripts that all benchmarks share (job_metrics.py
+// prints the result tables).
 //
 // This script sets up the released Python and Java SDKs (-PbenchmarkBeamVersion),
 // builds the expansion service image for Dataflow, and provides registerDataflowBenchmark
@@ -46,6 +47,17 @@ registerDataflowExpansionImageTasks(
     imageDescription: 'Build and push the linux/amd64 beam_rust_gcp_expansion_service image for Dataflow ([-PdataflowRepositoryRoot=<registry>])',
 )
 
+registerDataflowExpansionImageTasks(
+    buildTask: 'buildKafkaExpansionServiceDataflow',
+    imageTask: 'kafkaExpansionServiceDataflowImage',
+    pkg: 'apache-beam-io-kafka-expansion-service',
+    bin: 'beam-kafka-expansion-service',
+    imageName: 'kafka_expansion_service',
+    root: benchRoot,
+    buildDescription: 'Build the linux/amd64 expansion service binary of the native Kafka connector for Dataflow',
+    imageDescription: 'Build and push the linux/amd64 beam_rust_kafka_expansion_service image for Dataflow ([-PdataflowRepositoryRoot=<registry>])',
+)
+
 def refreshBenchVenv = !benchStamp.exists() || benchStamp.text.trim() != benchBeamVersion
 tasks.register('setupBenchmarkPythonEnv') {
   group = 'Build'
@@ -65,6 +77,9 @@ tasks.register('setupBenchmarkPythonEnv') {
 
 // Java benchmarks build against released artifacts from Maven, not against this tree.
 // Nothing outside sdks/rust is needed.
+repositories {
+  maven { url 'https://packages.confluent.io/maven/' }
+}
 configurations {
   // The java plugin is not applied here. Request the runtime jars of a standard JVM,
   // matching runtimeClasspath (for example, the jre variant of Guava).
@@ -83,9 +98,14 @@ configurations {
 }
 dependencies {
   ['beam-sdks-java-core', 'beam-sdks-java-managed', 'beam-sdks-java-io-google-cloud-platform',
-   'beam-runners-google-cloud-dataflow-java'].each {
+   'beam-sdks-java-io-kafka', 'beam-runners-google-cloud-dataflow-java'].each {
     javaBenchmark "org.apache.beam:${it}:${benchBeamVersion}"
   }
+  // KafkaIO compiles with kafka-clients as provided, so the worker classpath needs it explicitly.
+  javaBenchmark 'org.apache.kafka:kafka-clients:3.9.2'
+  // The JSON format of KafkaIO reads JSON Schemas with everit, which Beam does not ship.
+  // Keep the version in sync with `everit_json_version` in BeamModulePlugin.
+  javaBenchmark 'com.github.erosb:everit-json-schema:1.14.2'
   // BigQueryStorageArrowReader needs an Arrow buffer allocator on the worker classpath.
   javaBenchmark 'org.apache.arrow:arrow-memory-netty:17.0.0'
   // PAssert (the row check) needs JUnit and Hamcrest at run time.
@@ -104,23 +124,113 @@ ext.startGcpExpansionService = { String image ->
   startExpansionService(image: image, platform: 'linux/amd64', credentials: credentials)
 }
 
-// Formats a flag name for the selected pipeline: snake_case for Python, lowerCamelCase for Java.
+// Formats a flag name for the selected pipeline: snake_case for Python and Rust,
+// lowerCamelCase for Java.
 ext.benchFlag = { String name ->
   def flag = benchPipeline == 'java' ? name.replaceAll(/_([a-z])/) { it[1].toUpperCase() } : name
   return "--${flag}"
 }
 
+// The flags of a streaming benchmark job that the launcher of a Rust pipeline handles itself.
+def rustLauncherFlags = ['--expected_rows', '--drain_after_seconds', '--detach']
+
+// Runs the Rust pipeline `cfg.rustPackage` on Dataflow with `args`, and waits for the job as the
+// Python and Java launchers do. The program submits the job with `--async_job` and prints
+// `JOB_ID=<id>`. The worker runs the Linux binary of `cfg.rustWorkerTask` in
+// `sdkContainerImage` (by default the image of the Rust runner). A job that the program does
+// not submit, for example with --dataflow_job_file, prints `JOB_ID=dry-run`.
+ext.runRustBenchmark = { Map cfg, String benchDir, List<String> args, String gcpProject, String region ->
+  def launcherFlag = { String flag -> rustLauncherFlags.find { flag == it || flag.startsWith("${it}=") } }
+  def value = { String name ->
+    args.find { it.startsWith("${name}=") }?.substring(name.length() + 1)
+  }
+  def expectedRows = value('--expected_rows')
+  def drainAfterSeconds = value('--drain_after_seconds')
+  def detach = args.contains('--detach')
+  def programArgs = args.findAll { !launcherFlag(it) } + [
+    "--worker_binary=${workerBinaryFor(cfg.rustPackage, workerArch).absolutePath}",
+    '--async_job',
+  ]
+  def image = benchProps('sdkContainerImage', 'SDK_CONTAINER_IMAGE')
+  if (image) {
+    programArgs << "--sdk_container_image=${image}"
+  }
+
+  def output = new ByteArrayOutputStream()
+  def tee = new OutputStream() {
+    @Override
+    void write(int b) {
+      System.out.write(b)
+      output.write(b)
+    }
+
+    @Override
+    void write(byte[] b, int off, int len) {
+      System.out.write(b, off, len)
+      output.write(b, off, len)
+    }
+
+    @Override
+    void flush() {
+      System.out.flush()
+    }
+  }
+  logger.lifecycle("Rust benchmark flags: ${programArgs.join(' ')}")
+  project.exec {
+    workingDir rustDir
+    environment launchEnvironment()
+    commandLine(['cargo', 'run', '--release', '-p', cfg.rustPackage, '--'] + programArgs*.toString())
+    standardOutput = tee
+  }
+  def jobId = (output.toString() =~ /(?m)^JOB_ID=(\S+)/).with { it.find() ? it.group(1) : null }
+  if (!jobId) {
+    throw new GradleException("The Rust pipeline printed no JOB_ID line.")
+  }
+  if (jobId == 'dry-run' || detach) {
+    return
+  }
+  // The poll of the Python launcher: it drains the job at --expected_rows or after
+  // --drain_after_seconds, and waits for JOB_STATE_DONE.
+  def module = cfg.pythonScript.replaceAll(/\.py$/, '')
+  def poll = [
+    'import logging, sys',
+    'sys.path.insert(0, sys.argv[1])',
+    "import ${module} as benchmark",
+    'logging.getLogger().setLevel(logging.INFO)',
+    'number = lambda text: int(text) if text else None',
+    'benchmark.wait_for_streaming_job(sys.argv[2], sys.argv[3], sys.argv[4], ' +
+        'number(sys.argv[5]), number(sys.argv[6]))',
+  ].join('\n')
+  project.exec {
+    commandLine "${benchVenv}/bin/python", '-c', poll, "${benchDir}/python", gcpProject, region,
+        jobId, expectedRows ?: '', drainAfterSeconds ?: ''
+  }
+}
+
 // Registers a Dataflow benchmark task and its Java compile task for scripts/benchmarks/<dir>/.
-// -Preader selects the reader (`cfg.readers`, for each pipeline). The shapes in
-// `cfg.writeShapes` also write, and -Pwriter selects the writer (`cfg.writers`). The other
-// shapes reject -Pwriter. `cfg.configure`, if set, gets [shape:, writes:] and returns the spec
-// of the job (readerLabel, jobSuffix, labels, args). `cfg.afterRun`, if set, runs with that spec
+// The shapes in `cfg.readShapes` (by default `cfg.shapes`) read with -Preader (`cfg.readers`).
+// The shapes in `cfg.writeShapes` write with -Pwriter (`cfg.writers`). Other shapes reject the
+// unused flag. `cfg.configure`, if set, gets [shape:, reads:, writes:] and returns the spec of
+// the job (readerLabel, jobSuffix, labels, args). `cfg.afterRun`, if set, runs with that spec
 // after the job, for example to check and drop the table that a job wrote.
+//
+// With `cfg.rustPackage` (a workspace crate whose binary has the same name), -Ppipeline=rust
+// runs that Rust pipeline for the shapes in `cfg.rustShapes`. `cfg.rustWorkerTask` builds its
+// Linux worker binary. The launcher starts the job with `--async_job` and reads the `JOB_ID=`
+// line. Then, for a streaming job, it calls `wait_for_streaming_job` of the Python pipeline
+// (`cfg.pythonScript`) with --expected_rows and --drain_after_seconds, so the Rust job polls
+// and drains as the Python job does. With --detach, it prints the job ID and stops.
 ext.registerDataflowBenchmark = { Map cfg ->
   def benchDir = "${rustDir}/scripts/benchmarks/${cfg.dir}"
   def shape = (project.findProperty('shape') ?: (cfg.defaultShape ?: 'count')).toString()
+  def reads = (cfg.readShapes ?: cfg.shapes ?: []).contains(shape)
   def writes = (cfg.writeShapes ?: []).contains(shape)
-  def usesRust = benchReader == 'rust' || (writes && benchWriter == 'rust')
+  def rustPipeline = benchPipeline == 'rust'
+  // A Rust pipeline uses its own transforms, not the expansion service.
+  def usesRust = !rustPipeline &&
+      ((reads && benchReader == 'rust') || (writes && benchWriter == 'rust'))
+  def expansionImageTask = cfg.expansionImageTask ?: 'gcpExpansionServiceDataflowImage'
+  def expansionImageName = cfg.expansionImageName ?: 'gcp_expansion_service'
   def javaClasses = file("${buildDir}/java-benchmark/${cfg.dir}/classes")
 
   tasks.register(cfg.compileTask, JavaCompile) {
@@ -134,28 +244,59 @@ ext.registerDataflowBenchmark = { Map cfg ->
     options.release = 11
   }
 
+  if (cfg.rustPackage) {
+    tasks.register(cfg.rustWorkerTask) {
+      group = 'Build'
+      description = "Build the Linux worker binary of the ${cfg.dir} Rust benchmark (${cfg.rustPackage}) for Dataflow ([-PexampleArch=amd64])"
+      inputs.files rustWorkspaceTree
+      inputs.property('arch', workerArch)
+      inputs.property('sdkVersion', beamSdkVersion)
+      inputs.property('targetCpu', project.findProperty('workerTargetCpu') ?: 'default')
+      outputs.file workerBinaryFor(cfg.rustPackage, workerArch)
+
+      doLast {
+        compileWorkers([cfg.rustPackage], workerArch, beamSdkVersion)
+      }
+    }
+  }
+
   tasks.register(cfg.task) {
     group = 'Verification'
     description = cfg.description
-    dependsOn(benchPipeline == 'java' ? cfg.compileTask : 'setupBenchmarkPythonEnv')
+    if (rustPipeline && cfg.rustPackage) {
+      // The Python environment provides the poll of the job.
+      dependsOn cfg.rustWorkerTask, 'setupBenchmarkPythonEnv'
+    } else {
+      dependsOn(benchPipeline == 'java' ? cfg.compileTask : 'setupBenchmarkPythonEnv')
+    }
     if (cfg.afterRun && writes) {
       dependsOn 'setupBenchmarkPythonEnv'
     }
     if (usesRust) {
-      dependsOn 'gcpExpansionServiceDataflowImage'
+      dependsOn expansionImageTask
     }
 
     doLast {
-      if (!['python', 'java'].contains(benchPipeline)) {
-        throw new GradleException("Unknown pipeline '${benchPipeline}': use python or java.")
+      def pipelines = ['python', 'java'] + (cfg.rustPackage ? ['rust'] : [])
+      if (!pipelines.contains(benchPipeline)) {
+        throw new GradleException("Unknown pipeline '${benchPipeline}': use ${pipelines.join(', ')}.")
       }
       if (cfg.shapes && !cfg.shapes.contains(shape)) {
         throw new GradleException("Unknown shape '${shape}': use ${cfg.shapes.join(', ')}.")
       }
-      def readers = cfg.readers[benchPipeline]
-      if (!readers.contains(benchReader)) {
-        throw new GradleException(
-            "Unknown reader '${benchReader}' for a ${benchPipeline} pipeline: use ${readers.join(', ')}.")
+      if (rustPipeline && !(cfg.rustShapes ?: []).contains(shape)) {
+        throw new GradleException("The Rust pipeline runs only ${(cfg.rustShapes ?: []).join(', ')}, " +
+            "not shape '${shape}'.")
+      }
+      if (reads) {
+        def readers = cfg.readers[benchPipeline]
+        if (!readers.contains(benchReader)) {
+          throw new GradleException(
+              "Unknown reader '${benchReader}' for a ${benchPipeline} pipeline: use ${readers.join(', ')}.")
+        }
+      } else if (project.hasProperty('reader')) {
+        throw new GradleException("Shape '${shape}' does not read, so it takes no -Preader. " +
+            "Use a shape that reads (${(cfg.readShapes ?: []).join(', ')}) or remove -Preader.")
       }
       if (writes) {
         def writers = cfg.writers[benchPipeline]
@@ -173,22 +314,28 @@ ext.registerDataflowBenchmark = { Map cfg ->
       if (!gcpProject || !gcpTempLocation) {
         throw new GradleException('Set gcpProject and gcpTempLocation in sdks/rust/.local/sdk.properties or with -P.')
       }
+      def runnerV1 = project.hasProperty('runnerV1') && project.property('runnerV1').toString() != 'false'
+      if (runnerV1 && (benchPipeline != 'java' || usesRust)) {
+        throw new GradleException('-PrunnerV1 applies only to a Java pipeline without Rust transforms: ' +
+            'Rust transforms run on Runner v2.')
+      }
       def workers = (project.findProperty('numWorkers') ?: '4').toString()
       def maxWorkers = (project.findProperty('maxNumWorkers') ?: workers).toString()
       def autoscaling = maxWorkers.toInteger() > workers.toInteger()
-      def spec = cfg.configure ? cfg.configure([shape: shape, writes: writes]) : [:]
+      def spec = cfg.configure ? cfg.configure([shape: shape, reads: reads, writes: writes]) : [:]
       def readerLabel = (spec.readerLabel ?: benchReader).toString()
-      def variantLabel = writes ? "${readerLabel}-to-${benchWriter}" : readerLabel
+      def variantLabel = reads && writes ? "${readerLabel}-to-${benchWriter}" :
+          (writes ? benchWriter : readerLabel)
       def jobSuffix = spec.jobSuffix ? "-${spec.jobSuffix}" : ''
       def labels = [
         'benchmark': cfg.label,
         'pipeline': benchPipeline,
-        'reader': readerLabel,
-      ] + (writes ? ['writer': benchWriter] : [:]) + [
+      ] + (reads ? ['reader': readerLabel] : [:]) + (writes ? ['writer': benchWriter] : [:]) + [
         'shape': shape.replace('_', '-'),
         'scaling': autoscaling ? 'autoscaling' : 'fixed',
       ] + (spec.labels ?: [:])
-      def variantArgs = ["--reader=${benchReader}"] + (writes ? ["--writer=${benchWriter}"] : [])
+      def variantArgs = (reads ? ["--reader=${benchReader}"] : []) +
+          (writes ? ["--writer=${benchWriter}"] : [])
       def pipelineArgs = variantArgs + [
         "--shape=${shape}",
         '--runner=DataflowRunner',
@@ -198,16 +345,20 @@ ext.registerDataflowBenchmark = { Map cfg ->
         "${benchFlag('num_workers')}=${workers}",
         "${benchFlag('max_num_workers')}=${maxWorkers}",
         "${benchFlag('autoscaling_algorithm')}=${autoscaling ? 'THROUGHPUT_BASED' : 'NONE'}",
-        "${benchFlag(benchPipeline == 'java' ? 'worker_machine_type' : 'machine_type')}=" +
+        "${benchFlag(benchPipeline == 'python' ? 'machine_type' : 'worker_machine_type')}=" +
             "${project.findProperty('workerMachineType') ?: 'n2-standard-4'}",
         "${benchFlag('job_name')}=${cfg.jobPrefix}-${benchPipeline}-${variantLabel}-${shape.replace('_', '-')}" +
             "${jobSuffix}-${System.currentTimeMillis()}",
       ] + (spec.args ?: [])
       if (benchPipeline == 'java') {
         // The Java pipeline bills the jobs to --project. The Rust transforms run on Runner v2,
-        // so the Java variants use it too and every job shares the same runner architecture.
+        // so by default the Java variants use it too and every job shares the same runner
+        // architecture. -PrunnerV1 runs a variant without Rust transforms on Runner v1.
+        pipelineArgs << "--labels=${groovy.json.JsonOutput.toJson(labels + ['runner': runnerV1 ? 'v1' : 'v2'])}"
+        pipelineArgs << (runnerV1 ? '--experiments=disable_runner_v2' : '--experiments=use_runner_v2')
+      } else if (rustPipeline) {
+        // The Rust Dataflow runner always adds use_runner_v2, and takes one --labels flag.
         pipelineArgs << "--labels=${groovy.json.JsonOutput.toJson(labels)}"
-        pipelineArgs << '--experiments=use_runner_v2'
       } else {
         pipelineArgs << "--billing_project=${gcpProject}"
         labels.each { name, value -> pipelineArgs << "--labels=${name}=${value}" }
@@ -222,10 +373,14 @@ ext.registerDataflowBenchmark = { Map cfg ->
           pipelineArgs << "--${key}=${value}"
         }
       }
+      def serviceAccount = benchProps('serviceAccount')
+      if (serviceAccount) {
+        pipelineArgs << "${benchPipeline == 'java' ? '--serviceAccount' : '--service_account_email'}=${serviceAccount}"
+      }
 
       def service = null
       if (usesRust) {
-        service = startGcpExpansionService(rustImageName('gcp_expansion_service', benchRoot))
+        service = startGcpExpansionService(rustImageName(expansionImageName, benchRoot))
         pipelineArgs << "${benchFlag('expansion_service')}=localhost:${service.port}"
       }
       try {
@@ -235,6 +390,9 @@ ext.registerDataflowBenchmark = { Map cfg ->
             mainClass = cfg.mainClass
             args = pipelineArgs*.toString()
           }
+        } else if (rustPipeline) {
+          runRustBenchmark(cfg, benchDir, pipelineArgs*.toString(), gcpProject,
+              benchProps('gcpRegion', 'GCP_REGION', 'us-central1').toString())
         } else {
           project.exec {
             commandLine(["${benchVenv}/bin/python", "${benchDir}/python/${cfg.pythonScript}"] +

@@ -20,7 +20,7 @@
 // `stopExpansionService`, `execWithExpansionService`, `withPrismJobServer`), the Rust test
 // expansion service images (`testingExpansionServiceImage`, `testingExpansionServiceDataflowImage`),
 // the Python virtualenv (`setupXlangPythonEnv`), and task registration helpers shared by
-// `xlang-*.gradle`, `integration.gradle`, and `benchmarks.gradle`.
+// `xlang-*.gradle`, `integration.gradle`, `io-*.gradle`, and `benchmarks.gradle`.
 //
 // The suites of other SDKs run unchanged against the Rust test expansion service, which serves
 // the test transforms of beam/runner-tests/src/xlang_transforms.rs. One image is both that

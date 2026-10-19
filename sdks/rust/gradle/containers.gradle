@@ -113,7 +113,12 @@ ext.compileWorkers = { List<String> examples, String arch, String sdkVer, Map<St
     def copyOut = examples
         .collect { "cp /tmp/target/${rustTarget}/${cargoProfile}/${it} /workspace/sdks/rust/build/linux_${arch}/${it}" }
         .join(' && ')
-    def compileScript = "CARGO_TARGET_DIR=/tmp/target cargo build --profile ${cargoProfile} ${(jobFlags + packageFlags).join(' ')} --target ${rustTarget} && ${copyOut}"
+    // librdkafka's ./configure reads CC and CXX, not CC_<target>. On a builder of another
+    // architecture, they name the cross compilers, and HOST_CC keeps build scripts native.
+    def gnuArch = [amd64: 'x86_64', arm64: 'aarch64'][arch] ?: 'x86_64'
+    def crossCompilers = "case \"\$(uname -m)\" in ${gnuArch}) ;; *) export CC=${gnuArch}-linux-gnu-gcc " +
+        "CXX=${gnuArch}-linux-gnu-g++ HOST_CC=gcc HOST_CXX=g++ ;; esac"
+    def compileScript = "${crossCompilers} && CARGO_TARGET_DIR=/tmp/target cargo build --profile ${cargoProfile} ${(jobFlags + packageFlags).join(' ')} --target ${rustTarget} && ${copyOut}"
     project.exec {
       workingDir rootDir
       commandLine 'docker', 'run', '--rm',
@@ -291,15 +296,4 @@ registerExpansionImageTasks(
     image: rustImageName('expansion_service'),
     buildDescription: 'Build the Linux expansion service binary (-PexampleArch=amd64 [-PexpansionPackage=<crate> -PexpansionBin=<bin>])',
     imageDescription: 'Build the expansion service image: the SDK base image with the expansion service as the worker binary ([-PbaseImage=<image>] [-PexampleArch=amd64] [-Ppush-containers])',
-)
-
-registerExpansionImageTasks(
-    buildTask: 'buildGcpExpansionService',
-    imageTask: 'gcpExpansionServiceImage',
-    pkg: 'apache-beam-io-gcp-expansion-service',
-    bin: 'beam-gcp-expansion-service',
-    arch: workerArch,
-    image: rustImageName('gcp_expansion_service'),
-    buildDescription: 'Build the Linux expansion service binary of the native Google Cloud connectors (-PexampleArch=amd64)',
-    imageDescription: 'Build the expansion service image of the native Google Cloud connectors, beam_rust_gcp_expansion_service ([-PbaseImage=<image>] [-PexampleArch=amd64] [-Ppush-containers])',
 )

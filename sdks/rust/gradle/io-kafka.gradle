@@ -1,0 +1,64 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Tasks of the native Kafka connector (apache-beam-io-kafka): the expansion service image and
+// the Python tests on Prism.
+
+registerExpansionImageTasks(
+    buildTask: 'buildKafkaExpansionService',
+    imageTask: 'kafkaExpansionServiceImage',
+    pkg: 'apache-beam-io-kafka-expansion-service',
+    bin: 'beam-kafka-expansion-service',
+    arch: workerArch,
+    image: rustImageName('kafka_expansion_service'),
+    buildDescription: 'Build the Linux expansion service binary of the native Kafka connector (-PexampleArch=amd64)',
+    imageDescription: 'Build the expansion service image of the native Kafka connector, beam_rust_kafka_expansion_service ([-PbaseImage=<image>] [-PexampleArch=amd64] [-Ppush-containers])',
+)
+
+// Python tests of the Kafka expansion service. Each test module starts a single-node broker in
+// Docker with testcontainers, which the test extras of the Python SDK install. Prism starts the
+// Rust worker with host networking, so the worker reaches the broker on its localhost port.
+// The tests need no Google credentials.
+def kafkaTestingImage = rustImageName('kafka_expansion_service_testing')
+def kafkaTestsDir = file("${rustDir}/beam/io/kafka/expansion-service/tests/python")
+
+registerExpansionImageTasks(
+    buildTask: 'buildKafkaExpansionServiceTesting',
+    imageTask: 'kafkaExpansionServiceTestingImage',
+    pkg: 'apache-beam-io-kafka-expansion-service',
+    bin: 'beam-kafka-expansion-service',
+    arch: xlangArch,
+    image: kafkaTestingImage,
+    buildDescription: 'Build the Linux expansion service binary of the native Kafka connector for its Python tests ([-PexampleArch=<arch>])',
+    imageDescription: 'Build the image of the native Kafka connector for its Python tests, beam_rust_kafka_expansion_service_testing ([-PexampleArch=<arch>])',
+)
+
+tasks.register('kafkaExpansionServicePythonTest') {
+  group = 'Verification'
+  description = 'Run the Python tests of the native Kafka providers on Prism, against a local broker ' +
+      'in Docker ([-Ptests=kafka] [-PtestFilter=<pytest -k>] [-PpythonVersion=3.12])'
+  dependsOn 'kafkaExpansionServiceTestingImage', 'fetchPrism', 'setupXlangPythonEnv'
+
+  doLast {
+    // testcontainers mounts the Docker socket into its reaper container. DOCKER_HOST can name a
+    // path of this machine (Colima), which the Docker VM cannot mount, so name the VM socket.
+    def socket = System.getenv('TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE') ?: '/var/run/docker.sock'
+    runProviderPythonTests(kafkaTestingImage, kafkaTestsDir,
+        [TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE: socket], null, false)
+  }
+}

@@ -1,0 +1,196 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Kafka benchmark on Dataflow (`kafkaBenchmark`), against Google Cloud Managed Service for Apache
+// Kafka.
+//
+// Shapes (-Pshape):
+// - load (batch): read -Ptable from BigQuery in the pipeline language, pass each row through a
+//   step in the pipeline language (the e2e/rows counter), and write the rows to -Ptopic with
+//   -Pwriter. Only the Kafka writer is under test.
+// - copy (streaming): read -Ptopic with -Preader, pass each row through a step in the pipeline
+//   language (the e2e/rows counter and the e2e/latency_ms distribution, from the Kafka record
+//   timestamp to the step), and write the rows to -PdestinationTopic with -Pwriter. With
+//   -PexpectedRows=<n> or -PdrainAfterSeconds=<s>, the launcher polls Dataflow until the job
+//   reaches that count or time, drains the job, and waits for JOB_STATE_DONE. With -Pdetach, the
+//   launcher prints the job ID and exits as soon as the job runs, so a load job can run at the
+//   same time for an end-to-end latency run.
+// - produce (streaming, Java pipeline only): write -Prate records per second to -Ptopic from a
+//   cycle of the JSON records in -PsamplePath, with KafkaIO. It gives every copy variant the same
+//   offered load from a job that is not under test, for the latency runs.
+//
+// Readers (-Preader, copy only): java (Managed I/O) and rust in a Python pipeline
+// (-Ppipeline=python); java-native (KafkaIO), java-managed and rust in a Java pipeline
+// (-Ppipeline=java); rust in a Rust pipeline (-Ppipeline=rust).
+//
+// Writers (-Pwriter): java (Managed I/O) and rust in a Python pipeline; java-native (KafkaIO),
+// java-managed and rust in a Java pipeline; rust in a Rust pipeline.
+//
+// The Rust pipeline (rust/, the `kafka_benchmark` crate) runs only the copy shape: the native
+// Kafka read, a Rust step and the native Kafka write, all in one Rust SDK harness. It is the
+// Rust counterpart of java-native to java-native in a Java pipeline.
+
+registerDataflowBenchmark(
+    task: 'kafkaBenchmark',
+    compileTask: 'compileKafkaJavaBenchmark',
+    dir: 'kafka',
+    label: 'kafka',
+    jobPrefix: 'kafka',
+    pythonScript: 'kafka_benchmark.py',
+    mainClass: 'KafkaBenchmark',
+    rustPackage: 'kafka_benchmark',
+    rustWorkerTask: 'buildKafkaRustBenchmarkWorker',
+    rustShapes: ['copy'],
+    expansionImageTask: 'kafkaExpansionServiceDataflowImage',
+    expansionImageName: 'kafka_expansion_service',
+    defaultShape: 'load',
+    shapes: ['load', 'copy', 'produce'],
+    readShapes: ['copy'],
+    writeShapes: ['load', 'copy'],
+    readers: [
+      python: ['java', 'rust'],
+      java: ['java-native', 'java-managed', 'rust'],
+      rust: ['rust'],
+    ],
+    writers: [
+      python: ['java', 'rust'],
+      java: ['java-native', 'java-managed', 'rust'],
+      rust: ['rust'],
+    ],
+    description: 'Write a BigQuery table to Kafka (-Pshape=load), stream a Kafka topic to ' +
+        'another topic (-Pshape=copy), or write records at a fixed rate (-Pshape=produce) on ' +
+        'Dataflow ' +
+        '([-Ppipeline=python|java|rust (copy only)] [-Pshape=load|copy|produce] ' +
+        '[-Preader=java|rust (Python) or java-native|java-managed|rust (Java) or rust (Rust), ' +
+        'copy only] ' +
+        '-Pwriter=java|rust (Python) or java-native|java-managed|rust (Java) or rust (Rust) ' +
+        '-PbootstrapServers=<host:port> -Ptopic=<topic> ' +
+        '[-PdestinationTopic=<topic>, copy only] [-Pformat=JSON|RAW] ' +
+        '[-Ptable=<spec>, load only] [-ProwRestriction=<filter>, load only] ' +
+        '[-Prate=<records/s> -PsamplePath=<file>, produce only] ' +
+        '[-PautoOffsetReset=earliest|latest] [-PgroupId=<id>] ' +
+        '[-PexpectedRows=<n>] [-PdrainAfterSeconds=<s>] [-Pdetach] ' +
+        '[-PnumWorkers=4] [-PmaxNumWorkers=<n>] [-PworkerMachineType=n2-standard-4] ' +
+        '[-PrunnerV1, Java pipeline without Rust transforms only] ' +
+        '[-PextraArgs="<pipeline flags>"])',
+    configure: { Map run ->
+      def bootstrapServers = (project.findProperty('bootstrapServers') ?:
+          benchProps('bootstrapServers'))?.toString()
+      def topic = project.findProperty('topic')?.toString()
+      if (!bootstrapServers || !topic) {
+        throw new GradleException('Set -PbootstrapServers and -Ptopic (or ' +
+            'example.benchmark.bootstrapServers in sdks/rust/.local/sdk.properties).')
+      }
+      def format = (project.findProperty('format') ?: 'JSON').toString()
+      if (!['JSON', 'RAW'].contains(format)) {
+        throw new GradleException("Unknown format '${format}': use JSON or RAW.")
+      }
+      def formatLabel = format.toLowerCase()
+      def args = [
+        "${benchFlag('bootstrap_servers')}=${bootstrapServers}",
+        "--topic=${topic}",
+        "--format=${format}",
+      ]
+      def labels = ['format': formatLabel]
+      def jobSuffix = format == 'RAW' ? 'raw' : ''
+      def readerLabel = null
+
+      if (run.shape == 'produce') {
+        if (benchPipeline != 'java') {
+          throw new GradleException('-Pshape=produce runs in a Java pipeline only: add -Ppipeline=java.')
+        }
+        ['destinationTopic', 'autoOffsetReset', 'groupId', 'table', 'rowRestriction'].each { prop ->
+          if (project.hasProperty(prop)) {
+            throw new GradleException("-P${prop} does not apply to -Pshape=produce.")
+          }
+        }
+        def rate = project.findProperty('rate')?.toString()
+        def samplePath = (project.findProperty('samplePath') ?: benchProps('samplePath'))?.toString()
+        if (!rate || !samplePath) {
+          throw new GradleException('-Pshape=produce needs -Prate=<records/s> and -PsamplePath=<file> ' +
+              '(or example.benchmark.samplePath in sdks/rust/.local/sdk.properties).')
+        }
+        args << "--rate=${rate}"
+        args << "--samplePath=${samplePath}"
+        def drainAfterSeconds = project.findProperty('drainAfterSeconds')?.toString()
+        if (drainAfterSeconds) {
+          args << "--drainAfterSeconds=${drainAfterSeconds}"
+        }
+        if (project.hasProperty('detach') && project.property('detach').toString() != 'false') {
+          args << '--detach'
+        }
+        labels['rate'] = rate
+        readerLabel = 'producer'
+        jobSuffix = [jobSuffix, "${rate}rps"].findAll().join('-')
+      } else if (run.shape == 'load') {
+        ['destinationTopic', 'autoOffsetReset', 'groupId', 'drainAfterSeconds', 'detach'].each { prop ->
+          if (project.hasProperty(prop)) {
+            throw new GradleException("-P${prop} applies to -Pshape=copy only, not to load.")
+          }
+        }
+        def table = (project.findProperty('table') ?: benchProps('table'))?.toString()
+        if (!table) {
+          throw new GradleException(
+              'Set -Ptable or example.benchmark.table in sdks/rust/.local/sdk.properties.')
+        }
+        args << "--table=${table}"
+        def rowRestriction = project.findProperty('rowRestriction')?.toString()
+        if (rowRestriction) {
+          args << "${benchFlag('row_restriction')}=${rowRestriction}"
+          labels['restricted'] = 'true'
+          jobSuffix = [jobSuffix, 'restricted'].findAll().join('-')
+        }
+        def expectedRows = project.findProperty('expectedRows')?.toString()
+        if (expectedRows) {
+          args << "${benchFlag('expected_rows')}=${expectedRows}"
+        }
+      } else {
+        if (project.hasProperty('rowRestriction')) {
+          throw new GradleException('-ProwRestriction applies to -Pshape=load only, not to copy.')
+        }
+        def destinationTopic = project.findProperty('destinationTopic')?.toString()
+        if (!destinationTopic) {
+          throw new GradleException('-Pshape=copy needs -PdestinationTopic.')
+        }
+        def autoOffsetReset = (project.findProperty('autoOffsetReset') ?: 'earliest').toString()
+        if (!['earliest', 'latest'].contains(autoOffsetReset)) {
+          throw new GradleException(
+              "Unknown autoOffsetReset '${autoOffsetReset}': use earliest or latest.")
+        }
+        args << "${benchFlag('destination_topic')}=${destinationTopic}"
+        args << "${benchFlag('auto_offset_reset')}=${autoOffsetReset}"
+        ['groupId': 'group_id', 'expectedRows': 'expected_rows',
+         'drainAfterSeconds': 'drain_after_seconds'].each { prop, flag ->
+          def value = project.findProperty(prop)?.toString()
+          if (value) {
+            args << "${benchFlag(flag)}=${value}"
+          }
+        }
+        if (project.hasProperty('detach') && project.property('detach').toString() != 'false') {
+          args << '--detach'
+        }
+        labels['offset'] = autoOffsetReset
+      }
+      [
+        readerLabel: readerLabel,
+        jobSuffix: jobSuffix,
+        labels: labels,
+        args: args,
+      ]
+    },
+)

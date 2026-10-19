@@ -23,9 +23,14 @@
 
 ext.rustDir = file("${rootDir}/sdks/rust")
 
-// -Ppkg=<crate> narrows `test` to one crate; the default is the whole workspace.
-def selectedPkg = project.findProperty('pkg')?.toString()
-ext.cargoScope = selectedPkg ? ['-p', selectedPkg] : ['--workspace']
+// The benchmark pipelines under scripts/benchmarks. The lifecycle tasks leave them out, so
+// every build does not compile them. `checkBenchmarks` and the benchmark tasks build them.
+ext.benchmarkPackages = ['kafka_benchmark']
+def workspaceScope = ['--workspace'] + benchmarkPackages.collectMany { ['--exclude', it] }
+
+// -Ppkg=<crate> narrows `test` to one crate; the default is the workspace but the benchmarks.
+def selectedPkg = (project.findProperty('pkg') ?: project.findProperty('package'))?.toString()
+ext.cargoScope = selectedPkg ? ['-p', selectedPkg] : workspaceScope
 // -PtestArgs="<args>" passes test-binary arguments after `--`, e.g. -PtestArgs=--ignored.
 def testArgs = project.findProperty('testArgs')?.toString()?.tokenize(' ') ?: []
 
@@ -39,14 +44,24 @@ ext.cargoTask = { String name, String taskGroup, String text, List<String> args 
   }
 }
 
-cargoTask('buildWorkspace', 'Build', 'Compile all crates in the Rust workspace',
-    ['build', '--workspace'])
+cargoTask('buildWorkspace', 'Build', 'Compile all crates in the Rust workspace but the benchmarks',
+    ['build'] + workspaceScope)
 cargoTask('fmtCheck', 'Verification', 'Verify formatting (cargo fmt --check)',
     ['fmt', '--check'])
 cargoTask('fmt', 'Verification', 'Format all Rust code (cargo fmt)',
     ['fmt'])
-cargoTask('clippy', 'Verification', 'Run clippy on all targets (-D warnings)',
-    ['clippy', '--workspace', '--all-targets', '--', '-D', 'warnings'])
+cargoTask('clippy', 'Verification', 'Run clippy on all targets but the benchmarks (-D warnings)',
+    ['clippy'] + workspaceScope + ['--all-targets', '--', '-D', 'warnings'])
+def benchmarkScope = benchmarkPackages.collectMany { ['-p', it] }
+cargoTask('clippyBenchmarks', 'Verification', 'Run clippy on the benchmark pipelines (-D warnings)',
+    ['clippy'] + benchmarkScope + ['--all-targets', '--', '-D', 'warnings'])
+cargoTask('testBenchmarks', 'Verification', 'Run the tests of the benchmark pipelines',
+    ['test'] + benchmarkScope)
+tasks.register('checkBenchmarks') {
+  group = 'Verification'
+  description = 'Run clippy and the tests of the benchmark pipelines'
+  dependsOn 'clippyBenchmarks', 'testBenchmarks'
+}
 cargoTask('test', 'Verification',
     'Run tests (the workspace, or one crate with -Ppkg=<crate>; -PtestArgs=<args> after --)',
     ['test'] + cargoScope + (testArgs ? ['--'] + testArgs : []))
