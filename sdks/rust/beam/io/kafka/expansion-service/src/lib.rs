@@ -29,7 +29,9 @@ use std::time::Duration;
 use beam::pipeline::Pipeline;
 use beam::schema::{BeamRow, Row, Schema};
 use beam::transforms::{DoFn, ParDo, ProcessContext};
-use expansion::{PCollectionId, SchemaTransformProvider, register_schema_transform};
+use expansion::{
+    PCollectionId, SchemaTransformProvider, TransformInputs, register_schema_transform,
+};
 use kafka_io::native::client::MAX_CONSUMERS;
 use kafka_io::native::format::ReadFormat;
 use kafka_io::native::read::{ConsumerPool, PoolSize, ReadOptions, ReadRecords, StartOffset};
@@ -190,10 +192,10 @@ impl SchemaTransformProvider for KafkaReadProvider {
     fn build_transform(
         &self,
         config: Row,
-        _inputs: HashMap<String, PCollectionId>,
+        _inputs: TransformInputs,
         pipeline: &mut Pipeline,
-    ) -> Result<HashMap<String, PCollectionId>, String> {
-        let mut config = KafkaReadConfig::from_row(&config).map_err(|e| e.to_string())?;
+    ) -> beam::Result<HashMap<String, PCollectionId>> {
+        let mut config = KafkaReadConfig::from_row(&config).map_err(beam::Error::msg)?;
         let errors = config
             .error_handling
             .take()
@@ -205,15 +207,15 @@ impl SchemaTransformProvider for KafkaReadProvider {
             Some(errors) => {
                 let outputs = read
                     .try_expand_with_failures(&begin)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(beam::Error::msg)?;
                 HashMap::from([
-                    ("output".to_string(), outputs.output.id().to_string()),
-                    (errors, outputs.failures.id().to_string()),
+                    ("output".to_string(), outputs.output.id().into()),
+                    (errors, outputs.failures.id().into()),
                 ])
             }
             None => {
-                let rows = read.try_expand(&begin).map_err(|e| e.to_string())?;
-                HashMap::from([("output".to_string(), rows.id().to_string())])
+                let rows = read.try_expand(&begin).map_err(beam::Error::msg)?;
+                HashMap::from([("output".to_string(), rows.id().into())])
             }
         };
         Ok(outputs)
@@ -296,19 +298,21 @@ impl SchemaTransformProvider for KafkaWriteProvider {
     fn build_transform(
         &self,
         config: Row,
-        inputs: HashMap<String, PCollectionId>,
+        inputs: TransformInputs,
         pipeline: &mut Pipeline,
-    ) -> Result<HashMap<String, PCollectionId>, String> {
-        let mut config = KafkaWriteConfig::from_row(&config).map_err(|e| e.to_string())?;
+    ) -> beam::Result<HashMap<String, PCollectionId>> {
+        let mut config = KafkaWriteConfig::from_row(&config).map_err(beam::Error::msg)?;
         let output = config
             .error_handling
             .take()
             .map(|ErrorHandling { output }| output)
             .filter(|output| !output.is_empty());
-        let rows = expansion::input::<Row>(pipeline, &inputs, "input")?;
+        let rows = inputs
+            .get::<Row>(pipeline, "input")
+            .map_err(beam::Error::msg)?;
         let errors = WriteRecords::new("WriteToKafka", config.write_options()?)
             .try_expand(&rows)
-            .map_err(|e| e.to_string())?;
+            .map_err(beam::Error::msg)?;
         let (tag, errors) = match output {
             Some(output) => (output, errors),
             None => (
@@ -316,7 +320,7 @@ impl SchemaTransformProvider for KafkaWriteProvider {
                 errors.apply(ParDo::new("WriteToKafka/FailOnError", FailOnErrorFn)),
             ),
         };
-        Ok(HashMap::from([(tag, errors.id().to_string())]))
+        Ok(HashMap::from([(tag, errors.id().into())]))
     }
 }
 

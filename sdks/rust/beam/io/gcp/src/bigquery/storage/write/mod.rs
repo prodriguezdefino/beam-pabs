@@ -77,6 +77,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use beam::Instant;
+use beam::internals::PipelineInternals;
 use beam::schema::{Field, FieldType, Row, RowElement, Schema};
 use beam::transforms::{
     FinishBundleContext, Flatten, GroupByKey, Outputs, PTransform, ParDo, WithFailures,

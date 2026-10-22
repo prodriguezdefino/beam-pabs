@@ -31,7 +31,7 @@ use arrow_io::arrow_array::types::{
 use arrow_io::arrow_array::{Array, ArrayRef, RecordBatch};
 use arrow_io::arrow_buffer::i256;
 use arrow_io::arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema, TimeUnit};
-use arrow_io::schema::{date_type, decimal_type, micros_instant_type};
+use arrow_io::{date_type, decimal_type, micros_instant_type};
 use beam::schema::{FieldType, FieldValue, Row, Schema};
 use gcp::bigquery::storage::schema::{
     table_arrow_schema, table_fields, write_array, write_batch_to_rows, write_field,

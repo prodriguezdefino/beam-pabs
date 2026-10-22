@@ -19,6 +19,7 @@
 
 //! The splittable DoFn that reads the Arrow responses of one stream into rows.
 
+use std::io;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
@@ -63,12 +64,12 @@ fn fetch_responses(
     client: Option<Read>,
     stream: String,
     offset: i64,
-) -> (
+) -> io::Result<(
     mpsc::Receiver<Result<ReadRowsResponse, String>>,
     AbortOnDrop,
-) {
+)> {
     let (sender, receiver) = mpsc::channel(PREFETCH_RESPONSES);
-    let task = client_runtime().spawn(async move {
+    let task = client_runtime()?.spawn(async move {
         let mut next_offset = offset;
         let mut failures = 0;
         loop {
@@ -117,7 +118,7 @@ fn fetch_responses(
             tokio::time::sleep(Duration::from_millis(250 << failures)).await;
         }
     });
-    (receiver, AbortOnDrop(task))
+    Ok((receiver, AbortOnDrop(task)))
 }
 
 /// Decodes the Arrow record batches of one stream.
@@ -213,8 +214,8 @@ impl<O: StreamOutput> SplittableDoFn for ReadStreamFn<O> {
     type Restriction = StreamRestriction;
     type Tracker = StreamTracker;
 
-    fn initial_restriction(&self, (restriction, _): &Self::In) -> StreamRestriction {
-        restriction.clone()
+    fn initial_restriction(&self, (restriction, _): &Self::In) -> beam::Result<StreamRestriction> {
+        Ok(restriction.clone())
     }
 
     /// The estimate of the bytes left, so runners and autoscalers see the backlog.
@@ -236,7 +237,7 @@ impl<O: StreamOutput> SplittableDoFn for ReadStreamFn<O> {
         let restriction = tracker.current_restriction();
         let (mut stream, mut offset) = (restriction.stream, restriction.start);
         let (mut responses, mut task) =
-            fetch_responses(self.client.clone(), stream.clone(), offset);
+            fetch_responses(self.client.clone(), stream.clone(), offset)?;
         loop {
             let response = match recv_blocking(&mut responses) {
                 Some(Some(response)) => response,
@@ -261,7 +262,7 @@ impl<O: StreamOutput> SplittableDoFn for ReadStreamFn<O> {
                 }
                 stream = current.stream;
                 offset = tracker.claimed_until();
-                (responses, task) = fetch_responses(self.client.clone(), stream.clone(), offset);
+                (responses, task) = fetch_responses(self.client.clone(), stream.clone(), offset)?;
                 continue;
             }
             let bytes = response

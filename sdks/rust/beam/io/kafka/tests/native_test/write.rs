@@ -19,6 +19,7 @@
 
 //! The options and the expansion of the write. No test sends a record.
 
+use beam::internals::PipelineInternals;
 use std::sync::Arc;
 
 use beam::prelude::*;

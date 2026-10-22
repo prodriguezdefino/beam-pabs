@@ -29,8 +29,8 @@
 use beam::schema::{FieldType, Row, Schema};
 use beam::testing::{TestPipeline, passert, test_pipeline_options};
 use fluent::prelude::PCollectionExt;
-use gcp::GcpOptions;
 use gcp::bigquery::storage::read::{ArrowCompression, ReadOptions, ReadRows};
+use gcp::options::GcpOptions;
 
 /// Rows and the sum of `word_count` for the `hamlet` corpus.
 const HAMLET_ROWS: usize = 5318;

@@ -360,7 +360,7 @@ fn a_call_that_resumes_parks_its_value_at_the_start_of_its_residual() {
     let call = call_from(10);
     assert!(call.try_claim(&10) && call.try_claim(&14));
     let lease = assigned(&parking, 10, make());
-    assert!(lease.end_call(&call, &ProcessContinuation::resume(), now));
+    assert!(lease.end_call(&call, &ProcessContinuation::Resume, now));
     let residual = call.try_checkpoint().expect("work is left");
     assert_eq!(residual.start, 15);
     let next = call_from(residual.start);
@@ -380,7 +380,7 @@ fn a_call_that_claims_nothing_parks_its_value_at_its_start() {
     let now = Instant::now();
     let call = call_from(10);
     let lease = assigned(&parking, 10, make());
-    assert!(lease.end_call(&call, &ProcessContinuation::resume(), now));
+    assert!(lease.end_call(&call, &ProcessContinuation::Resume, now));
     let residual = call.try_checkpoint().expect("work is left");
     assert_eq!(residual.start, 10);
     assert!(takes_value(&parking, 3, residual.start, now));
@@ -393,7 +393,7 @@ fn a_call_that_stops_drops_its_value_and_releases_its_partition() {
     let call = call_from(10);
     assert!(call.try_claim(&10));
     let lease = assigned(&parking, 10, make());
-    assert!(!lease.end_call(&call, &ProcessContinuation::stop(), Instant::now()));
+    assert!(!lease.end_call(&call, &ProcessContinuation::Stop, Instant::now()));
     assert_eq!(drops.load(Ordering::SeqCst), 1);
     assert!(parking.is_empty());
     assert!(parking.take(3, 11, Instant::now()).is_ok());
@@ -416,7 +416,7 @@ fn a_retry_of_a_bundle_drops_the_parked_value() {
     let call = call_from(10);
     assert!(call.try_claim(&10) && call.try_claim(&14));
     let lease = assigned(&parking, 10, make());
-    assert!(lease.end_call(&call, &ProcessContinuation::resume(), now));
+    assert!(lease.end_call(&call, &ProcessContinuation::Resume, now));
     // The runner rejects the bundle and retries it from the same restriction.
     let retry = call_from(10);
     assert!(!takes_value(

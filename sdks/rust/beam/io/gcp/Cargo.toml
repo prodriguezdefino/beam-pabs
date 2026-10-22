@@ -39,6 +39,8 @@ pubsub = ["dep:external"]
 # pull in arrow-rs and the BigQuery clients.
 bigquery-storage = [
     "bigquery",
+    "dep:google-cloud-gax",
+    "dep:bytes",
     "dep:google-cloud-bigquery",
     "dep:google-cloud-bigquery-v2",
     "dep:google-cloud-wkt",

@@ -372,8 +372,8 @@ impl<O: ReadOutput> SplittableDoFn for ReadPartitionFn<O> {
         }
     }
 
-    fn initial_restriction(&self, element: &PartitionStart) -> PartitionRestriction {
-        PartitionRestriction::from_offset(element.offset)
+    fn initial_restriction(&self, element: &PartitionStart) -> beam::Result<PartitionRestriction> {
+        Ok(PartitionRestriction::from_offset(element.offset))
     }
 
     /// Estimates the remaining backlog in bytes up to the last known high watermark, so
@@ -434,12 +434,12 @@ impl<O: ReadOutput> SplittableDoFn for ReadPartitionFn<O> {
         let continuation = loop {
             if stop_at.is_some_and(|stop_at| Instant::now() >= stop_at) {
                 tracker.finish();
-                break ProcessContinuation::stop();
+                break ProcessContinuation::Stop;
             }
             if started.elapsed() >= self.source.max_read_time_per_call {
                 // The checkpoint sizes the residual with this watermark.
                 self.high_watermark(&consumer, partition, tracker, false);
-                break ProcessContinuation::resume();
+                break ProcessContinuation::Resume;
             }
             let message = match assignment.queue.poll(timeout) {
                 None => {
@@ -454,7 +454,7 @@ impl<O: ReadOutput> SplittableDoFn for ReadPartitionFn<O> {
                     {
                         tracker.advance_watermark(Instant::now());
                     }
-                    break ProcessContinuation::resume();
+                    break ProcessContinuation::Resume;
                 }
                 Some(Err(KafkaError::PartitionEOF(_))) => continue,
                 Some(Err(e)) => {
@@ -465,7 +465,7 @@ impl<O: ReadOutput> SplittableDoFn for ReadPartitionFn<O> {
                 Some(Ok(message)) => message,
             };
             if !tracker.try_claim(&message.offset()) {
-                break ProcessContinuation::stop();
+                break ProcessContinuation::Stop;
             }
             let timestamp = message
                 .timestamp()

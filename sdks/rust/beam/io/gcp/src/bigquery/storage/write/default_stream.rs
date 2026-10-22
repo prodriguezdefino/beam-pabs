@@ -150,7 +150,7 @@ impl WriteDefaultFn {
         let Encoded { batches, errors } = writer.encoder.encode(&rows)?;
         rejected.extend(errors);
         batches.into_iter().try_for_each(|batch| {
-            let sent = spawn(&writer.stream, Request::from(batch));
+            let sent = spawn(&writer.stream, Request::from(batch))?;
             self.limit.add(&sent.request);
             self.in_flight.push_back(sent);
             while self.limit.is_full() {
@@ -169,7 +169,10 @@ impl WriteDefaultFn {
         self.limit.remove(&request);
         let mut pending = VecDeque::from([(request, Some(task))]);
         while let Some((request, task)) = pending.pop_front() {
-            let task = task.unwrap_or_else(|| spawn(&writer.stream, request.clone()).task);
+            let task = match task {
+                Some(task) => task,
+                None => spawn(&writer.stream, request.clone())?.task,
+            };
             let result = block_on_async(async move { task.await.map_err(io::Error::other) })?;
             match result.map_err(Failure::from) {
                 Ok(_) => {}
@@ -196,11 +199,11 @@ impl WriteDefaultFn {
 
 /// Sends one append on the client runtime. The default stream writer retries transient
 /// failures itself.
-fn spawn(stream: &Arc<DefaultWriter<Arrow>>, request: Request) -> InFlight {
+fn spawn(stream: &Arc<DefaultWriter<Arrow>>, request: Request) -> io::Result<InFlight> {
     let stream = Arc::clone(stream);
     let rows = request.rows.clone();
-    let task = client_runtime().spawn(async move { stream.append(rows).send().await });
-    InFlight { request, task }
+    let task = client_runtime()?.spawn(async move { stream.append(rows).send().await });
+    Ok(InFlight { request, task })
 }
 
 /// Each copy opens its own writer on the shared connections, and starts with empty buffers.

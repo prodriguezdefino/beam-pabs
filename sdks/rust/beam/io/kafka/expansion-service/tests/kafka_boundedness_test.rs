@@ -25,7 +25,7 @@ use std::collections::{BTreeSet, HashMap};
 use beam::pipeline::Pipeline;
 use beam::schema::{BeamRow, FieldType, Schema};
 use beam::values::IsBounded;
-use expansion::SchemaTransformProvider;
+use expansion::{PCollectionId, SchemaTransformProvider, TransformInputs};
 use kafka_expansion::{
     ErrorHandling, KafkaReadConfig, KafkaReadProvider, KafkaWriteConfig, KafkaWriteProvider,
 };
@@ -71,12 +71,12 @@ fn downstream_of(p: &Pipeline, suffix: &str) -> BTreeSet<String> {
     }
 }
 
-fn expand_read(config: KafkaReadConfig) -> (Pipeline, HashMap<String, String>) {
+fn expand_read(config: KafkaReadConfig) -> (Pipeline, HashMap<String, PCollectionId>) {
     let mut p = Pipeline::new();
     let outputs = KafkaReadProvider
         .build_transform(
             config.to_row().expect("the read config encodes"),
-            HashMap::new(),
+            TransformInputs::default(),
             &mut p,
         )
         .expect("the read expands");
@@ -108,7 +108,7 @@ fn every_pcollection_after_read_partitions_is_unbounded() {
         assert_eq!(bounded, Vec::<&String>::new(), "{output:?}");
         outputs.values().for_each(|id| {
             assert!(
-                after.contains(id),
+                after.contains(id.as_str()),
                 "{output:?}: output {id} not after ReadPartitions"
             );
         });
@@ -147,7 +147,9 @@ fn the_write_follows_the_boundedness_of_the_caller_input() {
             error_handling: errors(output),
             ..Default::default()
         };
-        let inputs = HashMap::from([("input".to_string(), input.id().to_string())]);
+        let inputs: TransformInputs = [("input".to_string(), PCollectionId::from(input.id()))]
+            .into_iter()
+            .collect();
         let outputs = KafkaWriteProvider
             .build_transform(
                 config.to_row().expect("the write config encodes"),

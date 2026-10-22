@@ -31,6 +31,7 @@ pub mod write;
 
 use std::collections::{HashMap, HashSet};
 
+use beam::internals::PipelineInternals;
 use beam::pipeline::Pipeline;
 
 fn transform_ids(pipeline: &Pipeline) -> HashSet<String> {

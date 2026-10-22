@@ -92,7 +92,7 @@ impl Selection {
                         "only: the field '{name}' is not a row"
                     )));
                 };
-                (Some(field), Arc::new(nested.clone()), all(nested))
+                (Some(field), Arc::clone(nested), all(nested))
             }
         };
         fields.sort_unstable();

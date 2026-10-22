@@ -279,13 +279,14 @@ fn retire(
         calls: Mutex::new(Vec::new()),
     });
     let listener = client_runtime()
+        .expect("starts the client runtime")
         .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
         .expect("binds a local port");
     let endpoint = format!(
         "http://{}",
         listener.local_addr().expect("the listener has an address")
     );
-    let server = client_runtime().spawn(
+    let server = client_runtime().expect("starts the client runtime").spawn(
         tonic::transport::Server::builder()
             .add_service(FakeWrite(Arc::clone(&answers)))
             .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener)),

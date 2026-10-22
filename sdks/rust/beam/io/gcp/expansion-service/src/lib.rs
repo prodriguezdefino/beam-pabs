@@ -29,7 +29,9 @@ use std::time::Duration;
 use beam::pipeline::Pipeline;
 use beam::schema::{BeamRow, Row, Schema};
 use beam::transforms::{DoFn, ParDo, ProcessContext};
-use expansion::{PCollectionId, SchemaTransformProvider, register_schema_transform};
+use expansion::{
+    PCollectionId, SchemaTransformProvider, TransformInputs, register_schema_transform,
+};
 #[cfg(doc)]
 use gcp::bigquery::storage::read::error_schema;
 use gcp::bigquery::storage::read::{ReadOptions, ReadRows};
@@ -124,7 +126,7 @@ impl BigQueryStorageReadConfig {
                 })?;
             options = options.with_preferred_min_stream_count(count);
         }
-        options.validate().map_err(|e| e.to_string())?;
+        options.validate().map_err(beam::Error::msg)?;
         Ok(options)
     }
 }
@@ -161,31 +163,35 @@ impl SchemaTransformProvider for BigQueryStorageReadProvider {
     fn build_transform(
         &self,
         config: Row,
-        _inputs: HashMap<String, PCollectionId>,
+        _inputs: TransformInputs,
         pipeline: &mut Pipeline,
-    ) -> Result<HashMap<String, PCollectionId>, String> {
-        let mut config = BigQueryStorageReadConfig::from_row(&config).map_err(|e| e.to_string())?;
+    ) -> beam::Result<HashMap<String, PCollectionId>> {
+        let mut config = BigQueryStorageReadConfig::from_row(&config).map_err(beam::Error::msg)?;
         let errors = config
             .error_handling
             .take()
             .map(|handling| handling.output)
             .filter(|output| !output.is_empty());
         // The rows go to another SDK, so they leave the reader as row coder bytes.
-        let read = ReadRows::new("ReadFromBigQuery", config.read_options()?).with_encoded_rows();
+        let read = ReadRows::new(
+            "ReadFromBigQuery",
+            config.read_options().map_err(beam::Error::msg)?,
+        )
+        .with_encoded_rows();
         let begin = pipeline.begin();
         let outputs = match errors {
             Some(errors) => {
                 let outputs = read
                     .try_expand_with_failures(&begin)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(beam::Error::msg)?;
                 HashMap::from([
-                    ("output".to_string(), outputs.output.id().to_string()),
-                    (errors, outputs.failures.id().to_string()),
+                    ("output".to_string(), outputs.output.id().into()),
+                    (errors, outputs.failures.id().into()),
                 ])
             }
             None => {
-                let rows = read.try_expand(&begin).map_err(|e| e.to_string())?;
-                HashMap::from([("output".to_string(), rows.id().to_string())])
+                let rows = read.try_expand(&begin).map_err(beam::Error::msg)?;
+                HashMap::from([("output".to_string(), rows.id().into())])
             }
         };
         Ok(outputs)
@@ -297,7 +303,7 @@ impl BigQueryStorageWriteConfig {
         if self.ignore_unknown_values == Some(true) {
             options = options.with_ignore_unknown_values(true);
         }
-        options.validate().map_err(|e| e.to_string())?;
+        options.validate().map_err(beam::Error::msg)?;
         Ok(options)
     }
 }
@@ -332,27 +338,31 @@ impl SchemaTransformProvider for BigQueryStorageWriteProvider {
     fn build_transform(
         &self,
         config: Row,
-        inputs: HashMap<String, PCollectionId>,
+        inputs: TransformInputs,
         pipeline: &mut Pipeline,
-    ) -> Result<HashMap<String, PCollectionId>, String> {
-        let config = BigQueryStorageWriteConfig::from_row(&config).map_err(|e| e.to_string())?;
+    ) -> beam::Result<HashMap<String, PCollectionId>> {
+        let config = BigQueryStorageWriteConfig::from_row(&config).map_err(beam::Error::msg)?;
         let output = config
             .error_handling
             .as_ref()
             .map(|handling| handling.output.clone())
             .filter(|output| !output.is_empty());
-        let rows = expansion::input::<Row>(pipeline, &inputs, "input")?;
-        let options = config.write_options(is_unbounded(&rows))?;
+        let rows = inputs
+            .get::<Row>(pipeline, "input")
+            .map_err(beam::Error::msg)?;
+        let options = config
+            .write_options(is_unbounded(&rows))
+            .map_err(beam::Error::msg)?;
         let errors = WriteRows::new("WriteToBigQuery", options)
             .try_expand(&rows)
-            .map_err(|e| e.to_string())?;
+            .map_err(beam::Error::msg)?;
         match output {
-            Some(output) => Ok(HashMap::from([(output, errors.id().to_string())])),
+            Some(output) => Ok(HashMap::from([(output, errors.id().into())])),
             None => {
                 let done = errors.apply(ParDo::new("WriteToBigQuery/FailOnError", FailOnErrorFn));
                 Ok(HashMap::from([(
                     "post_write".to_string(),
-                    done.id().to_string(),
+                    done.id().into(),
                 )]))
             }
         }

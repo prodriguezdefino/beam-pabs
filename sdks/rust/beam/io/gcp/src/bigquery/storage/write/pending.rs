@@ -364,7 +364,7 @@ impl WritePendingFn {
             bundle.next,
         );
         let timeout = self.connect.append_timeout;
-        let task = client_runtime().spawn(async move {
+        let task = client_runtime()?.spawn(async move {
             append_at(
                 |rows, offset| stream.append(rows).set_offset(offset).send(),
                 &rows,

@@ -20,6 +20,7 @@
 //! The options, the restriction, the tracker and the expansion of the read. No test reads a
 //! record.
 
+use beam::internals::PipelineInternals;
 use std::iter;
 use std::time::Duration;
 

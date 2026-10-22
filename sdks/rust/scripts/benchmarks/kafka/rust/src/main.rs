@@ -21,7 +21,7 @@
 
 use std::error::Error;
 
-use beam::harness::logging::init_logging;
+use beam::logging::init_logging;
 use beam::options::parse;
 use kafka_benchmark::{Args, build_pipeline, print_metrics};
 

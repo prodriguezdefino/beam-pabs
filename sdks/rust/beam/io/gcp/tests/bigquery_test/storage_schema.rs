@@ -28,7 +28,7 @@ use arrow_io::arrow_array::{
 };
 use arrow_io::arrow_buffer::OffsetBuffer;
 use arrow_io::arrow_schema::{DataType, Field, Fields, Schema as ArrowSchema, TimeUnit};
-use arrow_io::schema::{date_type, decimal_type, micros_instant_type};
+use arrow_io::{date_type, decimal_type, micros_instant_type};
 use beam::schema::{FieldType, FieldValue, Schema};
 use gcp::bigquery::storage::schema::{batch_to_rows, beam_schema, table_schema_to_beam_schema};
 use google_cloud_bigquery_v2::model::TableFieldSchema;

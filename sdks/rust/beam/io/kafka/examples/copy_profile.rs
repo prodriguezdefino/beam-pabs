@@ -105,7 +105,7 @@ fn properties(text: &str) -> Result<Vec<(String, String)>, String> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    beam_sdk::harness::logging::init_logging();
+    beam_sdk::logging::init_logging();
 
     let (options, args) = beam_sdk::options::parse::<Args>();
     let p = Pipeline::create(&options);

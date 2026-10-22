@@ -21,6 +21,7 @@
 //! pipelines and do not run them, so no test calls BigQuery.
 #![expect(clippy::unwrap_used, reason = "test fixtures panic on setup failure")]
 
+use beam::internals::PipelineInternals;
 use std::sync::Arc;
 use std::time::Duration;
 
