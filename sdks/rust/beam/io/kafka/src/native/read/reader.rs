@@ -26,6 +26,7 @@ use std::marker::PhantomData;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant as WallClock};
 
+use beam::metrics::Metrics;
 use beam::schema::{FieldValue, Row, RowElement, Schema};
 use beam::transforms::sdf::{ProcessContinuation, RestrictionTracker, SplittableDoFn};
 use beam::transforms::{Outputs, ProcessContext, WithFinalizer};
@@ -62,6 +63,9 @@ pub(super) const MAX_READ_CALL: Duration = Duration::from_secs(5);
 
 /// The longest wait for the high watermark of a partition.
 const WATERMARKS_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The namespace of the source counters, the same as Java's `SourceMetrics`.
+const SOURCE_METRICS: &str = "source";
 
 /// The longest time that an assignment waits for the next call of its partition. The runner
 /// starts the next call soon after a checkpoint, unless the partition moved to another
@@ -488,6 +492,12 @@ impl<O: ReadOutput> SplittableDoFn for ReadPartitionFn<O> {
         // A call that fails adds no sample. The runner retries its bundle.
         self.backlogs
             .observe_records(partition, batch_bytes, batch_records);
+        // The raw bytes of the records (key and value), with the names of Java's
+        // `SourceMetrics`, so the source throughput does not depend on the output type.
+        Metrics::counter(SOURCE_METRICS, "bytes_read")
+            .inc_by(i64::try_from(batch_bytes).unwrap_or(i64::MAX));
+        Metrics::counter(SOURCE_METRICS, "elements_read")
+            .inc_by(i64::try_from(batch_records).unwrap_or(i64::MAX));
         // Only a call that resumes has a next call. Every record that the call took from the
         // queue is a claim attempt, so the next record of the queue is at the residual start.
         if lease.end_call(tracker, &continuation, WallClock::now()) {
