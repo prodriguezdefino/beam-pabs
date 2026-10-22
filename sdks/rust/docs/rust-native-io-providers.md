@@ -525,6 +525,7 @@ The benchmarks run on Dataflow Runner v2 in `us-central1` on `n2-standard-4` wor
   | Java | `java-native` (`BigQueryIO` `DIRECT_READ`), `java-managed`, `rust` | `java-native` (`BigQueryIO` Storage Write), `java-managed` (file loads for bounded input, a reference only), `rust` |
 
 - **Scaling:** 4 fixed workers (`-PnumWorkers=4`), or autoscaling from 1 to 10 (`-PnumWorkers=1 -PmaxNumWorkers=10`).
+- **Builds:** the Rust rows on 4 fixed workers ran on 2026-10-21 and 2026-10-22 with the current branch. The Rust worker binaries, including the GCP expansion service, use mimalloc. The Rust rows marked *earlier build* ran on 2026-10-15 with an earlier build that used the system allocator. The rows without Rust ran on 2026-10-14 and 2026-10-15 and run no Rust code.
 - **Java copy, Rust → Rust:** runs with the Java harness fix of [§4.1](#41-a-java-step-between-two-rust-steps-can-stop-the-job) (PR [#40606](https://github.com/apache/beam/pull/40606), [`java/fn-data-elastic-inbound`](https://github.com/prodriguezdefino/beam-pabs/tree/java/fn-data-elastic-inbound)), without workarounds or experiment flags. The fix is in a patched 2.76.0 harness image that `-PextraArgs="--sdkHarnessContainerImageOverrides=..."` selects ([how](#how-to-test-a-java-harness-change-on-dataflow)). On stock Beam 2.76.0, pass `-PextraArgs="--experiments=data_buffer_size_limit=10000000"`.
 - **Check:** every job checks the row count. A `copy` job compares the rows and distinct `revision_id` values with the source table, then drops the table. Exactly once is the default (`-Psemantics`).
 - **Metrics:** vCPU·s, rows per vCPU·s, processing time (first worker with work to pool teardown, so no VM or container startup), peak memory of each container, step time.
@@ -534,77 +535,70 @@ The benchmarks run on Dataflow Runner v2 in `us-central1` on `n2-standard-4` wor
 | Pipeline | Read → write | Workers | Wall (s) | Processing (s) | vCPU·s | Rows per vCPU·s |
 |---|---|---|---|---|---|---|
 | Java | Java native → Java native | 4 fixed | 861 | 726 | 12,408 | 25,290 |
-| Java | **Rust → Rust** | 4 fixed | **441** | **278** | **5,444** | **57,641** |
+| Java | **Rust → Rust** | 4 fixed | **419** | **253** | **5,252** | **59,748** |
 | Java | Java (Managed) → Java (Managed) | 4 fixed | 1,414 | 858 | 14,872 | 21,100 |
-| Python | **Rust → Rust** | 4 fixed | **714** | **527** | **10,174** | **30,843** |
+| Python | **Rust → Rust** | 4 fixed | **678** | **494** | **9,391** | **33,415** |
 | Python | Java → Java | 4 fixed | 3,096 | 2,513 | 42,039 | 7,464 |
 | Python | Python → Java | 4 fixed | 2,799 | 2,617 | 43,596 | 7,198 |
 | Java | Java native → Java native | 1–10, peak 9 | 696 | 556 | 14,757 | 21,264 |
-| Java | **Rust → Rust** | 1–10, peak 5 | **596** | **443** | **6,116** | **51,308** |
+| Java | Rust → Rust (*earlier build*) | 1–10, peak 5 | 596 | 443 | 6,116 | 51,308 |
 | Java | Java (Managed) → Java (Managed) | 1–10 | failed | | | |
-| Python | **Rust → Rust** | 1–10, peak 8 | **704** | **528** | **11,833** | **26,519** |
+| Python | Rust → Rust (*earlier build*) | 1–10, peak 8 | 704 | 528 | 11,833 | 26,519 |
 | Python | Java → Java | 1–10, peak 10 | 1,590 | 1,014 | 34,501 | 9,095 |
 | Python | Python → Java | 1–10, peak 10 | 1,455 | 1,268 | 46,570 | 6,738 |
 
-- In a Java pipeline, Rust read and write need 56% less compute and 62% less processing time than `BigQueryIO` on 4 workers. With autoscaling, they need 59% less compute. Step time: the Rust write 2,090 s against 7,526 s (`Write Records` and `Convert to message`), the Rust read 1,831 s against 2,734 s.
-- In a Python pipeline, Rust read and write need 4.1 times less compute than the Java provider on 4 workers. With autoscaling, they need 2.9 times less compute.
+- In a Java pipeline, Rust read and write need 58% less compute and 65% less processing time than `BigQueryIO` on 4 workers. With autoscaling (earlier build), they need 59% less compute. Step time: the Rust write 1,583 s against 7,526 s (`Write Records` and `Convert to message`), the Rust read 1,948 s against 2,734 s.
+- In a Python pipeline, Rust read and write need 4.5 times less compute than the Java provider on 4 workers. With autoscaling (earlier build), they need 2.9 times less compute.
 - A Java pipeline runs the Rust read and the Rust write in two Rust containers, because Dataflow does not merge their environments. A Python pipeline runs them in one Rust container.
 - Memory of each container, per worker:
 
   | Pipeline | Read → write | Workers | Container | Peak (MiB) | Average (MiB) |
   |---|---|---|---|---|---|
-  | Java | Rust → Rust | 4 fixed | Rust write | 732 | 484 |
-  | Java | Rust → Rust | 4 fixed | Rust read | 545 | 230 |
-  | Java | Rust → Rust | 4 fixed | Java (`Touch`) | 4,190 | 3,346 |
-  | Java | Rust → Rust | 1–10 | Rust write | 709 | 503 |
-  | Java | Rust → Rust | 1–10 | Rust read | 536 | 254 |
-  | Java | Rust → Rust | 1–10 | Java (`Touch`) | 4,185 | 3,649 |
+  | Java | Rust → Rust | 4 fixed | Rust read and Rust write (two containers) | 483, 511 | 273, 381 |
+  | Java | Rust → Rust | 4 fixed | Java (`Touch`) | 4,199 | 3,944 |
   | Java | Java native → Java native | 4 fixed | Java | 5,745 | 4,846 |
-  | Python | Rust → Rust | 4 fixed | Rust read and write | 1,315 | 989 |
-  | Python | Rust → Rust | 4 fixed | Python (`Touch`) | 1,749 | 1,478 |
-  | Python | Rust → Rust | 1–10 | Rust read and write | 1,307 | 885 |
+  | Python | Rust → Rust | 4 fixed | Rust read and write | 624 | 427 |
+  | Python | Rust → Rust | 4 fixed | Python (`Touch`) | 1,848 | 1,546 |
   | Python | Java → Java | 4 fixed | Java (read, write) | 10,420, 5,151 | 6,511, 3,140 |
 
-  The Rust write uses most of the Rust memory, and its average is near its peak. Each bundle keeps its appends in flight (at most 1,000 requests and 100 MiB) until BigQuery accepts them. With the Java harness fix ([§4.1](#41-a-java-step-between-two-rust-steps-can-stop-the-job)), the Java container (`Touch`) also uses less memory than `BigQueryIO` in one process.
+  Each Rust write bundle keeps its appends in flight (at most 1,000 requests and 100 MiB) until BigQuery accepts them. With the Java harness fix ([§4.1](#41-a-java-step-between-two-rust-steps-can-stop-the-job)), the Java container (`Touch`) also uses less memory than `BigQueryIO` in one process.
 - **Java, Rust → Rust, other variants** ([§4.1](#41-a-java-step-between-two-rust-steps-can-stop-the-job)):
 
   | Variant | Workers | Wall (s) | Processing (s) | vCPU·s | Rows per vCPU·s | Java peak / average (MiB) |
   |---|---|---|---|---|---|---|
-  | Java harness fix (PR [#40606](https://github.com/apache/beam/pull/40606)), `exactly_once` | 4 fixed | 441 | 278 | 5,444 | 57,641 | 4,190 / 3,346 |
-  | Java harness fix (PR [#40606](https://github.com/apache/beam/pull/40606)), `exactly_once` | 1–10, peak 5 | 596 | 443 | 6,116 | 51,308 | 4,185 / 3,649 |
-  | Java harness fix (PR [#40606](https://github.com/apache/beam/pull/40606)), `at_least_once` | 1–10, peak 7 | 658 | 485 | 10,082 | 31,124 | 4,199 / 3,778 |
-  | Java harness fix, `exactly_once`, 3 runs on 2026-10-14 | 4 fixed | 476–580 | 327–386 | 5,879–6,363 | 49,316–53,376 | 4,178–4,196 / 3,691–3,917 |
-  | Java harness fix, `exactly_once`, 3 runs on 2026-10-14 | 1–10, peak 4–6 | 680–696 | 504–529 | 6,980–7,761 | 40,433–44,957 | 4,181–4,207 / 3,322–3,784 |
-  | Beam 2.76.0 + `data_buffer_size_limit=10000000` | 4 fixed | 434 | 287 | 5,680 | 55,246 | 7,512 / 6,110 |
-  | Beam 2.76.0 + `data_buffer_size_limit=10000000` | 1–10, peak 3 | 585 | 436 | 4,915 | 63,845 | 8,616 / 6,290 |
-  | Beam 2.76.0 + `Reshuffle` | 4 fixed | 1,420 | 1,146 | 19,229 | 16,319 | 9,872 / 6,648 |
-  | Beam 2.76.0 + `Reshuffle` | 1–10, peak 4 | stopped | | | | 11,404 / 8,762 |
+  | Java harness fix (PR [#40606](https://github.com/apache/beam/pull/40606)), `exactly_once` | 4 fixed | 419 | 253 | 5,252 | 59,748 | 4,199 / 3,944 |
+  | Java harness fix, `exactly_once` (*earlier build*) | 1–10, peak 5 | 596 | 443 | 6,116 | 51,308 | 4,185 / 3,649 |
+  | Java harness fix, `at_least_once` (*earlier build*) | 1–10, peak 7 | 658 | 485 | 10,082 | 31,124 | 4,199 / 3,778 |
+  | Beam 2.76.0 + `data_buffer_size_limit=10000000` (*earlier build*) | 4 fixed | 434 | 287 | 5,680 | 55,246 | 7,512 / 6,110 |
+  | Beam 2.76.0 + `data_buffer_size_limit=10000000` (*earlier build*) | 1–10, peak 3 | 585 | 436 | 4,915 | 63,845 | 8,616 / 6,290 |
+  | Beam 2.76.0 + `Reshuffle` (*earlier build*) | 4 fixed | 1,420 | 1,146 | 19,229 | 16,319 | 9,872 / 6,648 |
+  | Beam 2.76.0 + `Reshuffle` (*earlier build*) | 1–10, peak 4 | stopped | | | | 11,404 / 8,762 |
 
-  The Java harness fix keeps each bundle queue at 100 messages and cuts peak Java memory from 7.5–8.6 GiB to 4.2 GiB. The runs of 2026-10-14 use 8–17% more compute than the first runs of the same fix, with the same memory; take that as the spread between days. A `Reshuffle` writes all 38 GB to shuffle, uses 3.5 times the compute on 4 fixed workers, and still stops with autoscaling on stock Beam 2.76.0.
+  The Java harness fix keeps each bundle queue at 100 messages and cuts peak Java memory from 7.5–8.6 GiB to 4.2 GiB. A `Reshuffle` writes all 38 GB to shuffle, uses 3.5 times the compute on 4 fixed workers, and still stops with autoscaling on stock Beam 2.76.0.
 - **Java, Managed → Managed, autoscaling:** Dataflow failed the job after one work item timed out 4 times waiting for a worker update. The job runs no Rust code.
 
 #### Results: count
 
-Beam 2.76.0. The Rust read sends each row to the consumer as encoded bytes ([§7.4](#74-row-data-path)).
+Beam 2.76.0. The Rust read sends each row to the consumer as encoded bytes ([§7.4](#74-row-data-path)). The Java pipeline uses the patched Java harness image of the `copy` setup.
 
 | Pipeline | Reader | Workers | Wall (s) | Processing (s) | vCPU·s | Rows per vCPU·s | Reader peak / average (MiB) |
 |---|---|---|---|---|---|---|---|
-| Java | **Rust** | 4 fixed | **262** | **117** | **2,943** | **106,625** | 85 / 78 |
+| Java | **Rust** (2 runs) | 4 fixed | **375–543** | **192–216** | **2,792–2,929** | **107,135–112,391** | 217–237 / 182–206 |
 | Java | Java native (`TableRow`, Avro) | 4 fixed | 286 | 149 | 3,238 | 96,911 | 1,683 / 1,495 |
 | Java | Java (Managed) | 4 fixed | 1,071 | 535 | 9,488 | 33,073 | 3,636 / 3,213 |
-| Java | **Rust** | 1–10, peak 2 | **408** | **264** | **2,109** | **148,789** | 96 / 88 |
+| Java | Rust (*earlier build*) | 1–10, peak 2 | 408 | 264 | 2,109 | 148,789 | 96 / 88 |
 | Java | Java native (`TableRow`, Avro) | 1–10, peak 2 | 485 | 344 | 2,678 | 117,176 | 1,746 / 1,387 |
 | Java | Java (Managed) | 1–10, peak 6 | 1,098 | 547 | 10,551 | 29,741 | 5,147 / 3,544 |
-| Python | **Rust** | 4 fixed | **481** | **312** | **6,638** | **47,273** | 519 / 224 |
+| Python | **Rust** | 4 fixed | **599** | **331** | **6,251** | **50,199** | 473 / 258 |
 | Python | Python native | 4 fixed | 835 | 665 | 12,158 | 25,810 | 770 / 693 |
 | Python | Java (Managed) | 4 fixed | 1,298 | 717 | 13,373 | 23,465 | 3,617 / 3,144 |
-| Python | **Rust** | 1–10, peak 4 | **622** | **435** | **6,449** | **48,658** | 418 / 217 |
+| Python | Rust (*earlier build*) | 1–10, peak 4 | 622 | 435 | 6,449 | 48,658 | 418 / 217 |
 | Python | Python native | 1–10 | not run | | | | |
 | Python | Java (Managed) | 1–10, peak 9 | 1,171 | 602 | 16,143 | 19,439 | 5,112 / 3,550 |
 
-- Against the Java provider, the Rust read needs 2 to 5 times less compute and a tenth of the memory or less. In a Java pipeline it needs 9% less compute than `BigQueryIO` on 4 workers and 21% less with autoscaling, while `BigQueryIO` reads and counts in one JVM.
-- The encoded rows lowered the processing time of the Rust read in a Java pipeline from 128 s to 117 s, and its compute from 3,109 to 2,943 vCPU·s.
-- The Rust reader uses more memory with a Python consumer (519 MiB peak, 224 MiB average) than with a Java consumer (85 MiB peak, 78 MiB average). The Python step reads slower, so the read responses and the outbound data wait in their bounded buffers.
+- Against the Java provider, the Rust read needs 2.1 to 3.4 times less compute and a tenth of the memory or less. In a Java pipeline it needs 10–14% less compute than `BigQueryIO` on 4 workers, while `BigQueryIO` reads and counts in one JVM.
+- A zone stockout (`ZONE_RESOURCE_POOL_EXHAUSTED`) delayed workers at the start of both Java `count` runs, which raises their wall and processing time. Compare them by vCPU·s.
+- **Rust reader memory:** an idle Rust container uses about 60 MiB. With 4 read bundles active it uses 150–240 MiB, and it stays near 150 MiB after the reads end, because mimalloc keeps freed pages for reuse. The earlier build with the system allocator peaked at 85 MiB. With a Python consumer the reader uses more (473 MiB peak, 258 MiB average): the Python step reads slower, so the read responses and the outbound data wait in their bounded buffers.
 - `Managed.read` converts each `TableRow` to a Beam row in a `MapElements` step that costs twice the read, and Dataflow adds about 6.5 minutes before the first worker to upgrade the transform.
 - `java-native` uses `TableRow` with Avro: Beam `Row` costs 42% more, and both Arrow variants fail with `OutOfMemoryError` on direct memory in Beam 2.76.0 (`BigQueryStorageArrowReader` does not release its buffers).
 - Arrow buffer compression (`-Pcompression`) does not change throughput, compute or memory: bytes from BigQuery do not limit the read. `NONE` is the default.
@@ -612,7 +606,7 @@ Beam 2.76.0. The Rust read sends each row to the consumer as encoded bytes ([§7
 
 #### Where the time goes
 
-With a Python consumer, Python sets the pace. In the `count` jobs, the Python step that decodes the rows takes 4,011–4,217 s and the Rust read 2,704–2,898 s, summed over workers. In the Python bundle threads, about 60% of the time waits on the GIL and the data plane, and about 21% is `StrUtf8Coder.decode`, 1.19 billion calls ([§3.3](#33-row-decoding-in-python)). A Java consumer more than doubles the rows per vCPU·s of the Rust read.
+With a Python consumer, Python sets the pace. In the `count` job, the Python step that decodes the rows takes 3,831 s and the Rust read 2,313 s, summed over workers. In the `copy` job, the Python `Touch` step takes 7,102 s, the Rust read 5,044 s and the Rust write 605 s. In the Python bundle threads, about 60% of the time waits on the GIL and the data plane, and about 21% is `StrUtf8Coder.decode`, 1.19 billion calls ([§3.3](#33-row-decoding-in-python)). A Java consumer more than doubles the rows per vCPU·s of the Rust read.
 
 ### 9.2 Kafka benchmarks
 
@@ -622,7 +616,8 @@ With a Python consumer, Python sets the pace. In the `count` jobs, the Python st
 
 - **Cluster:** Google Cloud Managed Service for Apache Kafka, `rust-sdk-kafka` in `us-central1`, 3 brokers with 24 vCPUs and 96 GiB of memory in total (the earlier `load` runs used 12 vCPUs and 48 GiB).
 - **Data:** 313,797,035 Wikipedia records (38 GB as BigQuery rows; 332 bytes per record on average in JSON). The source topic of the `copy` shape has 16 partitions.
-- **Workers:** 4 fixed `n2-standard-4` workers (16 vCPUs), Runner v2 and Streaming Engine.
+- **Workers:** `n2-standard-4` (4 vCPUs), Runner v2 and Streaming Engine: 4 fixed workers, or autoscaling from 4 to 10 workers.
+- **Builds:** the Rust rows ran on 2026-10-21 and 2026-10-22 with the current branch (mimalloc in every Rust worker binary). J-N and P-J run no Rust code; their fixed-worker runs are from 2026-10-19.
 - **Security:** `SASL_SSL` with `OAUTHBEARER` and the Application Default Credentials.
 - **Variants of the `copy` shape** (first letter: pipeline SDK; second letter: Kafka read and write):
 
@@ -636,34 +631,59 @@ With a Python consumer, Python sets the pace. In the `count` jobs, the Python st
 
 #### Results: copy, fixed workers
 
-The `copy` job reads the 16-partition source topic from the earliest offset, passes each row through a `Touch` step in the pipeline language (which counts `e2e/rows` and records end-to-end latency), and writes the row as JSON to a new 24-partition topic. Each run uses its own consumer group and commits offsets. The Rust connector is the one of [§7.7](#77-kafka), with mimalloc and `apache-beam-io-json`. All five runs below executed on the same day (2026-10-19) on the 24-vCPU cluster.
+The `copy` job reads the 16-partition source topic (313,797,035 records) from the earliest offset, passes each row through a `Touch` step in the pipeline language (which counts `e2e/rows` and records end-to-end latency), and writes the row as JSON to a new 24-partition topic. Each run uses its own consumer group and commits offsets. The Rust connector is the one of [§7.7](#77-kafka), with `apache-beam-io-json`.
 
-- **All 16 partitions active** is the window from the first rows until the first partition reaches lag 0. Every partition is read throughout this window, so partition imbalance at the tail does not affect the rate.
-- **10% → 90%** is the window from 10% to 90% of the rows that the job processed.
-- **Rows per used vCPU·s** divides the rows of the active window by the CPU time that the workers used (`cpu/utilization` × 16 vCPUs).
+- **Rows/s** and **rows per used vCPU·s** come from the steady-state window that [job_metrics.py](../scripts/benchmarks/tools/job_metrics.py) `--streaming` picks, the same rule for every job. Used vCPU·s is `cpu/utilization` × the vCPUs of the workers.
 - **Peak memory** is per worker, shown as the sum of the peaks of its SDK containers and broken down by container.
 
-| Variant | Rows/s (all 16 active) | Rows/s (10% → 90%) | Rows per used vCPU·s | Worker CPU | Broker CPU (of 24 vCPUs) | Peak memory per worker |
-|---|---|---|---|---|---|---|
-| J-N | 356,329 | 325,721 | 31,323 | 71% | 13.4 (56%) | 5.55 GiB (Java) |
-| **J-R** | **470,404 (+32%)** | **427,662 (+31%)** | **42,000 (+34%)** | 70% | 6.1 (25%) | 5.56 GiB (Java 4.35 + Rust 0.67 + 0.54) |
-| **R-R** | **504,832 (+42%)** | **408,560 (+25%)** | **44,755 (+43%)** | 71% | 7.4 (31%) | **0.99 GiB** (Rust) |
-| **P-R** | **267,101 (2.6× P-J)** | **254,651 (2.5× P-J)** | **21,485 (+37%)** | 78% | 3.5 (15%) | **2.82 GiB** (Python 1.65 + Rust 1.17) |
-| P-J | 103,010 | 102,722 | 15,665 | 41% | 2.2 (9%) | 7.81 GiB (Python 1.04 + Java 5.61 + 1.16) |
+| Variant | Rows/s | Rows per used vCPU·s | Peak memory per worker |
+|---|---|---|---|
+| J-N | 325,721 | 33,949 | 5.55 GiB (Java) |
+| **J-R** | **442,495 (+36%)** | **41,376 (+22%)** | 5.99 GiB (Java 4.69 + Rust 0.62 + 0.68) |
+| **R-R** | **459,577 (+41%)** | **45,860 (+35%)** | **1.02 GiB** (Rust) |
+| **P-R** | **245,865 (2.4× P-J)** | **21,110 (+35%)** | **2.52 GiB** (Python 1.62 + Rust 0.89) |
+| P-J | 102,607 | 15,678 | 7.81 GiB (Python 1.04 + Java 5.61 + 1.16) |
 
 - **Java and Rust pipelines (J-N, J-R, R-R):**
-  - **R-R** reads and writes 42% more rows per second than J-N while all partitions are active (25% more over 10% → 90%), uses 30% less worker CPU per row (43% more rows per used vCPU·s), and needs 5.6 times less memory per worker (0.99 GiB against 5.55 GiB).
-  - **J-R** reads and writes 32% more rows per second than J-N (31% more over 10% → 90%) and uses 25% less worker CPU per row, at the same peak worker memory (5.56 GiB, of which the Java `Touch` container takes 4.35 GiB and the two Rust containers take 0.67 and 0.54 GiB).
-  - **Broker CPU:** at a higher row rate, the Rust connector uses less than half the broker CPU of `KafkaIO` (6.1–7.4 vCPUs against 13.4 vCPUs), because `librdkafka` sends larger batches per produce request.
+  - **R-R** reads and writes 41% more rows per second than J-N, needs 26% less worker CPU per row (35% more rows per used vCPU·s), and 5.4 times less memory per worker.
+  - **J-R** reads and writes 36% more rows per second than J-N and needs 18% less worker CPU per row, at about the same memory per worker: the Java `Touch` container takes most of it.
+  - **Broker CPU** (2026-10-19 runs, same connector settings): at a higher row rate, the Rust connector used less than half the broker CPU of `KafkaIO` (6.1–7.4 vCPUs against 13.4 vCPUs), because `librdkafka` sends larger batches per produce request.
 - **Python pipelines (P-R vs P-J):**
-  - **P-R** has 2.6 times the throughput of P-J (267,101 against 103,010 rows/s; P-J processed 279M rows before its 55-minute drain), uses 27% less worker CPU per row (37% more rows per used vCPU·s), and needs 2.8 times less memory per worker (2.82 GiB against 7.81 GiB).
-  - **Start-up of Managed I/O:** the first rows of P-R arrive at 195 s after job creation; the first rows of P-J arrive at 650 s (7.6 minutes later). Dataflow spends about 6.5 minutes before starting a worker to upgrade the Managed I/O transforms.
-- **Data Lag and backlog:** in J-R, R-R and P-R, Dataflow reports both `backlog_bytes` (peaking at 96–104 GB for the 16 partitions) and `data_watermark_age` (matching the age of the source records), and both drop to 0 when the read catches up (J-R and R-R drained after all 313,797,035 rows).
-- **Jobs (2026-10-19):** J-N `2026-10-19_12_52_32-16800405295605022848`, J-R `2026-10-19_13_30_32-4955811838822712031`, R-R `2026-10-19_14_07_40-14995099695526962155`, P-R `2026-10-19_14_38_37-9326879138203525244`, P-J `2026-10-19_15_14_49-1366484507318000697`.
+  - **P-R** has 2.4 times the throughput of P-J, needs 26% less worker CPU per row (35% more rows per used vCPU·s), and 3.1 times less memory per worker.
+  - **Start-up of Managed I/O:** the first rows of P-R arrive about 3 minutes after job creation; the first rows of P-J arrive about 6.5 minutes later, because Dataflow upgrades the Managed I/O transforms before it starts a worker.
+- **Data Lag and backlog:** in J-R, R-R and P-R, Dataflow reports `backlog_bytes` (in bytes of Kafka records, like `KafkaIO`) and `data_watermark_age` (the age of the source records). Both drop to 0 when the read catches up.
+- **Byte throughput:** the Rust read outputs decoded rows (94 bytes per row estimated), while `KafkaIO` outputs Kafka records (372–389 bytes). Dataflow's bytes per second of a step come from the size of its output elements, so they are not comparable between the two connectors. The Rust read reports the raw bytes and records it consumes as `source/bytes_read` and `source/elements_read`, the names of Java's `SourceMetrics`.
+- **Jobs:** J-N `2026-10-19_12_52_32-16800405295605022848`, J-R `2026-10-22_09_49_00-2916841082901400064`, R-R `2026-10-21_23_19_27-18019130996182050858`, P-R `2026-10-22_00_44_34-7784570504097931131`, P-J `2026-10-19_15_14_49-1366484507318000697`. The J-R job ran with a temporary probe in the Rust harness (one thread that logs every 10 s); its throughput and memory match a run without the probe.
+
+#### Results: copy, autoscaling with steady input
+
+Each run measures how a variant catches up with a backlog and then keeps up with steady input:
+
+1. A `load` job writes the same 100,414,823 rows (`MOD(revision_id, 100) < 32`) to a new 32-partition topic.
+2. A `produce` job ([KafkaBenchmark.java](../scripts/benchmarks/kafka/java/KafkaBenchmark.java), 4 fixed workers, not under test) adds 200,000 records per second to the same topic, from a cycle of 100,000 records of the table.
+3. The `copy` job of the variant starts with 4 workers and can scale to 10. It reads from the earliest offset and drains after 30 minutes.
+
+All five runs executed on 2026-10-22, one after the other.
+
+| Variant | Copy rows/s with backlog | Catch-up after job creation | Peak workers | Workers at 200k rows/s | Used vCPUs at 200k rows/s | Rows per used vCPU·s | Latency p50 / p95 / p99 | Peak memory per worker |
+|---|---|---|---|---|---|---|---|---|
+| **R-R** | 400–530k (4 workers) | 16 min | 4 | **2** | **4.6** | **47,146** | ≤ 2 s / ≤ 5 s / ≤ 5 s | 2.4 GiB (Rust) |
+| **J-R** | 460–600k (4 workers) | 18 min | 4 | **2** | **5.0** | **45,087** | ≤ 2 s / ≤ 5 s / ≤ 5 s | 7.3 GiB (Java 4.6 + Rust 1.9 + 0.8) |
+| J-N | 400–466k (4 workers) | 16 min | 4 | 3 | 6.5 | 31,069 | ≤ 0.25 s / ≤ 2 s / ≤ 2 s | 5.4 GiB (Java) |
+| **P-R** | 285k (4 workers), 410k (10 workers) | 27 min | 10 | **4** | **10.4** | **19,284** | ≤ 5 s / ≤ 10 s / ≤ 10 s | 3.6 GiB (Python 1.9 + Rust 1.8) |
+| P-J | 105–125k (4 workers), 80–90k (10 workers) | not reached | 10 | not reached | | 8,771 (10 workers) | ≤ 1 s / ≤ 5 s / ≤ 5 s | 8.2 GiB (Java 5.9 + 1.2 + Python 1.1) |
+
+- **Cost at a steady rate:** to keep up with 200,000 rows/s, R-R and J-R need 2 workers and 4.6–5.0 used vCPUs, J-N needs 3 workers and 6.5 used vCPUs, and P-R needs 4 workers and 10.4 used vCPUs. P-J does not keep up with 10 workers.
+- **Scaling signals:** with the Rust connector, Dataflow scales up from the backlog (P-R to 10 workers at 12.5 minutes) and down after catch-up (R-R and J-R to 2 workers 8–10 minutes after catch-up, P-R to 4 workers). P-R stayed at 4 workers for 28 minutes at 65% CPU, which matches its fixed-worker rate of about 245,000 rows/s on 4 workers.
+- **Python pipelines past 4 workers:** P-R on 10 workers reads 1.44 times the rows of 4 workers at 50% CPU, and P-J reads fewer rows on 10 workers than on 4. Neither limit is in the Rust connector ([§10](#10-open-questions)).
+- **Latency:** J-N delivers rows with a lower median latency (≤ 250 ms) than the Rust connector (≤ 1–2 s). The Rust read keeps a partition for up to 5 seconds in one call, and its rows reach the write when the runner commits that bundle ([§10](#10-open-questions)).
+- **Memory:** with 32 partitions, a Rust container reads up to 16 partitions after the scale-down, and each partition has its own consumer and fetch buffer. The Rust containers peak at 1.8–2.4 GiB, against 1.0 GiB with 16 partitions on 4 fixed workers.
+- **Duplicates:** the J-R and P-R runs of 2026-10-21 counted 0.5–0.9% more rows than the topic holds. In both, Dataflow cancelled and retried work items at start-up (`Finalize id rejected rather than committed`). The reruns counted the exact number of rows. Delivery is at least once, as for `KafkaIO` without `withEOS()`.
+- **Jobs (copy):** R-R `2026-10-22_11_29_05-10666673652807665640`, J-R `2026-10-22_12_18_32-13114017398557865775`, P-R `2026-10-22_13_01_15-16140017471939412531`, J-N `2026-10-22_14_14_50-4485332661994381247`, P-J `2026-10-22_14_58_00-9178851735329751470`. The P-R job ran 30 minutes longer than planned; its results use the first 30 minutes, and the steady state on 4 workers uses 20:34–20:59.
 
 #### Results: load (BigQuery → Kafka)
 
-The `load` shape reads the table from BigQuery and writes all records to Kafka as JSON on 4 fixed workers (run on the 12-vCPU cluster):
+The `load` shape reads the table from BigQuery and writes all records to Kafka as JSON on 4 fixed workers. These runs are from an *earlier build* on the 12-vCPU cluster, before mimalloc in the expansion services; they are not rerun yet:
 
 | Pipeline | Transform | Workers | Wall (s) | Processing (s) | vCPU·s | Rows per vCPU·s |
 |---|---|---|---|---|---|---|
@@ -690,14 +710,14 @@ Memory of each SDK container, per worker (MiB):
 - In a Python pipeline, the Rust Kafka write is 3.0 times faster than Java Managed and needs 2.9 times less compute.
 - The Rust container uses 119 to 368 MiB of memory on average; the Java container uses 3,897 to 8,800 MiB on average.
 
-#### Where the time goes and what changed
+#### Where the time goes
 
-- **Step times (`copy`, summed across workers):**
+- **Step times (`copy` on 4 fixed workers, summed across workers):**
   - In **J-N**, JSON decoding (`BytesToRow`, 6,015 s) and row encoding (`RowToKvBytes`, 1,257 s) cost almost as much as the Kafka read (`KafkaIO.Read`, 7,536 s) and write (`KafkaWriter`, 1,501 s) combined (16,309 s in total).
-  - In **J-R**, the Rust read and JSON decode take 6,127 s and the Rust JSON encode and write take 5,083 s (11,210 s in total, 31% less step time than J-N while processing rows 32% faster).
-  - In **R-R**, the read takes 6,217 s and the write takes 4,219 s, with no cross-container hop.
-  - In **P-R**, the Python `Touch` step takes 11,981 s while the Rust read (3,359 s) and write (2,373 s) take less than half that together: as in BigQuery ([§9.1](#91-bigquery-benchmarks)), Python row decoding sets the pace.
-- **Why the consumer pool and parked assignments matter:** an earlier version of the connector shared one `BaseConsumer` per worker across all partitions, unassigned and reassigned each partition at the end of every 5-second read call (dropping `librdkafka`'s prefetched records), and ran synchronous watermark fetches on the 4 tokio worker threads. That capped each partition at about 21,000 rows/s (309k rows/s for J-R and 246k for R-R). Giving each read a pool of consumers (`split_partition_queue` per partition, sticky least-loaded slot per partition), parking active assignments across calls ([parking.rs](../beam/io/kafka/src/native/read/parking.rs)), reading cached high watermarks from `librdkafka` and switching to `apache-beam-io-json` raised J-R to 470k rows/s (+52%) and R-R to 505k rows/s (+105%).
+  - In **J-R**, the Rust read and JSON decode take 3,010 s and the Rust JSON encode and write take 5,539 s (8,549 s in total, 48% less step time than J-N).
+  - In **R-R**, the read takes 3,024 s and the write takes 4,154 s, with no cross-container hop.
+  - In **P-R**, the Python `Touch` step takes 13,298 s while the Rust read (4,941 s) and write (2,666 s) take less than 60% of that together: as in BigQuery ([§9.1](#91-bigquery-benchmarks)), Python row decoding sets the pace.
+- **Consumer pool and parked assignments:** each read has a pool of consumers (`split_partition_queue` per partition, a sticky least-loaded slot per partition). Active assignments stay parked across read calls ([parking.rs](../beam/io/kafka/src/native/read/parking.rs)), so `librdkafka` keeps its prefetched records, and the reader takes cached high watermarks from `librdkafka` instead of synchronous watermark requests on the tokio worker threads.
 - **At-least-once delivery:** the read, the `Touch` step and the write fuse into one stage. If a work item fails or is rejected when a late worker joins, Dataflow retries the bundle from the start of that read call (at most 5 s of records), and the harness drops the expired bundle finalizer of the failed attempt (`WARN: Dropped N expired bundle finalization callback(s)`). Java `KafkaIO` without `withEOS()` behaves the same way.
 
 #### Configuration audit
@@ -712,8 +732,10 @@ The variants use the same configuration where possible:
 
 #### Next
 
-- **Autoscaling runs (`copy`):** start from 1 worker with `maxNumWorkers=8` across J-N, J-R, R-R, P-R and P-J to measure scale-up from the SDF backlog and Data Lag signals.
-- **RAW format and steady-state streaming (`produce` shape):** compare RAW throughput on the 24-vCPU cluster, and run at a fixed input rate to measure steady-state scaling and scale-down.
+- **Latency:** measure end-to-end latency against the length of a read call (`MAX_READ_CALL`, 5 s), and compare with `KafkaIO`.
+- **Memory per partition:** size the fetch buffer of each partition consumer (`queued.max.messages.kbytes`) against the partitions that one worker reads.
+- **Python pipelines past 4 workers:** find what limits P-R and P-J when they scale from 4 to 10 workers.
+- **RAW format:** compare RAW throughput on the 24-vCPU cluster.
 - **Delivery:** see the follow-ups for deduplication and commit ordering in [§10](#10-open-questions).
 
 ---
@@ -721,7 +743,10 @@ The variants use the same configuration where possible:
 ## 10. Open questions
 
 - Image scopes: one scope for each I/O crate, with a sibling crate for the providers and the binary (`beam/io/gcp/expansion-service`), as the Java `google-cloud-platform/expansion-service` project does. Confirm with a second scope.
-- Does the Dataflow streaming autoscaler use SDF backlog from a Rust worker ([§7.1](#71-pubsub-caveats))? Dataflow reports `backlog_bytes` and `data_watermark_age` from the Rust Kafka read ([§9.2](#92-kafka-benchmarks)). The autoscaling runs of the Kafka `copy` shape will test scale-up from those signals.
+- The Dataflow streaming autoscaler uses the SDF backlog of the Rust Kafka read: it scales up from the backlog and down after catch-up ([§9.2](#92-kafka-benchmarks)). Check the same for Pub/Sub ([§7.1](#71-pubsub-caveats)).
+- Kafka latency: the Rust read keeps a partition for up to 5 seconds in one call (`MAX_READ_CALL`), and its rows reach the next stage when the runner commits that bundle. The median end-to-end latency is ≤ 1–2 s, against ≤ 250 ms for `KafkaIO`. Measure latency and CPU against shorter read calls.
+- Kafka memory: each partition that a worker reads has its own consumer and fetch buffer, so memory grows with the partitions per worker (1.8–2.4 GiB with 16 partitions per worker). Size `queued.max.messages.kbytes` against the partitions per worker.
+- Python pipelines past 4 workers: in the autoscaling runs, P-R on 10 workers reads 1.44 times the rows of 4 workers at 50% CPU, and P-J reads fewer rows on 10 workers than on 4. Find the limit (partitions per worker, Python harness concurrency, or the brokers).
 - A CPU profiler for Rust workers on Dataflow: the worker samples itself when an option names a location (`--profile_location=gs://...`) and writes pprof profiles. Cloud Profiler has no Rust agent. Local profiles on Prism use `./gradlew :sdks:rust:profilePrism` ([development.md](development.md#profiling)).
 - An IO validation suite that runs every connector module on Prism or Dataflow by option, with per-runner skips that show their reason.
 - A Row to Row ParDo does not keep the row schema of its input. The Kafka benchmark pipeline in Rust sets the schema again with `.with_row_schema(...)` before the write, as `examples/kafka_ouroboros` does after its `flat_map`. Java has the same rule (`setRowSchema`), because a DoFn can change the fields. Possible improvement: a fluent method for steps that keep the schema (for example a step that only reads or filters rows), so that the pipeline does not set the schema again.
