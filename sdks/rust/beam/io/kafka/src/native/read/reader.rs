@@ -36,12 +36,16 @@ use rdkafka::bindings::rd_kafka_get_watermark_offsets;
 use rdkafka::consumer::Consumer;
 use rdkafka::consumer::base_consumer::PartitionQueue;
 use rdkafka::error::KafkaError;
-use rdkafka::message::Message;
+use rdkafka::message::{BorrowedMessage, Message, OwnedMessage};
 use rdkafka::types::RDKafkaRespErr;
 use rdkafka::{Offset, TopicPartitionList};
 use tracing::{debug, warn};
 
 use super::ConsumerPool;
+use super::call::{
+    CallBudget, CallEnd, Ended, IdleCheck, Polled, first_wait, idle_check, idle_watermark,
+    read_loop,
+};
 use super::discover::PartitionStart;
 use super::parking::Parking;
 use super::restriction::{PartitionBacklogs, PartitionRestriction, PartitionTracker};
@@ -49,17 +53,13 @@ use crate::native::auth::KafkaContext;
 use crate::native::client::{Connection, KafkaConsumer, ReadId, consumer_slot, shared_consumer};
 use crate::native::format::ReadFormat;
 
-/// The longest wait for the first record after the reader assigns a partition. The consumer
-/// starts to fetch the partition at the assignment.
-const FIRST_POLL_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// The longest wait for the next record after the first one. A partition that has no record
-/// for this time ends the call.
-const POLL_TIMEOUT: Duration = Duration::from_millis(100);
-
 /// The longest time that one call reads a partition. The reader then checkpoints, so the
 /// runner commits the bundle and the read commits its offsets.
 pub(super) const MAX_READ_CALL: Duration = Duration::from_secs(5);
+
+/// The longest time that one call waits for the next record. A partition that has no record
+/// for this time ends the call.
+pub(super) const MAX_IDLE_PER_CALL: Duration = Duration::from_secs(1);
 
 /// The longest wait for the high watermark of a partition.
 const WATERMARKS_TIMEOUT: Duration = Duration::from_secs(5);
@@ -97,6 +97,9 @@ pub(super) struct Source {
     pub(super) bounded: bool,
     pub(super) commit_expiry: Duration,
     pub(super) max_read_time_per_call: Duration,
+    pub(super) max_idle_per_call: Duration,
+    /// The fetch wait of the consumer (`fetch.wait.max.ms`). See [`idle_watermark`].
+    pub(super) fetch_wait: Duration,
     pub(super) consumer_pool: ConsumerPool,
 }
 
@@ -188,9 +191,10 @@ impl Commit {
 /// The high watermark of `partition` that librdkafka knows from its last fetch response, or
 /// `None` before the first response. Asks nothing from the broker.
 ///
-/// A request to the broker for the watermark waits behind the fetch request of the consumer
-/// on the same connection. When the partition has no new record, the broker holds that fetch
-/// request for up to `fetch.wait.max.ms` (500 ms), so a request can wait that long.
+/// Each fetch response updates this value, also a response with no record. A request to the
+/// broker for the watermark waits behind the fetch request of the consumer on the same
+/// connection. When the partition has no new record, the broker holds that fetch request for
+/// up to `fetch.wait.max.ms` (500 ms), so a request can wait that long.
 fn cached_high_watermark(consumer: &KafkaConsumer, topic: &str, partition: i32) -> Option<i64> {
     let topic = CString::new(topic).ok()?;
     let (mut low, mut high) = (-1_i64, -1_i64);
@@ -220,6 +224,14 @@ struct Assignment {
     consumer: Arc<KafkaConsumer>,
     queue: PartitionQueue<KafkaContext>,
     list: TopicPartitionList,
+    /// Whether a fetch response came for this assignment: a record or the end of the
+    /// partition. Its fetch responses then keep the cached high watermark current.
+    fetch_seen: bool,
+    /// When an idle call last asked the broker for the high watermark of this assignment.
+    broker_request: Option<WallClock>,
+    /// The record whose claim failed after a split. The next call emits it first, so the
+    /// assignment can park at the start of the residual.
+    refused: Option<OwnedMessage>,
 }
 
 impl Assignment {
@@ -247,6 +259,9 @@ impl Assignment {
             consumer: Arc::clone(consumer),
             queue,
             list,
+            fetch_seen: false,
+            broker_request: None,
+            refused: None,
         })
     }
 }
@@ -261,8 +276,9 @@ impl Drop for Assignment {
 
 /// Reads one partition from the start offset of its restriction, and emits each record as
 /// `O` at the timestamp of the record. Each call reads for at most the max read time per call
-/// of the options ([`MAX_READ_CALL`] by default), or until the partition has no new record,
-/// and then resumes. A call that resumes parks its assignment for the next call.
+/// of the options ([`MAX_READ_CALL`] by default), or until no record came for the max idle
+/// time per call ([`MAX_IDLE_PER_CALL`] by default), and then resumes. A call that resumes
+/// parks its assignment for the next call. See [`CallEnd`].
 pub(super) struct ReadPartitionFn<O> {
     source: Arc<Source>,
     /// The consumers of the pool that this copy used, by slot.
@@ -348,6 +364,195 @@ impl<O> ReadPartitionFn<O> {
             }
         }
     }
+
+    /// Whether the partition has no record after the claimed ones, at the end of an idle
+    /// call. Asks the broker only as [`idle_check`] says, and remembers when.
+    fn caught_up_after_idle(
+        &self,
+        assignment: &mut Assignment,
+        consumer: &KafkaConsumer,
+        partition: i32,
+        tracker: &PartitionTracker,
+    ) -> bool {
+        let now = WallClock::now();
+        tracker.is_caught_up()
+            && match idle_check(assignment.fetch_seen, assignment.broker_request, now) {
+                IdleCheck::Cached => true,
+                IdleCheck::Skip => false,
+                IdleCheck::Broker => {
+                    assignment.broker_request = Some(now);
+                    self.refresh_high_watermark(consumer, partition, tracker)
+                        && tracker.is_caught_up()
+                }
+            }
+    }
+
+    /// Emits the row of `message` at its timestamp and adds it to `batch`.
+    fn emit_record<M: Message>(
+        &self,
+        message: &M,
+        tracker: &PartitionTracker,
+        ctx: &mut ProcessContext<'_, O>,
+        batch: &mut Batch,
+    ) -> beam::Result
+    where
+        O: ReadOutput,
+    {
+        let timestamp = message
+            .timestamp()
+            .to_millis()
+            .map_or_else(Instant::now, Instant::from_millis);
+        let payload = message.payload();
+        let record_bytes = message.key().map_or(0, <[u8]>::len) + payload.map_or(0, <[u8]>::len);
+        batch.bytes = batch.bytes.saturating_add(record_bytes);
+        batch.records += 1;
+        let row = match payload {
+            Some(payload) => self.source.format.decode(&self.source.schema, payload),
+            None => Err("The record has no value".to_string()),
+        };
+        let output = O::record(row, payload.unwrap_or_default(), &self.source.errors)?;
+        ctx.output(output).at(timestamp).emit()?;
+        tracker.advance_watermark(timestamp);
+        Ok(())
+    }
+
+    /// One call: reads `element` until the call ends, and returns why it ended.
+    fn read_call(
+        &mut self,
+        element: PartitionStart,
+        tracker: &PartitionTracker,
+        ctx: &mut ProcessContext<'_, O>,
+    ) -> beam::Result<CallEnd>
+    where
+        O: ReadOutput,
+    {
+        let PartitionStart {
+            topic,
+            partition,
+            stop_at,
+            ..
+        } = element;
+        let (slot, consumer) = self.consumer(partition)?;
+        let start = tracker.current_restriction().start;
+        let key = PartitionKey {
+            read: self.source.read,
+            slot,
+            partition,
+        };
+        // The lease holds the partition until this call parks or drops its assignment, so
+        // no other call assigns it before then.
+        let mut lease = PARKED.take(key, start, WallClock::now()).map_err(|e| {
+            Error::msg(format!(
+                "Cannot assign partition {partition} of Kafka topic '{topic}': {e}"
+            ))
+        })?;
+        let first = first_wait(lease.value().is_some());
+        let assignment = lease
+            .get_or_try_insert_with(|| Assignment::new(&consumer, &topic, partition, start))?;
+        // At the start, the watermark only sizes the backlog, so a known one is enough.
+        self.high_watermark(&consumer, partition, tracker, false);
+        // The read time starts here, so a slow assignment does not end a call before its
+        // first poll.
+        let mut budget = CallBudget::new(
+            WallClock::now(),
+            self.source.max_read_time_per_call,
+            self.source.max_idle_per_call,
+            first,
+        );
+        let mut batch = Batch::default();
+        let Assignment { queue, refused, .. } = &mut *assignment;
+        let source = format!("partition {partition} of Kafka topic '{topic}'");
+        let Ended {
+            end,
+            refused: last,
+            reached_end,
+        } = read_loop(
+            &source,
+            &mut budget,
+            tracker,
+            stop_at,
+            |timeout| match refused.take() {
+                Some(message) => Ok(Polled::Record(Record::Kept(message))),
+                None => match queue.poll(timeout) {
+                    None => Ok(Polled::Nothing),
+                    Some(Err(KafkaError::PartitionEOF(_))) => Ok(Polled::EndOfPartition),
+                    Some(Err(e)) => Err(Error::msg(format!(
+                        "Cannot read partition {partition} of Kafka topic '{topic}': {e}"
+                    ))),
+                    Some(Ok(message)) => Ok(Polled::Record(Record::Polled(message))),
+                },
+            },
+            Record::offset,
+            |record| match &record {
+                Record::Kept(message) => self.emit_record(message, tracker, ctx, &mut batch),
+                Record::Polled(message) => self.emit_record(message, tracker, ctx, &mut batch),
+            },
+        )?;
+        assignment.refused = last.map(Record::into_owned);
+        assignment.fetch_seen |= batch.records > 0 || reached_end;
+        // The checkpoint sizes the residual with this watermark. After an idle call that
+        // read every record, the watermark moves close to the wall clock.
+        self.high_watermark(&consumer, partition, tracker, false);
+        if end == CallEnd::Idle
+            && self.caught_up_after_idle(assignment, &consumer, partition, tracker)
+        {
+            tracker.advance_watermark(idle_watermark(Instant::now(), self.source.fetch_wait));
+        }
+        // A call that fails adds no sample. The runner retries its bundle.
+        self.backlogs
+            .observe_records(partition, batch.bytes, batch.records);
+        // The raw bytes of the records (key and value), with the names of Java's
+        // `SourceMetrics`, so the source throughput does not depend on the output type.
+        Metrics::counter(SOURCE_METRICS, "bytes_read")
+            .inc_by(i64::try_from(batch.bytes).unwrap_or(i64::MAX));
+        Metrics::counter(SOURCE_METRICS, "elements_read")
+            .inc_by(i64::try_from(batch.records).unwrap_or(i64::MAX));
+        // A call with a residual parks its assignment at the start of the residual.
+        if lease.end_call(end, tracker, WallClock::now()) {
+            PARKED.sweep_in_background();
+        }
+        if let Some(last) = tracker.last_claimed() {
+            let commit = Commit {
+                consumer,
+                topic,
+                partition,
+                offset: last + 1,
+            };
+            O::commit(ctx, commit, self.source.commit_expiry)?;
+        }
+        Ok(end)
+    }
+}
+
+/// The records and the key and value bytes that one call read.
+#[derive(Default)]
+struct Batch {
+    bytes: usize,
+    records: u64,
+}
+
+/// A record of a call: the record that a split refused in the last call, or a record from
+/// the queue of the partition.
+enum Record<'q> {
+    Kept(OwnedMessage),
+    Polled(BorrowedMessage<'q>),
+}
+
+impl Record<'_> {
+    fn offset(&self) -> i64 {
+        match self {
+            Self::Kept(message) => message.offset(),
+            Self::Polled(message) => message.offset(),
+        }
+    }
+
+    /// The record without the borrow of the queue, so the assignment can keep it.
+    fn into_owned(self) -> OwnedMessage {
+        match self {
+            Self::Kept(message) => message,
+            Self::Polled(message) => message.detach(),
+        }
+    }
 }
 
 /// Each copy gets the shared consumers when it reads their partitions, and shares the
@@ -395,123 +600,14 @@ impl<O: ReadOutput> SplittableDoFn for ReadPartitionFn<O> {
         PartitionTracker::new(*restriction, self.boundedness())
     }
 
+    /// Reads until the call ends. See [`CallEnd`].
     fn process_element(
         &mut self,
         element: PartitionStart,
         tracker: &PartitionTracker,
         ctx: &mut ProcessContext<'_, O>,
     ) -> beam::Result<ProcessContinuation> {
-        let PartitionStart {
-            topic,
-            partition,
-            stop_at,
-            ..
-        } = element;
-        let (slot, consumer) = self.consumer(partition)?;
-        let start = tracker.current_restriction().start;
-        let key = PartitionKey {
-            read: self.source.read,
-            slot,
-            partition,
-        };
-        // The lease holds the partition until this call parks or drops its assignment, so
-        // no other call assigns it before then.
-        let mut lease = PARKED.take(key, start, WallClock::now()).map_err(|e| {
-            Error::msg(format!(
-                "Cannot assign partition {partition} of Kafka topic '{topic}': {e}"
-            ))
-        })?;
-        // A parked assignment fetched during the wait, so its first poll needs no long wait.
-        let mut timeout = match lease.value() {
-            Some(_) => POLL_TIMEOUT,
-            None => FIRST_POLL_TIMEOUT,
-        };
-        let assignment = lease
-            .get_or_try_insert_with(|| Assignment::new(&consumer, &topic, partition, start))?;
-        // At the start, the watermark only sizes the backlog, so a known one is enough.
-        self.high_watermark(&consumer, partition, tracker, false);
-        // The read time starts here, so a slow assignment does not end a call before its
-        // first poll.
-        let started = WallClock::now();
-        let mut batch_bytes = 0usize;
-        let mut batch_records = 0u64;
-        let continuation = loop {
-            if stop_at.is_some_and(|stop_at| Instant::now() >= stop_at) {
-                tracker.finish();
-                break ProcessContinuation::Stop;
-            }
-            if started.elapsed() >= self.source.max_read_time_per_call {
-                // The checkpoint sizes the residual with this watermark.
-                self.high_watermark(&consumer, partition, tracker, false);
-                break ProcessContinuation::Resume;
-            }
-            let message = match assignment.queue.poll(timeout) {
-                None => {
-                    self.high_watermark(&consumer, partition, tracker, false);
-                    // A poll with no record does not prove that a fetch response came, so
-                    // the cached watermark can be older than this assignment. Only the
-                    // broker proves that no record is left, before the watermark moves to
-                    // the wall clock.
-                    if tracker.is_caught_up()
-                        && self.refresh_high_watermark(&consumer, partition, tracker)
-                        && tracker.is_caught_up()
-                    {
-                        tracker.advance_watermark(Instant::now());
-                    }
-                    break ProcessContinuation::Resume;
-                }
-                Some(Err(KafkaError::PartitionEOF(_))) => continue,
-                Some(Err(e)) => {
-                    return Err(Error::msg(format!(
-                        "Cannot read partition {partition} of Kafka topic '{topic}': {e}"
-                    )));
-                }
-                Some(Ok(message)) => message,
-            };
-            if !tracker.try_claim(&message.offset()) {
-                break ProcessContinuation::Stop;
-            }
-            let timestamp = message
-                .timestamp()
-                .to_millis()
-                .map_or_else(Instant::now, Instant::from_millis);
-            let payload = message.payload();
-            let record_bytes =
-                message.key().map_or(0, <[u8]>::len) + payload.map_or(0, <[u8]>::len);
-            batch_bytes = batch_bytes.saturating_add(record_bytes);
-            batch_records += 1;
-            let row = match payload {
-                Some(payload) => self.source.format.decode(&self.source.schema, payload),
-                None => Err("The record has no value".to_string()),
-            };
-            let output = O::record(row, payload.unwrap_or_default(), &self.source.errors)?;
-            ctx.output(output).at(timestamp).emit()?;
-            tracker.advance_watermark(timestamp);
-            timeout = POLL_TIMEOUT;
-        };
-        // A call that fails adds no sample. The runner retries its bundle.
-        self.backlogs
-            .observe_records(partition, batch_bytes, batch_records);
-        // The raw bytes of the records (key and value), with the names of Java's
-        // `SourceMetrics`, so the source throughput does not depend on the output type.
-        Metrics::counter(SOURCE_METRICS, "bytes_read")
-            .inc_by(i64::try_from(batch_bytes).unwrap_or(i64::MAX));
-        Metrics::counter(SOURCE_METRICS, "elements_read")
-            .inc_by(i64::try_from(batch_records).unwrap_or(i64::MAX));
-        // Only a call that resumes has a next call. Every record that the call took from the
-        // queue is a claim attempt, so the next record of the queue is at the residual start.
-        if lease.end_call(tracker, &continuation, WallClock::now()) {
-            PARKED.sweep_in_background();
-        }
-        if let Some(last) = tracker.last_claimed() {
-            let commit = Commit {
-                consumer,
-                topic,
-                partition,
-                offset: last + 1,
-            };
-            O::commit(ctx, commit, self.source.commit_expiry)?;
-        }
-        Ok(continuation)
+        self.read_call(element, tracker, ctx)
+            .map(CallEnd::continuation)
     }
 }

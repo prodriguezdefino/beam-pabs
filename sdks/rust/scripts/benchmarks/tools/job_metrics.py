@@ -320,6 +320,11 @@ def streaming_row(project,
     w1 = next(t for t, v in rows if v >= 0.9 * final)
   else:
     return None
+  # Counters arrive as one cumulative point per minute. Snap the window to the times of the
+  # points that the deltas use, so rows, latency buckets and used CPU cover the same interval.
+  point_times = [t for t, _ in rows]
+  w0 = max((t for t in point_times if t <= w0), default=w0)
+  w1 = max((t for t in point_times if t <= w1), default=w1)
   seconds = (w1 - w0).total_seconds()
   rows_series = counters.get("rows", [])
   rows_in_window = total_at(rows_series, w1) - total_at(rows_series, w0)

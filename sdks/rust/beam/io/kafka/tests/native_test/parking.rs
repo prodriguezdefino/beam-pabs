@@ -27,8 +27,9 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use beam::transforms::sdf::{ProcessContinuation, RestrictionTracker};
+use beam::transforms::sdf::RestrictionTracker;
 use beam::values::IsBounded;
+use kafka_io::native::read::call::CallEnd;
 use kafka_io::native::read::parking::{Parking, StillHeld};
 use kafka_io::native::read::restriction::{PartitionRestriction, PartitionTracker};
 
@@ -360,7 +361,7 @@ fn a_call_that_resumes_parks_its_value_at_the_start_of_its_residual() {
     let call = call_from(10);
     assert!(call.try_claim(&10) && call.try_claim(&14));
     let lease = assigned(&parking, 10, make());
-    assert!(lease.end_call(&call, &ProcessContinuation::Resume, now));
+    assert!(lease.end_call(CallEnd::MaxReadTime, &call, now));
     let residual = call.try_checkpoint().expect("work is left");
     assert_eq!(residual.start, 15);
     let next = call_from(residual.start);
@@ -380,7 +381,7 @@ fn a_call_that_claims_nothing_parks_its_value_at_its_start() {
     let now = Instant::now();
     let call = call_from(10);
     let lease = assigned(&parking, 10, make());
-    assert!(lease.end_call(&call, &ProcessContinuation::Resume, now));
+    assert!(lease.end_call(CallEnd::MaxReadTime, &call, now));
     let residual = call.try_checkpoint().expect("work is left");
     assert_eq!(residual.start, 10);
     assert!(takes_value(&parking, 3, residual.start, now));
@@ -393,10 +394,58 @@ fn a_call_that_stops_drops_its_value_and_releases_its_partition() {
     let call = call_from(10);
     assert!(call.try_claim(&10));
     let lease = assigned(&parking, 10, make());
-    assert!(!lease.end_call(&call, &ProcessContinuation::Stop, Instant::now()));
+    assert!(!lease.end_call(CallEnd::EndOfRestriction, &call, Instant::now()));
     assert_eq!(drops.load(Ordering::SeqCst), 1);
     assert!(parking.is_empty());
     assert!(parking.take(3, 11, Instant::now()).is_ok());
+}
+
+#[test]
+fn a_call_that_the_runner_splits_parks_its_value_at_the_start_of_the_residual() {
+    let (drops, make) = counted();
+    let parking: Parking<i32, Counted> = Parking::new(EXPIRY);
+    let now = Instant::now();
+    let call = call_from(10);
+    assert!(call.try_claim(&10) && call.try_claim(&14));
+    let (_, residual) = call.try_split(0.0).expect("the runner checkpoints");
+    assert_eq!(residual.start, 15);
+    // The record after the split is refused, and its offset counts as attempted.
+    assert!(!call.try_claim(&17));
+    assert_eq!(call.next_offset(), 18);
+    let lease = assigned(&parking, 10, make());
+    assert!(lease.end_call(CallEnd::Split, &call, now));
+    assert!(takes_value(&parking, 3, residual.start, now));
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_value_parked_after_a_split_expires_when_no_call_takes_it() {
+    let (drops, make) = counted();
+    let parking: Parking<i32, Counted> = Parking::new(EXPIRY);
+    let now = Instant::now();
+    let call = call_from(10);
+    assert!(call.try_claim(&10));
+    assert!(call.try_split(0.0).is_some());
+    let lease = assigned(&parking, 10, make());
+    assert!(lease.end_call(CallEnd::Split, &call, now));
+    // The residual runs in another process, so no call of this process takes the value.
+    parking.sweep(now + EXPIRY + Duration::from_secs(1));
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    assert!(parking.is_empty());
+}
+
+#[test]
+fn a_call_with_no_residual_drops_its_value() {
+    for end in [CallEnd::EndOfRestriction, CallEnd::Stopped] {
+        let (drops, make) = counted();
+        let parking: Parking<i32, Counted> = Parking::new(EXPIRY);
+        let call = call_from(10);
+        assert!(call.try_claim(&10));
+        let lease = assigned(&parking, 10, make());
+        assert!(!lease.end_call(end, &call, Instant::now()), "{end:?}");
+        assert_eq!(drops.load(Ordering::SeqCst), 1, "{end:?}");
+        assert!(parking.is_empty(), "{end:?}");
+    }
 }
 
 #[test]
@@ -416,7 +465,7 @@ fn a_retry_of_a_bundle_drops_the_parked_value() {
     let call = call_from(10);
     assert!(call.try_claim(&10) && call.try_claim(&14));
     let lease = assigned(&parking, 10, make());
-    assert!(lease.end_call(&call, &ProcessContinuation::Resume, now));
+    assert!(lease.end_call(CallEnd::MaxReadTime, &call, now));
     // The runner rejects the bundle and retries it from the same restriction.
     let retry = call_from(10);
     assert!(!takes_value(

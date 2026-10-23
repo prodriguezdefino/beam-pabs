@@ -29,9 +29,24 @@
 //! [`ReadOptions::with_reshuffle_partitions`].
 //!
 //! The output timestamp of a row is the timestamp of its record. The watermark of a partition
-//! is the largest record timestamp; when the reader has read every record of the partition,
-//! the watermark moves to the wall time. A record with an earlier timestamp that arrives after
-//! that is late.
+//! is the largest record timestamp. When a reader call waited the max idle time per call with
+//! no record and has read every record of the partition, the watermark moves to the wall time
+//! less the fetch wait of the consumer (`fetch.wait.max.ms`, 500 ms by default). The reader
+//! knows that it has every record from the cached high watermark of librdkafka, once a record
+//! or the end-of-partition event proved a fetch response for the assignment. A record with
+//! an earlier timestamp that arrives after that is late. Such a record can be one that the
+//! broker got during the last fetch wait, or one that the producer held for longer.
+//!
+//! # Metrics
+//!
+//! The reader counts `new_assignments` (namespace `kafka_read`, a counter): the calls that
+//! assign their partition again instead of taking a parked assignment. A new assignment seeks,
+//! waits for a first fetch, and can wait up to 2 seconds for its first record. A healthy value
+//! is about the number of partitions that the worker reads, plus the partitions that moved in
+//! a rebalance or after a worker restart. A value that grows with the calls means that parked
+//! assignments are not reused, and that costs latency. The source counters `bytes_read` and
+//! `elements_read` (namespace `source`) count the key and value bytes and the records that
+//! the read consumed.
 //!
 //! With a `group.id` in the consumer properties, the read commits the offset after the last
 //! record of each bundle when the runner has committed the bundle. Only a later offset is
@@ -55,6 +70,8 @@
 //! ));
 //! ```
 
+#[doc(hidden)]
+pub mod call;
 #[doc(hidden)]
 pub mod commits;
 mod discover;
@@ -82,10 +99,22 @@ use super::format::{ReadFormat, read_error_schema};
 use super::{add_composite, transform_ids};
 use discover::DiscoverPartitionsFn;
 pub use discover::PartitionStart;
-use reader::{MAX_READ_CALL, ReadOutput, ReadPartitionFn, Source};
+use reader::{MAX_IDLE_PER_CALL, MAX_READ_CALL, ReadOutput, ReadPartitionFn, Source};
 
 /// The output name of the records that do not convert.
 const FAILURES_TAG: &str = "failures";
+
+/// The default of the librdkafka consumer property `fetch.wait.max.ms`.
+const DEFAULT_FETCH_WAIT: Duration = Duration::from_millis(500);
+
+/// The fetch wait of the consumers of `connection`: its `fetch.wait.max.ms`, or the default.
+fn fetch_wait(connection: &Connection) -> Duration {
+    connection
+        .properties
+        .get("fetch.wait.max.ms")
+        .and_then(|millis| millis.trim().parse().ok())
+        .map_or(DEFAULT_FETCH_WAIT, Duration::from_millis)
+}
 
 /// Where a partition starts when the consumer group has no committed offset for it, or when
 /// the read has no consumer group.
@@ -194,6 +223,9 @@ pub struct ReadOptions {
     /// The longest time that one call of the reader reads a partition. See
     /// [`ReadOptions::with_max_read_time_per_call`].
     pub max_read_time_per_call: Duration,
+    /// The longest time that one call of the reader waits for the next record. See
+    /// [`ReadOptions::with_max_idle_per_call`].
+    pub max_idle_per_call: Duration,
     /// The consumers of a worker process. See [`ConsumerPool`].
     pub consumer_pool: ConsumerPool,
     /// Whether a Reshuffle spreads the partitions before the reader. See
@@ -215,6 +247,7 @@ impl ReadOptions {
             max_read_time: None,
             commit_expiry: DEFAULT_FINALIZER_EXPIRY,
             max_read_time_per_call: MAX_READ_CALL,
+            max_idle_per_call: MAX_IDLE_PER_CALL,
             consumer_pool: ConsumerPool::default(),
             reshuffle_partitions: false,
         }
@@ -227,8 +260,24 @@ impl ReadOptions {
 
     /// Sets the librdkafka consumer properties. A `group.id` makes the read commit offsets.
     /// They replace the consumer defaults `enable.auto.commit=false`,
-    /// `enable.auto.offset.store=false` and `auto.offset.reset=earliest` when they set the same
-    /// names.
+    /// `enable.auto.offset.store=false`, `auto.offset.reset=earliest` and
+    /// `enable.partition.eof=true` when they set the same names. Without the end-of-partition
+    /// event, an idle partition with no record moves its watermark only after a broker request,
+    /// at most once in 10 seconds.
+    ///
+    /// `auto.offset.reset` does not choose where the read starts; see
+    /// [`with_start_offset`](Self::with_start_offset). It applies only when the start offset of
+    /// a partition, or a later fetch position, is out of the range of the partition: for
+    /// example when retention deleted the committed offset, or records that the read did not
+    /// reach yet. With the default `earliest`, the read continues at the first record that the
+    /// partition still has. With `latest`, it also skips every record up to the end of the
+    /// partition. When the log of the partition was truncated, or the topic was created again,
+    /// the reset gives offsets at or before the claimed ones. The read then fails its bundle
+    /// with an error that names the partition and the offsets, and the runner retries the
+    /// bundle until someone starts the read again from a new start offset. The read claims
+    /// each offset at most once, so on a runner with exactly-once processing no record is
+    /// processed twice because of a reset. After deleted records, only the deleted offsets are
+    /// missing.
     pub fn with_consumer_properties(
         mut self,
         properties: impl IntoIterator<Item = (String, String)>,
@@ -261,6 +310,17 @@ impl ReadOptions {
         self
     }
 
+    /// Sets the longest time that one call of the reader waits for the next record. The
+    /// default is 1 second. A partition with no record for this time ends the call, and the
+    /// read resumes it in a new call. A short gap between two batches of records then does
+    /// not end the call. Each new call costs a resume of the read, so a longer time gives
+    /// fewer calls. An idle partition holds its thread for this time, and its watermark moves
+    /// only at the end of such a call (see the module documentation).
+    pub fn with_max_idle_per_call(mut self, max_idle_per_call: Duration) -> Self {
+        self.max_idle_per_call = max_idle_per_call;
+        self
+    }
+
     /// Sets the number of consumers of a worker process. The default is
     /// [`ConsumerPool::OnePerPartition`]: one consumer for each partition, at most
     /// [`MAX_CONSUMERS`].
@@ -290,29 +350,33 @@ impl ReadOptions {
         self
     }
 
-    /// Fails if the connection is not valid, the topic is empty, the max read time or the
-    /// max read time per call is zero, or a read with no max read time reshuffles its
-    /// partitions.
+    /// Fails if the connection is not valid, the topic is empty, the max read time, the max
+    /// read time per call or the max idle time per call is zero, or a read with no max read
+    /// time reshuffles its partitions.
     pub fn validate(&self) -> beam::Result {
         self.connection.validate()?;
         match (
             self.topic.trim().is_empty(),
             self.max_read_time,
             self.max_read_time_per_call,
+            self.max_idle_per_call,
             self.reshuffle_partitions,
         ) {
-            (true, _, _, _) => Err(beam::Error::msg("Set the topic")),
-            (false, Some(Duration::ZERO), _, _) => {
+            (true, _, _, _, _) => Err(beam::Error::msg("Set the topic")),
+            (false, Some(Duration::ZERO), _, _, _) => {
                 Err(beam::Error::msg("Set a max read time larger than zero"))
             }
-            (false, _, Duration::ZERO, _) => Err(beam::Error::msg(
+            (false, _, Duration::ZERO, _, _) => Err(beam::Error::msg(
                 "Set a max read time per call larger than zero",
             )),
-            (false, None, _, true) => Err(beam::Error::msg(
+            (false, _, _, Duration::ZERO, _) => Err(beam::Error::msg(
+                "Set a max idle time per call larger than zero",
+            )),
+            (false, None, _, _, true) => Err(beam::Error::msg(
                 "Set a max read time to reshuffle the partitions: only a bounded read \
                  reshuffles them",
             )),
-            (false, _, _, _) => Ok(()),
+            (false, _, _, _, _) => Ok(()),
         }
     }
 }
@@ -382,6 +446,7 @@ impl ReadRecords {
             max_read_time,
             commit_expiry,
             max_read_time_per_call,
+            max_idle_per_call,
             consumer_pool,
             reshuffle_partitions,
         } = self.options.clone();
@@ -404,6 +469,7 @@ impl ReadRecords {
         };
         let source = Arc::new(Source {
             read: ReadId::unique(),
+            fetch_wait: fetch_wait(&connection),
             connection,
             topic,
             schema: format.row_schema(),
@@ -412,6 +478,7 @@ impl ReadRecords {
             bounded: max_read_time.is_some(),
             commit_expiry,
             max_read_time_per_call,
+            max_idle_per_call,
             consumer_pool,
         });
         Ok(Partitions {

@@ -119,7 +119,10 @@ fn a_consumer_never_commits_by_itself_and_always_has_a_group() {
     let config = connection(&[]).consumer_config();
     assert_eq!(config.get("enable.auto.commit"), Some("false"));
     assert_eq!(config.get("enable.auto.offset.store"), Some("false"));
+    assert_eq!(config.get("enable.partition.eof"), Some("true"));
     assert_eq!(config.get("group.id"), Some(UNCOMMITTED_GROUP));
+    let no_eof = connection(&[("enable.partition.eof", "false")]).consumer_config();
+    assert_eq!(no_eof.get("enable.partition.eof"), Some("false"));
     assert_eq!(connection(&[]).group_id(), None);
 
     let empty = connection(&[("group.id", "")]);

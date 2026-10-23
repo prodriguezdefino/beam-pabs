@@ -64,7 +64,9 @@ pub struct KafkaReadConfig {
     /// librdkafka consumer properties. A `group.id` makes the read commit offsets.
     pub consumer_config_updates: Option<BTreeMap<String, String>>,
     /// Where a partition with no committed offset starts: `earliest`, `latest` or `none`.
-    /// Without it, the `auto.offset.reset` consumer property, or else `latest`.
+    /// Without it, the `auto.offset.reset` consumer property, or else `latest`. That consumer
+    /// property also sets what librdkafka does when a fetch position is out of range, so set
+    /// the start here to keep that reset at the default `earliest`.
     pub auto_offset_reset_config: Option<String>,
     /// The time after which the read stops, so the output is bounded.
     pub max_read_time_seconds: Option<i32>,
@@ -86,6 +88,10 @@ pub struct KafkaReadConfig {
     /// seconds. A shorter time makes smaller bundles, so a rejected bundle reads fewer
     /// records again.
     pub max_read_time_per_call_seconds: Option<i64>,
+    /// The longest time in milliseconds that one call of the reader waits for the next
+    /// record. The default is 1 second. A partition with no record for this time ends the
+    /// call, and the read resumes it.
+    pub max_idle_per_call_ms: Option<i64>,
     /// The number of consumers of the read in a worker process, from 1 to 16. The default is
     /// one consumer for each partition that the worker reads, at most 16.
     pub consumer_pool_size: Option<i64>,
@@ -111,6 +117,7 @@ impl KafkaReadConfig {
             with_gcp_adc,
             commit_expiry_seconds,
             max_read_time_per_call_seconds,
+            max_idle_per_call_ms,
             consumer_pool_size,
             reshuffle_partitions,
             ..
@@ -144,6 +151,15 @@ impl KafkaReadConfig {
         if let Some(value) = max_read_time_per_call_seconds {
             options = options
                 .with_max_read_time_per_call(seconds("max_read_time_per_call_seconds", value)?);
+        }
+        if let Some(value) = max_idle_per_call_ms {
+            let millis = u64::try_from(value)
+                .ok()
+                .filter(|millis| *millis > 0)
+                .ok_or_else(|| {
+                    format!("max_idle_per_call_ms must be larger than zero, got {value}")
+                })?;
+            options = options.with_max_idle_per_call(Duration::from_millis(millis));
         }
         if let Some(value) = consumer_pool_size {
             let size = usize::try_from(value)

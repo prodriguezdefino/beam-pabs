@@ -46,9 +46,9 @@ use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use beam::transforms::sdf::ProcessContinuation;
 use tracing::warn;
 
+use super::call::{CallEnd, park_offset};
 use super::restriction::PartitionTracker;
 
 /// The default longest time that a take waits for a held partition. An unassign in progress
@@ -337,7 +337,7 @@ impl<K: Eq + Hash + Clone, T> Lease<'_, K, T> {
     pub fn get_or_try_insert_with<E>(
         &mut self,
         make: impl FnOnce() -> Result<T, E>,
-    ) -> Result<&T, E> {
+    ) -> Result<&mut T, E> {
         let value = match self.value.take() {
             Some(value) => value,
             None => make()?,
@@ -368,18 +368,13 @@ impl<K: Eq + Hash + Clone, T> Lease<'_, K, T> {
         }
     }
 
-    /// Ends a call that read with `tracker`. A call that resumes parks the value at the start
-    /// of its residual, the offset after the last attempted claim. A call that stops drops
-    /// the value. Returns whether a value is parked.
-    pub fn end_call(
-        self,
-        tracker: &PartitionTracker,
-        continuation: &ProcessContinuation,
-        now: Instant,
-    ) -> bool {
-        match continuation.is_resume() {
-            true => self.park(tracker.next_offset(), now),
-            false => {
+    /// Ends a call that read with `tracker` and ended for `end`. A call with a residual parks
+    /// the value at the start of the residual, see [`park_offset`]. A call with no residual
+    /// drops the value. Returns whether a value is parked.
+    pub fn end_call(self, end: CallEnd, tracker: &PartitionTracker, now: Instant) -> bool {
+        match park_offset(end, tracker) {
+            Some(next_offset) => self.park(next_offset, now),
+            None => {
                 drop(self);
                 false
             }

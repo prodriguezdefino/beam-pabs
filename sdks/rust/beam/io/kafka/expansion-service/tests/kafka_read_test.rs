@@ -77,6 +77,7 @@ fn the_config_has_the_fields_of_the_managed_kafka_read() {
             "with_gcp_adc",
             "commit_expiry_seconds",
             "max_read_time_per_call_seconds",
+            "max_idle_per_call_ms",
             "consumer_pool_size",
             "reshuffle_partitions",
         ]
@@ -90,6 +91,7 @@ fn the_config_row_round_trips() {
         max_read_time_seconds: Some(30),
         commit_expiry_seconds: Some(60),
         max_read_time_per_call_seconds: Some(2),
+        max_idle_per_call_ms: Some(1_500),
         consumer_pool_size: Some(3),
         reshuffle_partitions: Some(true),
         ..config("STRING")
@@ -106,6 +108,7 @@ fn a_valid_config_gives_the_read_options() {
         max_read_time_seconds: Some(30),
         commit_expiry_seconds: Some(60),
         max_read_time_per_call_seconds: Some(2),
+        max_idle_per_call_ms: Some(1_500),
         consumer_pool_size: Some(3),
         reshuffle_partitions: Some(true),
         ..config("string")
@@ -120,6 +123,7 @@ fn a_valid_config_gives_the_read_options() {
     assert_eq!(options.max_read_time, Some(Duration::from_secs(30)));
     assert_eq!(options.commit_expiry, Duration::from_secs(60));
     assert_eq!(options.max_read_time_per_call, Duration::from_secs(2));
+    assert_eq!(options.max_idle_per_call, Duration::from_millis(1_500));
     assert_eq!(options.consumer_pool.size(), 3);
     assert!(options.reshuffle_partitions);
     assert!(!config("RAW").read_options().unwrap().reshuffle_partitions);
@@ -215,6 +219,20 @@ fn an_invalid_config_says_why() {
                 ..config("RAW")
             },
             "max_read_time_per_call_seconds",
+        ),
+        (
+            KafkaReadConfig {
+                max_idle_per_call_ms: Some(0),
+                ..config("RAW")
+            },
+            "max_idle_per_call_ms",
+        ),
+        (
+            KafkaReadConfig {
+                max_idle_per_call_ms: Some(-5),
+                ..config("RAW")
+            },
+            "max_idle_per_call_ms",
         ),
         (
             KafkaReadConfig {

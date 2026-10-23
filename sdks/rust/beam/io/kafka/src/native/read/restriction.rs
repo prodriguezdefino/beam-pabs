@@ -23,7 +23,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
 use beam::Instant;
 use beam::coders::{Coder, CoderError, CoderRegistry, Context, DefaultCoder};
@@ -135,6 +135,8 @@ pub struct PartitionTracker {
     watermark: AtomicI64,
     high_watermark: AtomicI64,
     boundedness: IsBounded,
+    /// Whether the runner split the restriction through [`RestrictionTracker::try_split`].
+    split: AtomicBool,
 }
 
 impl PartitionTracker {
@@ -149,6 +151,7 @@ impl PartitionTracker {
             watermark: AtomicI64::new(watermark.as_millis()),
             high_watermark: AtomicI64::new(UNKNOWN),
             boundedness,
+            split: AtomicBool::new(false),
         }
     }
 
@@ -178,6 +181,17 @@ impl PartitionTracker {
     pub fn is_caught_up(&self) -> bool {
         let next = self.next_offset();
         self.high_watermark().is_some_and(|high| next >= high)
+    }
+
+    /// The error that a claim recorded, for example a claim at or before the last attempted
+    /// offset. A claim that fails only because the restriction ended records none.
+    pub fn claim_error(&self) -> Option<RestrictionError> {
+        self.offsets.error()
+    }
+
+    /// Whether the runner split the restriction. [`PartitionTracker::finish`] is not a split.
+    pub fn was_split(&self) -> bool {
+        self.split.load(Ordering::Acquire)
     }
 
     /// Ends the restriction after the claimed offsets and drops the rest, so a bounded read
@@ -222,6 +236,7 @@ impl RestrictionTracker for PartitionTracker {
         match fraction_of_remainder > 0.0 {
             true => None,
             false => self.offsets.try_split(0.0).map(|(primary, residual)| {
+                self.split.store(true, Ordering::Release);
                 (self.with_watermark(primary), self.with_watermark(residual))
             }),
         }

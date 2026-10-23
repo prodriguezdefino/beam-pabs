@@ -87,6 +87,36 @@ fn a_call_reads_for_5_seconds_unless_the_options_set_another_time_above_zero() {
 }
 
 #[test]
+fn a_call_waits_1_second_for_a_record_unless_the_options_set_another_time_above_zero() {
+    assert_eq!(options().max_idle_per_call, Duration::from_secs(1));
+    let long = options().with_max_idle_per_call(Duration::from_millis(2_500));
+    assert_eq!(long.max_idle_per_call, Duration::from_millis(2_500));
+    assert!(long.validate().is_ok());
+    let error = options()
+        .with_max_idle_per_call(Duration::ZERO)
+        .validate()
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("idle time per call"), "{error}");
+}
+
+#[test]
+fn only_a_split_by_the_runner_marks_the_tracker_as_split() {
+    let finished = PartitionTracker::new(restriction(0, i64::MAX), IsBounded::Bounded);
+    assert!(finished.try_claim(&3));
+    finished.finish();
+    assert!(!finished.was_split());
+    assert!(!finished.try_claim(&4));
+
+    let checkpointed = PartitionTracker::new(restriction(0, i64::MAX), IsBounded::Unbounded);
+    assert!(checkpointed.try_claim(&3));
+    assert!(!checkpointed.was_split());
+    assert!(checkpointed.try_split(0.0).is_some());
+    assert!(checkpointed.was_split());
+    assert!(!checkpointed.try_claim(&4));
+}
+
+#[test]
 fn a_read_has_one_consumer_for_each_partition_up_to_a_limit_unless_the_options_set_a_pool() {
     assert_eq!(options().consumer_pool, ConsumerPool::OnePerPartition);
     assert_eq!(ConsumerPool::OnePerPartition.size(), MAX_CONSUMERS);

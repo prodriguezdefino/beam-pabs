@@ -53,12 +53,26 @@ const SERIALIZER_PROPERTIES: [&str; 4] = [
 const PRODUCER_DEFAULTS: [(&str, &str); 2] = [("enable.idempotence", "true"), ("acks", "all")];
 
 /// Properties of every consumer, unless the connection sets them. The read commits offsets
-/// only in a bundle finalizer, so librdkafka must not commit or store them. A start offset
-/// that retention deleted continues at the earliest record.
-const CONSUMER_DEFAULTS: [(&str, &str); 3] = [
+/// only in a bundle finalizer, so librdkafka must not commit or store them.
+///
+/// `auto.offset.reset` does not choose where a read starts: the read assigns each partition
+/// at an explicit offset. It applies only when that offset, or a later fetch position, is
+/// below the first record of the partition or after its last record. With `earliest`, a read
+/// whose next records retention or compaction deleted continues at the first record that the
+/// partition still has, and reads every record after it. Each offset is claimed at most once,
+/// so the read skips only offsets that no longer exist. When the log of the partition was
+/// truncated, or the topic was created again, the reset gives offsets before the claimed
+/// ones. The read then fails its bundle, and the runner retries it until someone starts the
+/// read again from a new start offset.
+///
+/// The end-of-partition event proves
+/// that a fetch response came for an assignment, also for a partition with no record, so the
+/// reader can trust the cached high watermark (see `read::call::idle_check`).
+const CONSUMER_DEFAULTS: [(&str, &str); 4] = [
     ("enable.auto.commit", "false"),
     ("enable.auto.offset.store", "false"),
     ("auto.offset.reset", "earliest"),
+    ("enable.partition.eof", "true"),
 ];
 
 /// Properties of a client with [`Auth::GoogleAdc`], unless the connection sets them.

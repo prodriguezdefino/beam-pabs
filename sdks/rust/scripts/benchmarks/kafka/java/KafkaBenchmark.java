@@ -28,6 +28,8 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import org.apache.beam.model.pipeline.v1.ExternalTransforms.SchemaTransformPayload;
 import org.apache.beam.runners.dataflow.DataflowPipelineJob;
 import org.apache.beam.runners.dataflow.options.DataflowPipelineOptions;
@@ -75,6 +77,7 @@ import org.apache.beam.sdk.values.Row;
 import org.apache.beam.sdk.values.TupleTag;
 import org.apache.beam.vendor.grpc.v1p69p0.com.google.protobuf.ByteString;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.joda.time.Duration;
 import org.joda.time.Instant;
@@ -246,6 +249,15 @@ public class KafkaBenchmark {
 
     void setGroupId(String value);
 
+    @Description(
+        "For copy with the java-native reader, the partition count of -topic. When it is set, the"
+            + " read does not ask the broker for the partitions at submission. Runner v1 needs it"
+            + " when the submitting machine cannot reach the broker.")
+    @Default.Integer(0)
+    int getPartitions();
+
+    void setPartitions(int value);
+
     @Description("Address of the Rust expansion service.")
     @Default.String("localhost:8097")
     String getExpansionService();
@@ -287,6 +299,14 @@ public class KafkaBenchmark {
     long getMaxReadTimePerCallSeconds();
 
     void setMaxReadTimePerCallSeconds(long value);
+
+    @Description(
+        "For copy with the Rust reader, the longest time one read call waits for the next "
+            + "record, in milliseconds. 0 keeps the default of the connector.")
+    @Default.Long(0L)
+    long getMaxIdlePerCallMs();
+
+    void setMaxIdlePerCallMs(long value);
 
     @Description("More properties of the Kafka consumer, as comma-separated key=value pairs.")
     @Default.String("")
@@ -461,11 +481,13 @@ public class KafkaBenchmark {
     // The element timestamp is the record CreateTime, as in the Rust read, so e2e/latency_ms has
     // the same reference for both readers. The default policy uses the processing time. The read
     // commits the offsets once the runner has processed the records, as the Rust read does.
+    KafkaIO.Read<byte[], byte[]> read =
+        options.getPartitions() > 0
+            ? KafkaIO.readBytes().withTopicPartitions(topicPartitions(options))
+            : KafkaIO.readBytes().withTopic(options.getTopic());
     return p.apply(
             "ReadKafkaBytes",
-            KafkaIO.readBytes()
-                .withBootstrapServers(options.getBootstrapServers())
-                .withTopic(options.getTopic())
+            read.withBootstrapServers(options.getBootstrapServers())
                 .withConsumerConfigUpdates(consumerConfig)
                 .withCreateTime(Duration.standardMinutes(1))
                 .commitOffsetsInFinalize()
@@ -473,6 +495,12 @@ public class KafkaBenchmark {
         .apply("Values", Values.create())
         .apply("DecodeRows", ParDo.of(new BytesToRowFn(mapper)))
         .setRowSchema(schema);
+  }
+
+  static List<TopicPartition> topicPartitions(Options options) {
+    return IntStream.range(0, options.getPartitions())
+        .mapToObj(partition -> new TopicPartition(options.getTopic(), partition))
+        .collect(Collectors.toList());
   }
 
   static PCollection<Row> readJavaManaged(Pipeline p, Options options) {
@@ -524,6 +552,10 @@ public class KafkaBenchmark {
     if (options.getMaxReadTimePerCallSeconds() > 0) {
       schema.addInt64Field("max_read_time_per_call_seconds");
       values.add(options.getMaxReadTimePerCallSeconds());
+    }
+    if (options.getMaxIdlePerCallMs() > 0) {
+      schema.addInt64Field("max_idle_per_call_ms");
+      values.add(options.getMaxIdlePerCallMs());
     }
     Schema configSchema = schema.build();
     Row config = Row.withSchema(configSchema).addValues(values).build();

@@ -196,6 +196,11 @@ pub struct Args {
     /// `-PextraArgs`.
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
     pub max_read_time_per_call_ms: Option<u64>,
+    /// The longest time in milliseconds that one call of the reader waits for the next
+    /// record. If not set, the read uses the default of the connector. On Dataflow, pass it
+    /// in `-PextraArgs`.
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+    pub max_idle_per_call_ms: Option<u64>,
 }
 
 impl PipelineOptionGroup for Args {}
@@ -298,8 +303,8 @@ pub fn formats(format: Format) -> Result<(ReadFormat, WriteFormat)> {
 }
 
 /// The options of the read of `--topic` with `format`: the start offset, the consumer group
-/// and properties, the consumer pool, Google authentication, the max read time and the max
-/// read time per call of the flags.
+/// and properties, the consumer pool, Google authentication, the max read time, the max read
+/// time per call and the max idle time per call of the flags.
 ///
 /// # Errors
 ///
@@ -322,6 +327,9 @@ pub fn read_options(args: &Args, format: ReadFormat) -> Result<ReadOptions> {
     }
     if let Some(millis) = args.max_read_time_per_call_ms {
         options = options.with_max_read_time_per_call(Duration::from_millis(millis));
+    }
+    if let Some(millis) = args.max_idle_per_call_ms {
+        options = options.with_max_idle_per_call(Duration::from_millis(millis));
     }
     Ok(options)
 }

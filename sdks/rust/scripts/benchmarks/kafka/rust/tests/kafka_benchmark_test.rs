@@ -90,6 +90,7 @@ fn flags_have_the_defaults_of_the_launcher() {
     assert!(args.with_gcp_adc);
     assert_eq!(args.max_read_seconds, None);
     assert_eq!(args.max_read_time_per_call_ms, None);
+    assert_eq!(args.max_idle_per_call_ms, None);
 
     let (_, local) = parse(&[
         "--with_gcp_adc=false",
@@ -212,6 +213,25 @@ fn max_read_time_per_call_sets_read_options_and_rejects_zero() {
         Duration::from_millis(1_500)
     );
     assert!(try_parse(&["--max_read_time_per_call_ms=0"]).is_err());
+}
+
+#[test]
+fn max_idle_per_call_sets_read_options_and_rejects_zero() {
+    let (_, default_args) = parse(&[]);
+    assert_eq!(
+        read_options(&default_args, ReadFormat::Raw)
+            .unwrap()
+            .max_idle_per_call,
+        ReadOptions::new("b", "t", ReadFormat::Raw).max_idle_per_call
+    );
+    let (_, args) = parse(&["--max_idle_per_call_ms=2500"]);
+    assert_eq!(
+        read_options(&args, ReadFormat::Raw)
+            .unwrap()
+            .max_idle_per_call,
+        Duration::from_millis(2_500)
+    );
+    assert!(try_parse(&["--max_idle_per_call_ms=0"]).is_err());
 }
 
 #[test]

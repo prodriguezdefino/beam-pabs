@@ -244,6 +244,8 @@ def read_rust(args):
   if args.max_read_time_per_call_seconds > 0:
     config[
         "max_read_time_per_call_seconds"] = args.max_read_time_per_call_seconds
+  if args.max_idle_per_call_ms > 0:
+    config["max_idle_per_call_ms"] = args.max_idle_per_call_ms
   return SchemaAwareExternalTransform(
       RUST_READ_URN,
       args.expansion_service,
@@ -419,6 +421,13 @@ def main(argv):
       type=int,
       default=0,
       help="For copy with the Rust reader, max seconds per read call.")
+  parser.add_argument(
+      "--max_idle_per_call_ms",
+      type=int,
+      default=0,
+      help=(
+          "For copy with the Rust reader, max milliseconds that a read call "
+          "waits for the next record."))
   parser.add_argument("--billing_project", required=True)
   parser.add_argument("--expansion_service", default="localhost:8097")
   parser.add_argument(

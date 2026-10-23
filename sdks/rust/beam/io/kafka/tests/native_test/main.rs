@@ -18,10 +18,11 @@
  */
 
 //! Native connector tests (one binary): the record formats, the connection, Google
-//! authentication, offset commits, the parked assignments of the read and the expansion of
-//! the read and the write. No test connects to a broker.
+//! authentication, offset commits, the budget of a read call, the parked assignments of the
+//! read and the expansion of the read and the write. No test connects to a broker.
 
 mod auth;
+mod call;
 mod client;
 mod commits;
 mod format;
