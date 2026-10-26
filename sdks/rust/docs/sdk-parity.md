@@ -41,10 +41,24 @@ This page compares the Rust SDK with the other Beam SDKs.
 | CoGroupByKey | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Combine (global + per-key) | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Flatten / Partition | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Distinct | ✅ | ✅ | ✅ | ❌ | ✅ |
+| Set operations (union / intersect / except, distinct and all) | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Composite transforms | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Hierarchical transform names (composite scopes, duplicate sibling names rejected) | ✅ | ✅ | ✅ (Scope) | ✅ | ✅ |
 | Side inputs (singleton / iterable / multimap) | ✅ | ✅ | ✅ | 🟡 | ✅ |
 | Display data | ✅ | ✅ | 🟡 | ❌ | ✅ |
+
+Notes:
+- **Distinct**: Java and Rust also keep one element per representative value
+  (`Distinct.withRepresentativeValueFn`, `DistinctBy`).
+  Python `Distinct` and Go `filter.Distinct` compare whole elements.
+- **Set operations**: Java `Sets` and Rust `Sets` (`union_distinct`, `intersect_all`,
+  `except_distinct`, ...). Rust takes two collections; combine more by chaining.
+- **Hierarchical transform names**: the children of a composite get the name of the
+  composite as a prefix (`Outer/Inner/Leaf`). All SDKs name a transform at the call site:
+  Java `apply(name, t)`, Python `"Label" >> t`, Go `Scope`, TypeScript `withName(name, t)` and
+  Rust `apply(name, t)`. Two siblings with the same full name fail `Pipeline::validate`;
+  Java warns by default, Python and TypeScript raise an error.
 
 ## Combiners
 

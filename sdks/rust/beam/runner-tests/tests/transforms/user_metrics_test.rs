@@ -20,7 +20,7 @@
 //! User metrics recorded with `Metrics::counter(..)` from plain helper functions reach
 //! the runner, attributed to the transform that called them.
 
-use beam::metrics::{HistogramBuckets, MetricFilter};
+use beam::metrics::MetricFilter;
 use beam::prelude::*;
 use prism::PrismRunner;
 
