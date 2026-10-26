@@ -95,6 +95,8 @@ globset = "0.4"
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 snap = "1.1"
 zstd = { version = "0.14", default-features = false }
+# Masked CRC32C of TFRecord framing.
+crc32c = "0.6"
 regex = "1.13"
 foldhash = "0.2"
 serde-saphyr = "1"
@@ -146,6 +148,7 @@ arrow_io = { package = "apache-beam-io-arrow", path = "beam/io/arrow", version =
 parquet_io = { package = "apache-beam-io-parquet", path = "beam/io/parquet", version = "2.78.0-SNAPSHOT" }
 avro_io = { package = "apache-beam-io-avro", path = "beam/io/avro", version = "2.78.0-SNAPSHOT" }
 json_io = { package = "apache-beam-io-json", path = "beam/io/json", version = "2.78.0-SNAPSHOT" }
+tfrecord_io = { package = "apache-beam-io-tfrecord", path = "beam/io/tfrecord", version = "2.78.0-SNAPSHOT" }
 prism = { package = "apache-beam-runner-prism", path = "beam/runners/prism", version = "2.78.0-SNAPSHOT" }
 dataflow = { package = "apache-beam-runner-dataflow", path = "beam/runners/dataflow", version = "2.78.0-SNAPSHOT" }
 testing = { package = "apache-beam-testing", path = "beam/testing", version = "2.78.0-SNAPSHOT" }

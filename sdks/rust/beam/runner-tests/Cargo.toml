@@ -38,7 +38,7 @@ name = "beam-runner-tests-expansion-service"
 path = "src/expansion_service.rs"
 
 [dependencies]
-beam = { workspace = true, features = ["fluent", "io-file", "gcp-gcs", "gcp-bigquery", "gcp-bigtable", "gcp-pubsub", "derive", "external", "prism", "dataflow", "testing", "parquet", "avro"] }
+beam = { workspace = true, features = ["fluent", "io-file", "gcp-gcs", "gcp-bigquery", "gcp-bigtable", "gcp-pubsub", "derive", "external", "prism", "dataflow", "testing", "parquet", "avro", "tfrecord"] }
 prism = { workspace = true }
 file = { workspace = true }
 gcp = { workspace = true, features = ["gcs"] }
