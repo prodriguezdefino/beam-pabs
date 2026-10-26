@@ -43,6 +43,8 @@ This page compares the Rust SDK with the other Beam SDKs.
 | Redistribute (standalone transform) | ✅ | ❌ | ❌ | ❌ | 🔜 |
 | WithTimestamps (standalone transform) | ✅ | ❌ | ❌ | ✅ | 🔜 |
 | Flatten / Partition | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Distinct | ✅ | ✅ | ✅ | ❌ | ✅ |
+| Set operations (union / intersect / except, distinct and all) | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Composite transforms | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Hierarchical transform names (composite scopes, duplicate sibling names rejected) | ✅ | ✅ | ✅ (Scope) | ✅ | ✅ |
 | Side inputs (singleton / iterable / multimap) | ✅ | ✅ | ✅ | 🟡 | ✅ |
@@ -50,6 +52,29 @@ This page compares the Rust SDK with the other Beam SDKs.
 | Multimap keys side input (`MultimapKeysSideInput`) | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Per-key element order (`PerKeyOrdering` tests) | ✅ | ? | ? | ? | ❌ |
 | Display data | ✅ | ✅ | 🟡 | ❌ | ✅ |
+
+Notes:
+- **Distinct**: Java and Rust also keep one element per representative value
+  (`Distinct.withRepresentativeValueFn`, `DistinctBy`).
+  Python `Distinct` and Go `filter.Distinct` compare whole elements.
+- **Redistribute and WithTimestamps**: Rust uses `Reshuffle` to spread elements across
+  workers. It sets event time in a `ParDo` with `ctx.output(v).at(ts).emit()`. TypeScript
+  has `assignTimestamps`.
+- **Deduplicate**: Java and Python `Deduplicate` drop a repeated element during a
+  processing-time or event-time duration. `Distinct` keeps one element per window.
+- **`as_map`**: Java `View.asMap` and Python `AsDict` fail on a duplicate key. Rust
+  `MultimapView` accepts duplicate keys.
+- **Multimap keys side input**: a function reads only the keys of a multimap side input.
+  The Java harness reads them with the `MultimapKeysSideInput` state key.
+- **Per-key element order**: Java `PerKeyOrderingTest` checks that a runner keeps the order
+  of the elements of a key between steps. The other SDKs have no such test.
+- **Set operations**: Java `Sets` and Rust `Sets` (`union_distinct`, `intersect_all`,
+  `except_distinct`, ...). Rust takes two collections; combine more by chaining.
+- **Hierarchical transform names**: the children of a composite get the name of the
+  composite as a prefix (`Outer/Inner/Leaf`). All SDKs name a transform at the call site:
+  Java `apply(name, t)`, Python `"Label" >> t`, Go `Scope`, TypeScript `withName(name, t)` and
+  Rust `apply(name, t)`. Two siblings with the same full name fail `Pipeline::validate`;
+  Java warns by default, Python and TypeScript raise an error.
 
 ## Combiners
 
