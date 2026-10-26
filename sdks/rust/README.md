@@ -144,7 +144,7 @@ This table is a summary of [docs/sdk-parity.md](docs/sdk-parity.md).
 | Portable Fn API harness | ✅ | |
 | Prism and Dataflow runners | ✅ | Flink/Spark are not tested; they can work through portability |
 | Cross-language: consume *and* provide | ✅ | Ships a bidirectional expansion service |
-| I/O: TextIO, FileIO, Parquet, Avro, local FS, GCS | ✅ | Sharded, rolling writes; `ReadMatches`; splittable columnar reads |
+| I/O: TextIO, FileIO, Parquet, Avro, TFRecord, local FS, GCS | ✅ | Sharded, rolling writes; `ReadMatches`; splittable columnar reads; ❌ dynamic destinations |
 | I/O through cross-language: Pub/Sub, BigQuery, Bigtable, Kafka | ✅ | Java SchemaTransforms through the auto-started expansion service |
 | Managed I/O: Iceberg, JDBC, Delta Lake, Kafka, BigQuery | ✅ | `ManagedRead` and `ManagedWrite`; the Kafka and BigQuery transforms expand through them |
 | In-graph assertions (`beam::testing::passert`) | ✅ | `testing` feature |
