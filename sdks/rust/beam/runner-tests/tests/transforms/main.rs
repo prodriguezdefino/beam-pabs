@@ -24,6 +24,7 @@ mod label_scope_test;
 mod library_combine_test;
 mod nested_row_coder_test;
 mod passert_test;
+mod sets_test;
 mod side_input_test;
 mod test_stream_test;
 mod user_metrics_test;

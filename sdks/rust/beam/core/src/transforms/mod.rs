@@ -36,6 +36,7 @@ mod composite;
 mod count;
 pub(crate) mod create;
 pub mod display_data;
+mod distinct;
 pub(crate) mod dofn;
 pub(crate) mod failure;
 mod filter;
@@ -52,6 +53,7 @@ mod map_async;
 mod partition;
 mod periodic_impulse;
 pub(crate) mod reshuffle;
+mod sets;
 mod to_rows;
 mod try_map;
 mod with_keys;
@@ -65,6 +67,7 @@ pub use combine::{
 };
 pub use count::{CountGlobally, CountPerElement};
 pub use create::Create;
+pub use distinct::{Distinct, DistinctBy};
 // The derive macros: `Register` for `DoFn`, `StatefulDoFn`, `SplittableDoFn` and `CombineFn`
 // types, `State` for the state cells and `Timers` for the timer families of a `StatefulDoFn`.
 #[cfg(feature = "derive")]
@@ -94,6 +97,7 @@ pub use map_async::MapAsync;
 pub use partition::Partition;
 pub use periodic_impulse::PeriodicImpulse;
 pub use reshuffle::Reshuffle;
+pub use sets::Sets;
 pub use to_rows::{FromRows, ToRows};
 pub use try_map::TryMap;
 pub use with_keys::WithKeys;

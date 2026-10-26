@@ -34,10 +34,12 @@
 
 pub use crate::coders::BeamIterable;
 pub use crate::error::{Error, Result};
-pub use crate::metrics::{Counter, Distribution, Gauge, Metrics};
+pub use crate::metrics::{
+    Counter, Distribution, Gauge, Histogram, HistogramBuckets, Metrics, StringSet,
+};
 pub use crate::options::{PipelineOptionGroup, PipelineOptions};
 pub use crate::pipeline::Pipeline;
-pub use crate::runners::{JobState, PipelineResult};
+pub use crate::runners::PipelineResult;
 #[cfg(feature = "derive")]
 pub use crate::schema::BeamEnum;
 pub use crate::schema::{BeamRow, Row, Schema};
@@ -45,12 +47,13 @@ pub use crate::time::Instant;
 pub use crate::transforms::{
     BagState, BatchElements, BroadcastInnerJoin, BroadcastLeftJoin, CoGbkResult, CoGroupByKey,
     CombineFn, CombineGlobally, CombinePerKey, CombiningState, Compose, CountGlobally,
-    CountPerElement, Create, DoFn, Failure, Filter, FinishBundleContext, FlatMap, Flatten,
-    FromRows, FullOuterJoin, GenerateSequence, GroupByKey, Impulse, InnerJoin, Inspect,
-    KeyedPCollectionTuple, LeftJoin, Map, MapState, Max, Mean, Min, MultimapState, NoTimers,
-    OrderedListState, Outputs, PTransform, ParDo, Partition, PeriodicImpulse, ProcessContext,
-    Reshuffle, RightJoin, Sample, SetState, StatefulContext, StatefulDoFn, Sum, ToRows, Top,
-    TryMap, TryPTransform, TupleTag, ValueState, Windowed, WithFailures, WithKeys,
+    CountPerElement, Create, Distinct, DistinctBy, DoFn, Failure, Filter, FinishBundleContext,
+    FlatMap, Flatten, FromRows, FullOuterJoin, GenerateSequence, GroupByKey, Impulse, InnerJoin,
+    Inspect, KeyedPCollectionTuple, LeftJoin, Map, MapState, Max, Mean, Min, MultimapState,
+    NoTimers, OrderedListState, Outputs, PTransform, ParDo, Partition, PeriodicImpulse,
+    ProcessContext, Reshuffle, RightJoin, Sample, SetState, Sets, StatefulContext, StatefulDoFn,
+    Sum, ToRows, Top, TryMap, TryPTransform, TupleTag, ValueState, Windowed, WithFailures,
+    WithKeys,
 };
 #[cfg(feature = "derive")]
 pub use crate::transforms::{Register, State, Timers};
