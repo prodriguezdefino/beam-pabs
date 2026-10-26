@@ -28,6 +28,7 @@
 //! | [`CombineExt`](prelude::CombineExt) | any | global combines and counts, and one shortcut per SDK combine function (`.sum_globally`, `.top_globally(n)`, ...) |
 //! | [`PCollectionKeyedExt`](prelude::PCollectionKeyedExt) | `(K, V)` | grouping, cogrouping and joins |
 //! | [`KeyedCombineExt`](prelude::KeyedCombineExt) | `(K, V)` | combines per key, and one shortcut per SDK combine function (`.sum_per_key`, `.top_per_key(n)`, ...) |
+//! | [`SetsExt`](prelude::SetsExt) | any | `distinct`, `distinct_by` and the set operations (`union_*`, `intersect_*`, `except_*`) |
 //! | [`PCollectionListExt`](prelude::PCollectionListExt) | lists | `Flatten` |
 
 mod collection;
@@ -37,6 +38,7 @@ mod fold;
 mod keyed;
 mod keyed_combine;
 mod list;
+mod sets;
 
 pub use fold::FoldCombineFn;
 
@@ -48,5 +50,6 @@ pub mod prelude {
     pub use super::keyed::PCollectionKeyedExt;
     pub use super::keyed_combine::KeyedCombineExt;
     pub use super::list::PCollectionListExt;
+    pub use super::sets::SetsExt;
     pub use beam::prelude::*;
 }

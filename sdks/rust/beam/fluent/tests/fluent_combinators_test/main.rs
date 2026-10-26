@@ -28,3 +28,4 @@ mod elementwise;
 mod fold;
 mod global;
 mod keyed;
+mod sets;
