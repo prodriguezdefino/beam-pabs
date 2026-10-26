@@ -526,6 +526,27 @@ let bcast = orders.broadcast_left_join("Enrich", &users);
 
 Full example: [examples/join](../examples/join/src/lib.rs).
 
+### Distinct and set operations
+
+`Distinct::new()` (fluent `.distinct(name)`) keeps one element of each group of
+equal elements, in each window. `DistinctBy::new(key_fn)`
+(fluent `.distinct_by(name, key_fn)`) keeps one element for each key. Both use
+`CombinePerKey`, so each worker removes duplicates before the shuffle.
+
+`Sets` combines the input with another collection of the same element type, as in
+SQL. The `_distinct` forms give each element once; the `_all` forms keep the
+duplicates (all of them for a union, the smaller count for an intersection, the
+difference of the counts for `except_all`):
+
+```rust
+let both = tags.apply("Common", Sets::intersect_distinct(&popular)); // apply style
+let niche = tags.except_distinct("Niche", &popular);                 // fluent
+let all = tags.union_all("AllTags", &popular);
+```
+
+For more than two collections, chain the operations. Both collections must have the
+same windowing.
+
 ## Windowing and triggers
 
 Window functions, `WindowInto` and triggers are in the prelude and in `beam::windowing`.
