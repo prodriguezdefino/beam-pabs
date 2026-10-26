@@ -21,4 +21,5 @@ mod fileio_test;
 mod parquetio_test;
 mod textio_gcs_test;
 mod textio_test;
+mod tfrecordio_test;
 mod write_files_test;

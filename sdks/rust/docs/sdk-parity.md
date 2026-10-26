@@ -289,10 +289,19 @@ Dataflow does not execute it.
 | Delta Lake (read) | ✅ | ✅ xlang | ❌ | ✅ xlang |
 | Avro | ✅ | ✅ | ✅ | ✅ |
 | Parquet | ✅ | ✅ | ✅ | ✅ |
+| TFRecord | ✅ | ✅ | ❌ | ✅ |
 | Elasticsearch | ✅ | ✅ | ❌ | 🔜 |
 
 Notes:
 - **Pub/Sub**: native in Java and Python (Dataflow streaming). Go and Rust use cross-language SchemaTransforms through an expansion service (`beam:schematransform:org.apache.beam:pubsub_read:v1` / `write:v1`).
+- **File compression**: Rust file sources and sinks support Gzip, Zstd, Deflate (zlib) and
+  Snappy (framing format, `.sz`), and detect the codec from the file extension. Compressed
+  files are read whole, not split. Bzip2, xz/LZMA, Zip and LZO are not supported. Java
+  `SNAPPY` (`.snappy`) uses a different Snappy format, so these files do not interoperate.
+- **TFRecord**: Rust `beam::io::tfrecord::tfrecordio` (feature `tfrecord`) reads and writes
+  uncompressed and compressed files. Uncompressed, Gzip and Deflate files are byte
+  compatible with TensorFlow and the Java and Python SDKs. TensorFlow does not read Zstd or
+  Snappy files.
 - **BigQuery**: native in Java (`BigQueryIO`). Python, Go and Rust use cross-language Storage Read API and Storage Write API transforms from the Java SchemaTransform providers (`beam:schematransform:org.apache.beam:bigquery_storage_read:v1` / `bigquery_write:v1`).
 - **Bigtable**: native in Java, Python and Go. Rust uses the Java SchemaTransform providers (`beam:schematransform:org.apache.beam:bigtable_read:v1` / `bigtable_write:v1`) through `beam::io::gcp::bigtable::{BigtableRead, BigtableWrite}`. These providers accept only project, instance and table, plus `flatten` on read. The Java providers do not expose app profiles, emulator host, row filters, key ranges or write flow control, so Rust and the Python cross-language wrapper cannot set them.
 - **Kafka**: native in Java. Python, Go and Rust use the Java SchemaTransform providers (`beam:schematransform:org.apache.beam:kafka_read:v1` / `kafka_write:v1`). Rust exposes them as `beam::io::kafka::{KafkaRead, KafkaWrite}` behind the `kafka` feature, and they expand through Managed I/O. You can configure consumer/producer properties (security, SASL, group id, …), RAW/STRING/JSON/AVRO/PROTO formats, Confluent schema registry, bounded reads and redistribution. The providers do not expose record keys and headers. On `KafkaRead` and `KafkaWrite`, `with_error_handling` sends failed records to an error output. The plain transforms do not return this output. To get the errors from `KafkaRead`, expand `to_managed()?.with_all_outputs()` and take the error output tag. For `KafkaWrite`, expand `to_managed()?.with_outputs()`. `KafkaRead` does not support error handling together with the Confluent schema registry.

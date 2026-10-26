@@ -104,6 +104,10 @@ pub mod io {
     #[cfg(feature = "avro")]
     pub use avro_io as avro;
 
+    /// TFRecord I/O. The transforms are in `beam::io::tfrecord::tfrecordio`.
+    #[cfg(feature = "tfrecord")]
+    pub use tfrecord_io as tfrecord;
+
     /// Beam schema and `Row` bridge to JSON: `beam::io::json::JsonReader` and `write_json`.
     #[cfg(feature = "json")]
     pub use json_io as json;
