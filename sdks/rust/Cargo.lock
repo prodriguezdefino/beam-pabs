@@ -131,6 +131,7 @@ dependencies = [
  "apache-beam-io-kafka",
  "apache-beam-io-managed",
  "apache-beam-io-parquet",
+ "apache-beam-io-tfrecord",
  "apache-beam-ml",
  "apache-beam-model",
  "apache-beam-runner-dataflow",
@@ -375,6 +376,20 @@ dependencies = [
  "chrono",
  "parquet",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "apache-beam-io-tfrecord"
+version = "2.79.0-SNAPSHOT"
+dependencies = [
+ "apache-beam-core",
+ "apache-beam-io-file",
+ "apache-beam-test-utils",
+ "apache-beam-testing",
+ "crc32c",
+ "prost",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -5181,6 +5196,18 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "tokio",
+]
+
+[[package]]
+name = "tfidf"
+version = "2.79.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "clap",
+ "prost",
+ "serde",
+ "tempfile",
  "tokio",
 ]
 

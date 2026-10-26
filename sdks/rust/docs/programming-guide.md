@@ -385,7 +385,7 @@ impl DoFn for KeepWordsFn {
 let kept = words.par_do("Keep", KeepWordsFn { min_len, stop });
 ```
 
-Full example: [examples/side_inputs](../examples/side_inputs/src/main.rs).
+Full example: [examples/side_inputs](../examples/side_inputs/src/lib.rs).
 
 ## Grouping, combining and joins
 
@@ -708,7 +708,7 @@ impl StatefulDoFn for TrackAccount {
 }
 ```
 
-State reads and writes go through the Fn API State service. The runner commits them when the bundle completes. Full examples: [examples/state_conformance](../examples/state_conformance/src/lib.rs) and [examples/gaming](../examples/gaming/src/lib.rs).
+State reads and writes go through the Fn API State service. The runner commits them when the bundle completes. Full examples: [examples/stateful_buffering](../examples/stateful_buffering/src/lib.rs) (`BagState`, `CombiningState`, an event-time and a processing-time timer) and [examples/gaming](../examples/gaming/src/lib.rs) (a registered `StatefulDoFn` with `CombiningState` and `SetState`).
 
 ## Registered functions
 
@@ -954,7 +954,7 @@ impl SplittableDoFn for Expand {
             ctx.emit(i)?;
             i += 1;
         }
-        Ok(ProcessContinuation::stop())
+        Ok(ProcessContinuation::Stop)
     }
 }
 
@@ -962,12 +962,15 @@ let out = sizes.apply("Expand", SplittableParDo::new(Expand));
 ```
 
 - `process_element` and the lifecycle hooks (`setup`, `start_bundle`, `finish_bundle`, `teardown`) take `&mut self`, so the function can keep bundle state without locks. The lifecycle hooks have defaults.
-- The restriction methods (`initial_restriction`, `split_restriction`, `restriction_size`, `truncate_restriction`, `create_tracker`) take `&self`. The dynamic splitter of the runner calls `restriction_size` on its own copy of the function, from a different thread, while `process_element` runs. State that both copies must see goes behind an `Arc`.
-- An unbounded SDF returns `IsBounded::Unbounded` from `boundedness`. It yields with `ProcessContinuation::resume()` / `resume_after(d)`.
+- The restriction methods (`initial_restriction`, `split_restriction`, `restriction_size`, `truncate_restriction`, `create_tracker`) take `&self`. The dynamic splitter of the runner calls `restriction_size` on its own copy of the function, from a different thread, while `process_element` runs. Put state that both copies must see behind an `Arc`.
+- `process_element` returns `ProcessContinuation::Stop` when it completes the restriction. `Resume` and `ResumeAfter(d)` make a self-checkpoint: the runner calls `process_element` again later with the rest of the restriction.
+- An unbounded SDF returns `IsBounded::Unbounded` from `boundedness`. It yields with `ProcessContinuation::Resume` or `ResumeAfter(d)`.
 - `type Out` declares the outputs as for a `DoFn`, so a reader can emit `Result<Row, ErrorRow>` straight to an error output.
 - A window-observing SDF processes the windows of an element one by one. A checkpoint or a dynamic split gives the rest of the current window and the remaining windows to the runner.
 - Watermarks: wrap a tracker as `WatermarkedTracker::new(tracker, estimator)`. Use a [`WatermarkEstimator`](../beam/core/src/windowing/watermark.rs) from `beam::windowing` (`ManualWatermarkEstimator`, `TimestampObservingWatermarkEstimator`, `WallTimeWatermarkEstimator`).
 - A `SplittableParDo` expands into the standard portable SDF stages, so runners can split dynamically. `GenerateSequence` and `textio::Read` use SDFs.
+
+Full example: [examples/splittable_dofn](../examples/splittable_dofn/src/lib.rs). It splits text into lines with initial splits and self-checkpoints.
 
 ## File I/O (`beam::io`)
 
@@ -1018,12 +1021,25 @@ Temporary files follow these rules:
 - **Unwindowed writes** put all input into the global window with the default trigger. They finalize one time, after the sink writes all input. Empty input also produces empty files. The SDK deletes the temporary directory and the orphaned files.
 - **Windowed writes** finalize per window. The SDK removes the temporary directory only if it is empty. It does not delete orphaned files from failed bundles. On object stores, add a lifecycle rule on the `.temp-beam-*` prefix (or the `with_temp_directory` path). The rule must delete objects older than 1–3 days.
 
+### Compression
+
+Reads detect the codec from the file extension (`Compression::Auto`): `.gz`, `.gzip`, `.zst`, `.zstd`, `.deflate`, `.zlib` and `.sz` (Snappy framing format). `with_compression` sets the codec. Writes compress with the codec from `with_compression` and append its suffix (`.gz`, `.zst`, `.deflate` or `.sz`).
+
+```rust
+use beam::io::file::Compression;
+
+// /out/words-00000-of-0000N.txt.gz …
+lines.apply("WriteGz", textio::Write::new("/out/words.txt").with_compression(Compression::Gzip));
+```
+
+One worker reads each compressed file from the start, and does not split it. For parallel reads, write many shards, or use Parquet or Avro with their internal codecs. Parquet and Avro writes reject stream compression.
+
 ### Whole-file reads
 
 `fileio::Match` and `fileio::ReadMatches` discover files by pattern and open them on workers:
 
 ```rust
-use beam::io::fileio::{self, EmptyMatchTreatment, ReadableFile};
+use beam::io::file::fileio::{self, EmptyMatchTreatment, ReadableFile};
 
 let docs = p
     .apply("MatchDocs", fileio::Match::new("gs://bucket/docs/*.json")
@@ -1061,6 +1077,19 @@ rows.apply("WriteRows", avroio::WriteRows::new("/out/rows"));
 ```
 
 `ReadFiles<T>` / `ReadRowFiles` read the files in a `PCollection<String>` of paths. `WriteRows` takes the schema from the row coder of its input. A transform that passes its elements through (`Filter`, `Reshuffle`, `GroupByKey`, `WithKeys`, ...) keeps that coder. Call `with_row_schema` on the output of a `ParDo` or `Map` that makes rows. `ReadRows::with_encoded_rows` gives each row as its row coder bytes. Use it when the rows go to another SDK or cross a fusion break.
+
+### TFRecord
+
+`beam::io::tfrecord::tfrecordio` (feature `tfrecord`) reads and writes TFRecord files. Each element is the bytes of one record, for example a serialized `tf.train.Example`. Reads check the CRC of each record; a corrupt record fails the bundle. Each file is one split. Reads and writes support [compression](#compression). TensorFlow reads only uncompressed, Gzip and Deflate files.
+
+```rust
+use beam::io::tfrecord::tfrecordio;
+
+let examples: PCollection<Vec<u8>> = p.apply("ReadExamples", tfrecordio::Read::new("/data/*.tfrecord"));
+examples.apply("WriteExamples", tfrecordio::Write::new("/out/examples").with_suffix(".tfrecord"));
+```
+
+`tfrecordio::ReadFiles` reads the files in a `PCollection<String>` of paths.
 
 ## Cross-language
 
@@ -1214,8 +1243,9 @@ p.run().await?; // fails unless every assertion ran and passed
 
 Worked examples:
 
-- [wordcount_test.rs](../examples/wordcount/tests/wordcount_test.rs): a single step and a composite `PTransform` on in-memory input.
+- [wordcount_test.rs](../examples/wordcount/tests/wordcount_test.rs): a composite `PTransform` on in-memory input.
 - [leaderboard_test.rs](../examples/leaderboard/tests/leaderboard_test.rs): early, on-time, late and droppably late panes with `TestStream`.
+- [stateful_buffering_test.rs](../examples/stateful_buffering/tests/stateful_buffering_test.rs): event-time and processing-time timers with `TestStream`.
 
 ## Where advanced items live
 
@@ -1231,7 +1261,7 @@ The prelude contains the items that a usual pipeline uses. Each other item has o
 | `beam::metrics` | Metrics query API (`MetricResults`, `MetricFilter`, `MetricResult`), `Lineage`, `THROTTLE_TIME_*` |
 | `beam::coders` | Coders, `WindowedHeader`, `PaneInfo` |
 | `beam::options` | `parse`, `parse_from`, `try_parse_from`, option groups |
-| `beam::io::*` | `beam::io::file::textio`, `beam::io::file::fileio`, `beam::io::file::WriteFiles`, `beam::io::parquet::parquetio`, `beam::io::avro::avroio`, `beam::io::kafka`, `beam::io::managed` |
+| `beam::io::*` | `beam::io::file::textio`, `beam::io::file::fileio`, `beam::io::file::WriteFiles`, `beam::io::parquet::parquetio`, `beam::io::avro::avroio`, `beam::io::tfrecord::tfrecordio`, `beam::io::kafka`, `beam::io::managed` |
 | `beam::ml` | `RunInference`, `ModelHandler`, ONNX / Candle / remote handlers ([guide](accelerated-workloads.md)) |
 | `beam::external` | `ExternalTransform`, `ExternalSource`, `ExternalSink`, `ExternalOutputs`, expansion service targets |
 | `beam::testing` | `passert`, `TestPipeline`, `TestStream` |
