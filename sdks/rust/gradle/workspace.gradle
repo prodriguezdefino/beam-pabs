@@ -1,0 +1,281 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import groovy.json.JsonSlurper
+
+// The crate model of the workspace, read from `cargo metadata`: the crates, the workspace
+// crates that each one builds (feature-aware), a dependency order, and the input files of
+// each crate. lint.gradle and tests.gradle use it for their inputs and per-crate tasks.
+
+// `cargo metadata --no-deps` reads only the manifests: no network and no dependency resolution.
+// Every Beam build configures this project, so a machine without cargo gets an empty model.
+def readCargoMetadata = { ->
+  try {
+    def exec = providers.exec {
+      workingDir rustDir
+      commandLine 'cargo', 'metadata', '--no-deps', '--format-version', '1', '--offline'
+      ignoreExitValue = true
+    }
+    if (exec.result.get().exitValue == 0) {
+      return new JsonSlurper().parseText(exec.standardOutput.asText.get())
+    }
+    logger.info("cargo metadata failed: ${exec.standardError.asText.get()}")
+  } catch (Exception e) {
+    logger.info("cargo metadata is not available: ${e.message}")
+  }
+  logger.info('No Rust workspace model: the per-crate Rust tasks are not registered.')
+  return [packages: []]
+}
+
+def metadata = readCargoMetadata()
+
+def crateDir = [:]
+def dirToPkg = [:]
+metadata.packages.each { pkg ->
+  File dir = new File(pkg.manifest_path.toString()).parentFile
+  crateDir[pkg.name] = dir
+  dirToPkg[dir.canonicalPath] = pkg.name
+}
+
+// A dependency on another workspace crate. `alias` is the name that features use.
+def workspaceDep = { Map dep ->
+  String target = dep.path ? dirToPkg[new File(dep.path.toString()).canonicalPath] : null
+  if (!target) return null
+  return [
+      alias          : (dep.rename ?: dep.name).toString(),
+      targetPkg      : target,
+      optional       : dep.optional as boolean,
+      defaultFeatures: dep.uses_default_features as boolean,
+      features       : dep.features.collect { it.toString() },
+  ]
+}
+
+// True when `srcDir` has at least one non-ignored Rust doctest code fence (`/// ``` ` or `//! ``` `).
+def isDoctestFenceTag = { String info ->
+  def tokens = info.isEmpty() ? [] : info.split(/[\s,]+/).findAll { !it.isEmpty() }
+  if (tokens.any { it == 'ignore' || it.startsWith('ignore-') }) return false
+  if (tokens.isEmpty()) return true
+  String first = tokens[0]
+  return first == 'rust' ||
+      first.startsWith('no_run') ||
+      first.startsWith('should_panic') ||
+      first.startsWith('compile_fail') ||
+      first.startsWith('edition')
+}
+
+def fileHasDoctestFence = { File rsFile ->
+  String text = rsFile.getText('UTF-8')
+  if (!text.contains('```') && !text.contains('~~~')) return false
+  char fenceChar = 0
+  int fenceLen = 0
+  for (String rawLine : text.readLines()) {
+    String trimmed = rawLine.trim()
+    String docBody = null
+    if (trimmed.startsWith('//!')) {
+      docBody = trimmed.substring(3)
+    } else if (trimmed.startsWith('///') && (trimmed.length() == 3 || trimmed.charAt(3) != '/')) {
+      docBody = trimmed.substring(3)
+    }
+    if (docBody == null) {
+      fenceChar = 0
+      fenceLen = 0
+      continue
+    }
+    String line = docBody.trim()
+    if (line.length() < 3) continue
+    char ch = line.charAt(0)
+    if (ch != ('`' as char) && ch != ('~' as char)) continue
+    int run = 0
+    while (run < line.length() && line.charAt(run) == ch) run++
+    if (run < 3) continue
+    String rest = line.substring(run).trim()
+    if (fenceLen == 0) {
+      if (ch == ('`' as char) && rest.contains('`')) continue
+      if (isDoctestFenceTag(rest)) return true
+      fenceChar = ch
+      fenceLen = run
+    } else if (ch == fenceChar && run >= fenceLen && rest.isEmpty()) {
+      fenceChar = 0
+      fenceLen = 0
+    }
+  }
+  return false
+}
+
+def hasRustDoctestFence = { File srcDir ->
+  if (!srcDir.isDirectory()) return false
+  List<File> stack = [srcDir]
+  while (!stack.isEmpty()) {
+    File current = stack.remove(stack.size() - 1)
+    for (File child : (current.listFiles() ?: [] as File[])) {
+      if (child.isDirectory()) {
+        stack.add(child)
+      } else if (child.name.endsWith('.rs') && fileHasDoctestFence(child)) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
+def crateFeatures = [:].withDefault { [:] }
+def crateDeps = [:].withDefault { [] }
+def crateDevDeps = [:].withDefault { [] }
+def crateTestRequiredFeatures = [:].withDefault { [] }
+def crateHasDoctests = [:]
+def libKinds = ['lib', 'rlib', 'dylib', 'proc-macro']
+metadata.packages.each { pkg ->
+  String name = pkg.name
+  pkg.features.each { String feature, List tokens ->
+    crateFeatures[name][feature] = tokens.collect { it.toString() }
+  }
+  pkg.dependencies.each { Map dep ->
+    def wsDep = workspaceDep(dep)
+    if (wsDep == null) return
+    // The kind is null for a normal dependency, `build` or `dev` for the others.
+    (dep.kind == 'dev' ? crateDevDeps : crateDeps)[name].add(wsDep)
+  }
+  pkg.targets.each { Map target ->
+    if (target.kind.any { it in ['test', 'bench'] }) {
+      crateTestRequiredFeatures[name].addAll(target.'required-features' ?: [])
+    }
+  }
+  crateHasDoctests[name] = pkg.targets.any { t -> t.doctest && t.kind.any { it in libKinds } } &&
+      hasRustDoctestFence(new File(crateDir[name], 'src'))
+}
+ext.crateDir = crateDir
+ext.dirToPkg = dirToPkg
+ext.crateHasDoctests = crateHasDoctests
+
+// The workspace crates that `rootPkg` builds, with the features that its dependencies, its
+// own default features and the required features of its tests turn on.
+def resolveCrateClosure = { String rootPkg, String onlyFeaturesArg = null ->
+  Set<String> activeCrates = new LinkedHashSet<>()
+  Set<String> enabledFeatures = new LinkedHashSet<>()
+  Set<String> activatedEdges = new LinkedHashSet<>()
+
+  Closure activateCrate
+  Closure activateEdge
+  Closure enableFeature
+
+  enableFeature = { String pkg, String feat ->
+    activateCrate(pkg)
+    if (!enabledFeatures.add("${pkg}:${feat}".toString())) return
+    crateDeps[pkg].findAll { it.optional && it.alias == feat }.each { activateEdge(pkg, it) }
+    (crateFeatures[pkg][feat] ?: []).each { String token ->
+      if (token.startsWith('dep:')) {
+        def depAlias = token.substring(4)
+        crateDeps[pkg].findAll { it.alias == depAlias }.each { activateEdge(pkg, it) }
+      } else if (token.contains('/')) {
+        def parts = token.split('/', 2)
+        def depAlias = parts[0].replace('?', '')
+        def subFeat = parts[1]
+        crateDeps[pkg].findAll { it.alias == depAlias }.each { d ->
+          if (!parts[0].endsWith('?')) activateEdge(pkg, d)
+          enableFeature(d.targetPkg, subFeat)
+        }
+      } else {
+        enableFeature(pkg, token)
+      }
+    }
+  }
+
+  activateEdge = { String fromPkg, Map d ->
+    String edgeKey = "${fromPkg}->${d.alias}:${d.targetPkg}:${d.defaultFeatures}:${d.features.join(',')}"
+    if (activatedEdges.add(edgeKey)) {
+      activateCrate(d.targetPkg)
+      if (d.defaultFeatures) enableFeature(d.targetPkg, 'default')
+      d.features.each { String f -> enableFeature(d.targetPkg, f) }
+    }
+  }
+
+  activateCrate = { String pkg ->
+    if (activeCrates.add(pkg)) {
+      crateDeps[pkg].findAll { !it.optional }.each { activateEdge(pkg, it) }
+      if (pkg == rootPkg) {
+        crateDevDeps[pkg].findAll { !it.optional }.each { activateEdge(pkg, it) }
+        if (onlyFeaturesArg != null) {
+          onlyFeaturesArg.split(',').collect { it.trim() }.findAll { !it.isEmpty() }.each {
+            enableFeature(pkg, it)
+          }
+        } else {
+          enableFeature(pkg, 'default')
+          crateTestRequiredFeatures[pkg].each { enableFeature(pkg, it) }
+        }
+      }
+    }
+  }
+
+  activateCrate(rootPkg)
+  return activeCrates
+}
+
+def crateClosure = [:]
+crateDir.keySet().each { String pkg ->
+  def featOverride = (selectedPkg == pkg && onlyFeatures != null) ? onlyFeatures : null
+  crateClosure[pkg] = resolveCrateClosure(pkg, featOverride)
+}
+ext.crateClosure = crateClosure
+
+// Library inputs of crate `pkg`. They leave out tests/, benches/ and examples/, so a test
+// edit in an upstream crate does not make the downstream crates out of date.
+ext.crateLibInputFiles = { String pkg ->
+  File dir = crateDir[pkg]
+  def list = [new File(dir, 'Cargo.toml'), new File(dir, 'build.rs')].findAll { it.exists() }
+  ['src', 'proto'].each { String sub ->
+    File subDir = new File(dir, sub)
+    if (subDir.exists()) list.add(subDir)
+  }
+  return list
+}
+
+// Test, bench and example inputs of crate `pkg`, without the embedded Python test suites.
+ext.crateTestInputFiles = { String pkg ->
+  File dir = crateDir[pkg]
+  def trees = []
+  ['tests', 'benches', 'examples'].each { String sub ->
+    File subDir = new File(dir, sub)
+    if (subDir.exists()) {
+      trees.add(project.fileTree(subDir) {
+        exclude 'python/**'
+        exclude '**/__pycache__/**'
+        exclude '**/.pytest_cache/**'
+      })
+    }
+  }
+  return trees
+}
+
+// A dependency order of the crates, for a stable list and summary.
+def topoOrder = []
+def visitedTopo = new HashSet<String>()
+Closure visitTopo
+visitTopo = { String pkg ->
+  if (!visitedTopo.add(pkg)) return
+  crateClosure[pkg].toList().sort().each { String dep ->
+    if (dep != pkg && crateDir.containsKey(dep)) visitTopo(dep)
+  }
+  topoOrder.add(pkg)
+}
+crateDir.keySet().sort().each { visitTopo(it) }
+ext.topoOrder = topoOrder
+
+ext.workspaceLibAndTestFiles = topoOrder.collectMany { String pkg ->
+  crateLibInputFiles(pkg) + crateTestInputFiles(pkg)
+}
+

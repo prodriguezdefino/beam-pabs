@@ -1,0 +1,453 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import groovy.json.JsonSlurper
+import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.provider.ListProperty
+import org.gradle.api.provider.MapProperty
+import org.gradle.api.provider.Property
+import org.gradle.api.services.BuildService
+import org.gradle.api.services.BuildServiceParameters
+import org.gradle.workers.WorkAction
+import org.gradle.workers.WorkParameters
+
+// `test`: one cacheable `test_<pkg>` task for each workspace crate. Its inputs are the sources
+// and tests of the crate and the library sources (`src/`, `proto/`, `Cargo.toml`, `build.rs`)
+// of the workspace crates that it builds. A crate whose inputs did not change stays
+// UP-TO-DATE or FROM-CACHE, and a test edit in an upstream crate does not rerun the crates
+// downstream.
+
+abstract class RustTestCoordinatorService implements BuildService<BuildServiceParameters.None> {}
+
+interface CrateTestWorkParams extends WorkParameters {
+  Property<String> getPkg()
+  Property<File> getRustDir()
+  Property<File> getCrateDir()
+  RegularFileProperty getManifestFile()
+  RegularFileProperty getStampFile()
+  Property<Boolean> getUseManifest()
+  Property<Boolean> getHasDoctests()
+  Property<Boolean> getContinueOnFailure()
+  ListProperty<String> getFeatureScope()
+  ListProperty<String> getTestArgs()
+  MapProperty<String, String> getEnvironment()
+}
+
+abstract class CrateTestWorkAction implements WorkAction<CrateTestWorkParams> {
+  static final Object CARGO_LOCK = new Object()
+  static final Object PRINT_LOCK = new Object()
+
+  private static int runCapturing(List<String> cmd, File dir, Map<String, String> env, StringBuilder out) {
+    def pb = new ProcessBuilder(cmd)
+    pb.directory(dir)
+    pb.redirectErrorStream(true)
+    pb.environment().putAll(env)
+    Process proc = pb.start()
+    String text = proc.inputStream.getText('UTF-8')
+    int exit = proc.waitFor()
+    out.append(text)
+    return exit
+  }
+
+  @Override
+  void execute() {
+    runSuite()
+  }
+
+  private void runSuite() {
+    def p = parameters
+    String pkg = p.pkg.get()
+    File rustDir = p.rustDir.get()
+    File crateDir = p.crateDir.get()
+    List<String> testArgs = p.testArgs.get()
+    boolean cont = p.continueOnFailure.get()
+    List<String> noFailFast = cont ? ['--no-fail-fast'] : []
+    Map<String, String> env = new LinkedHashMap<>(p.environment.get())
+    env.put('CARGO_MANIFEST_DIR', crateDir.absolutePath)
+
+    File stamp = p.stampFile.get().asFile
+    File result = resultFileOf(stamp)
+    result.delete()
+    synchronized (PRINT_LOCK) {
+      System.out.println("Running ${pkg}")
+      System.out.flush()
+    }
+
+    def combinedOut = new StringBuilder()
+    boolean failedExit = false
+
+    if (p.useManifest.get()) {
+      List<String> binaries = []
+      File mf = p.manifestFile.get().asFile
+      mf.eachLine('UTF-8') { String line ->
+        if (!line.isEmpty()) {
+          def parts = line.split('\t', 3)
+          if (parts.length == 3 && parts[0] == pkg) {
+            binaries.add(parts[2])
+          }
+        }
+      }
+      for (String bin : binaries) {
+        int code = runCapturing([bin] + testArgs, crateDir, env, combinedOut)
+        if (code != 0) {
+          failedExit = true
+          if (!cont) break
+        }
+      }
+      if ((!failedExit || cont) && p.hasDoctests.get()) {
+        List<String> docCmd = ['cargo', 'test', '--doc', '-p', pkg] + noFailFast +
+            (testArgs.isEmpty() ? [] : ['--'] + testArgs)
+        int code
+        synchronized (CARGO_LOCK) {
+          code = runCapturing(docCmd, rustDir, env, combinedOut)
+        }
+        if (code != 0) {
+          failedExit = true
+        }
+      }
+    } else {
+      List<String> cargoCmd = ['cargo', 'test', '-p', pkg] + p.featureScope.get() + noFailFast +
+          (testArgs.isEmpty() ? [] : ['--'] + testArgs)
+      int code
+      synchronized (CARGO_LOCK) {
+        code = runCapturing(cargoCmd, rustDir, env, combinedOut)
+      }
+      if (code != 0) {
+        failedExit = true
+      }
+    }
+
+    int passed = 0
+    int failed = 0
+    int ignored = 0
+    int filtered = 0
+    def m = (combinedOut.toString() =~
+        /test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; \d+ measured; (\d+) filtered out/)
+    while (m.find()) {
+      int ps = m.group(1) as int
+      int fl = m.group(2) as int
+      int ig = m.group(3) as int
+      int fi = m.group(4) as int
+      // Subprocess tests that re-exec their own binary with `--exact` print a second
+      // `test result:` line with `filtered > 0`; skip it when no filter was passed.
+      if (testArgs.isEmpty() && fi > 0) continue
+      passed += ps
+      failed += fl
+      ignored += ig
+      filtered += fi
+    }
+
+    synchronized (PRINT_LOCK) {
+      if (failedExit && combinedOut.length() > 0) {
+        System.out.print(combinedOut.toString())
+        if (!combinedOut.toString().endsWith('\n')) System.out.println()
+      }
+      System.out.println(
+          "Total for ${pkg}: ${passed} passed; ${failed} failed; ${ignored} ignored; ${filtered} filtered out")
+      System.out.flush()
+    }
+
+    String counts = "passed=${passed} failed=${failed} ignored=${ignored} filtered=${filtered}"
+    result.parentFile.mkdirs()
+    result.text = "${counts} status=${failedExit ? 'FAILED' : 'EXECUTED'}\n"
+    if (failedExit) {
+      stamp.delete()
+      throw new GradleException("Tests failed for ${pkg}")
+    }
+    stamp.text = "${counts}\n"
+  }
+
+  // The counts and the status of the last run of the crate, next to its stamp. The stamp
+  // exists only after a pass, so `testSummary` reads this file for a failed crate too.
+  static File resultFileOf(File stamp) {
+    return new File(stamp.parentFile, "${stamp.name}.result")
+  }
+}
+
+// -PtestArgs="<args>" passes test-binary arguments after `--`, e.g. -PtestArgs=--ignored.
+// tokenize() splits on any whitespace and yields [] for an empty or blank value.
+def testArgs = project.findProperty('testArgs')?.toString()?.tokenize() ?: []
+// -PtestConcurrency=<n> caps how many crate test suites run concurrently (default: 4).
+int testConcurrency = Math.max(1, (project.findProperty('testConcurrency')?.toString()?.toInteger()) ?: 4)
+def rustTestCoordinator = gradle.sharedServices.registerIfAbsent(
+    "rustTestCoordinator_${project.path.replace(':', '_')}",
+    RustTestCoordinatorService
+) {
+  maxParallelUsages = testConcurrency
+}
+
+def workspaceTestManifest = file("${buildDir}/test-results/cargo/workspace-test-manifest.tsv")
+
+tasks.register('compileWorkspaceTests') {
+  group = 'Verification'
+  description = 'Compile all workspace integration test binaries in one Cargo pass'
+  mustRunAfter 'fmt', 'clippy', 'buildWorkspace'
+  inputs.property('beamSdkVersion', beamSdkVersion)
+  inputs.property('beamReleaseVersion', beamReleaseVersion)
+  inputs.files(workspaceRootFiles).withPathSensitivity(PathSensitivity.RELATIVE)
+  inputs.files(modelProtoDirs).withPathSensitivity(PathSensitivity.RELATIVE)
+  inputs.files(workspaceLibAndTestFiles).withPathSensitivity(PathSensitivity.RELATIVE)
+  outputs.file(workspaceTestManifest)
+  outputs.upToDateWhen {
+    file("${rustDir}/target").exists() &&
+        workspaceTestManifest.isFile() &&
+        workspaceTestManifest.readLines('UTF-8').every { String line ->
+          line.isEmpty() || new File(line.split('\t', 3)[2]).isFile()
+        }
+  }
+  doLast {
+    def pb = new ProcessBuilder(['cargo', 'test'] + workspaceScope + ['--no-run', '--message-format=json'])
+    pb.directory(rustDir)
+    pb.environment().putAll(beamCargoEnv)
+    Process proc = pb.start()
+    Thread errThread = Thread.start {
+      proc.errorStream.eachLine('UTF-8') { String line -> System.err.println(line) }
+    }
+    def slurper = new JsonSlurper()
+    def entries = []
+    def diagnostics = new StringBuilder()
+    proc.inputStream.eachLine('UTF-8') { String line ->
+      def trimmed = line.trim()
+      if (!trimmed.startsWith('{')) return
+      def msg = slurper.parseText(trimmed)
+      if (msg.reason == 'compiler-message' && msg.message?.rendered) {
+        if (msg.message.level == 'error') {
+          diagnostics.append(msg.message.rendered)
+        }
+      } else if (msg.reason == 'compiler-artifact' && msg.executable != null && msg.manifest_path) {
+        boolean isTestTarget = msg.target?.test == true &&
+            (msg.profile?.test == true || (msg.target?.kind instanceof List && 'test' in msg.target.kind))
+        if (isTestTarget) {
+          String pkg = dirToPkg[new File(msg.manifest_path.toString()).parentFile.canonicalPath]
+          if (pkg != null) {
+            entries.add("${pkg}\t${msg.target.name}\t${msg.executable}".toString())
+          }
+        }
+      }
+    }
+    errThread.join()
+    int exit = proc.waitFor()
+    if (exit != 0) {
+      if (diagnostics.length() > 0) {
+        System.err.print(diagnostics.toString())
+      }
+      workspaceTestManifest.delete()
+      throw new GradleException("cargo test --workspace --no-run failed with exit code ${exit}")
+    }
+    entries.sort()
+    workspaceTestManifest.parentFile.mkdirs()
+    workspaceTestManifest.setText(entries.isEmpty() ? '' : (entries.join('\n') + '\n'), 'UTF-8')
+  }
+}
+
+// Per-crate cacheable test tasks (`test_<pkg>`).
+def cargoTestTasks = [:]
+def crateStampFiles = [:]
+def crateExtraEnv = [:].withDefault { [:] }
+ext.crateExtraEnv = crateExtraEnv
+
+def parseStampCounts = { File f ->
+  if (!f.isFile()) return null
+  def m = (f.text =~ /passed=(\d+)\s+failed=(\d+)\s+ignored=(\d+)\s+filtered=(\d+)/)
+  if (!m.find()) return null
+  return [
+      passed  : m.group(1) as int,
+      failed  : m.group(2) as int,
+      ignored : m.group(3) as int,
+      filtered: m.group(4) as int,
+  ]
+}
+
+def parseResultFile = { File f ->
+  def counts = parseStampCounts(f)
+  if (counts == null) return null
+  def status = (f.text =~ /status=(\w+)/)
+  return counts + [status: status.find() ? status.group(1) : 'EXECUTED']
+}
+
+String defaultThreadsPerCrate = System.getenv('RUST_TEST_THREADS') ?: (
+    testConcurrency > 1
+        ? Math.max(2, (int) Math.ceil(Runtime.runtime.availableProcessors() / (double) testConcurrency)).toString()
+        : null
+)
+
+topoOrder.each { String pkg ->
+  String taskName = "test_${pkg}"
+  def pkgFeatureScope = (selectedPkg == pkg) ? featureScope : []
+  def featureSuffix = (selectedPkg == pkg && onlyFeatures != null)
+      ? "-features-${onlyFeatures.replaceAll('[^a-zA-Z0-9_-]', '_')}"
+      : ''
+  def filterSuffix = testArgs ? '-filtered' : ''
+  // Without -Ppkg, one workspace build unifies the features of all crates.
+  def modeSuffix = selectedPkg ? '' : '-workspace'
+  def stampFile = file("${buildDir}/test-results/cargo/${pkg}/test${modeSuffix}${featureSuffix}${filterSuffix}.txt")
+  crateStampFiles[pkg] = stampFile
+  def closure = crateClosure[pkg]
+  boolean hasDoctests = crateHasDoctests[pkg]
+
+  def tp = tasks.register(taskName) {
+    group = 'Verification'
+    description = "Run tests for ${pkg}"
+    usesService(rustTestCoordinator)
+    finalizedBy 'testSummary'
+
+    mustRunAfter 'fmt', 'clippy', 'buildWorkspace'
+    // A workspace stamp is valid only for binaries built with the unified features, so a
+    // direct test_<pkg> run without -Ppkg also builds the workspace test binaries.
+    if (selectedPkg) {
+      mustRunAfter 'compileWorkspaceTests'
+    } else {
+      dependsOn 'compileWorkspaceTests'
+    }
+
+    inputs.property('pkg', pkg)
+    inputs.property('beamSdkVersion', beamSdkVersion)
+    inputs.property('beamReleaseVersion', beamReleaseVersion)
+    inputs.property('featureScope', pkgFeatureScope)
+    inputs.property('testArgs', testArgs)
+    inputs.property('featureUnification', selectedPkg ? 'crate' : 'workspace')
+    inputs.files(workspaceRootFiles).withPathSensitivity(PathSensitivity.RELATIVE)
+    if ('apache-beam-model' in closure) {
+      inputs.files(modelProtoDirs).withPathSensitivity(PathSensitivity.RELATIVE)
+    }
+    closure.each { String depPkg ->
+      inputs.files(crateLibInputFiles(depPkg)).withPathSensitivity(PathSensitivity.RELATIVE)
+    }
+    inputs.files(crateTestInputFiles(pkg)).withPathSensitivity(PathSensitivity.RELATIVE)
+
+    outputs.file(stampFile)
+    outputs.upToDateWhen { testArgs.isEmpty() && parseStampCounts(stampFile) != null }
+    outputs.cacheIf { testArgs.isEmpty() }
+
+    doLast {
+      String targetPkg = pkg.toString()
+      File wsDir = project.ext.rustDir
+      File pkgCrateDir = crateDir[pkg]
+      File wsManifest = workspaceTestManifest
+      File outStamp = stampFile
+      boolean manifestMode = !selectedPkg
+      boolean runDocs = hasDoctests
+      boolean keepGoing = gradle.startParameter.continueOnFailure
+      List<String> featArgs = pkgFeatureScope.collect { it.toString() }
+      List<String> extraTestArgs = testArgs.collect { it.toString() }
+      Map<String, String> procEnv = new LinkedHashMap<>()
+      beamCargoEnv.each { k, v -> procEnv.put(k.toString(), v.toString()) }
+      crateExtraEnv[pkg].each { k, v -> procEnv.put(k.toString(), v.toString()) }
+      if (defaultThreadsPerCrate != null && !procEnv.containsKey('RUST_TEST_THREADS')) {
+        procEnv.put('RUST_TEST_THREADS', defaultThreadsPerCrate)
+      }
+      rustWorkerExecutor.noIsolation().submit(CrateTestWorkAction) { p ->
+        p.pkg.set(targetPkg)
+        p.rustDir.set(wsDir)
+        p.crateDir.set(pkgCrateDir)
+        p.manifestFile.set(wsManifest)
+        p.stampFile.set(outStamp)
+        p.useManifest.set(manifestMode)
+        p.hasDoctests.set(runDocs)
+        p.continueOnFailure.set(keepGoing)
+        p.featureScope.set(featArgs)
+        p.testArgs.set(extraTestArgs)
+        p.environment.set(procEnv)
+      }
+    }
+  }
+  cargoTestTasks[pkg] = tp
+}
+ext.cargoTestTasks = cargoTestTasks
+
+def targetTestPackages = selectedPkg ? [selectedPkg] : topoOrder
+
+tasks.register('testSummary') {
+  group = 'Verification'
+  description = 'Print the aggregated per-crate test summary'
+  usesService(rustTestCoordinator)
+  mustRunAfter cargoTestTasks.values()
+  doLast {
+    def rows = []
+    int totalPassed = 0
+    int totalFailed = 0
+    int totalIgnored = 0
+    int totalFiltered = 0
+    targetTestPackages.each { String pkg ->
+      // A task that ran in this build has a result file. An UP-TO-DATE or FROM-CACHE
+      // task has only its stamp. A task that is not in the task graph has no row.
+      def state = cargoTestTasks[pkg].get().state
+      def res = null
+      if (state.upToDate) {
+        def cached = parseStampCounts(crateStampFiles[pkg])
+        if (cached != null) {
+          res = cached + [status: state.skipMessage ?: 'UP-TO-DATE']
+        }
+      } else if (state.executed) {
+        res = parseResultFile(CrateTestWorkAction.resultFileOf(crateStampFiles[pkg]))
+      }
+      if (res != null) {
+        rows.add([pkg: pkg] + res)
+        totalPassed += res.passed
+        totalFailed += res.failed
+        totalIgnored += res.ignored
+        totalFiltered += res.filtered
+      }
+    }
+    if (rows.isEmpty()) return
+    int nameWidth = Math.max(28, (rows.collect { it.pkg.length() }.max() ?: 28) + 2)
+    String sep = '-' * (nameWidth + 46)
+    logger.lifecycle(sep)
+    logger.lifecycle(String.format("%-${nameWidth}s %8s %8s %9s %10s   %s",
+        'Crate', 'Passed', 'Failed', 'Ignored', 'Filtered', 'Status'))
+    logger.lifecycle(sep)
+    rows.each { r ->
+      logger.lifecycle(String.format("%-${nameWidth}s %8d %8d %9d %10d   %s",
+          r.pkg, r.passed, r.failed, r.ignored, r.filtered, r.status))
+    }
+    logger.lifecycle(sep)
+    logger.lifecycle(String.format("%-${nameWidth}s %8d %8d %9d %10d",
+        "Total (${rows.size()} ${rows.size() == 1 ? 'crate' : 'crates'})",
+        totalPassed, totalFailed, totalIgnored, totalFiltered))
+    logger.lifecycle(sep)
+  }
+}
+
+tasks.register('test') {
+  group = 'Verification'
+  description = 'Run tests (the workspace, or one crate with -Ppkg=<crate>; -PtestArgs=<args> after --; ' +
+      '-PtestConcurrency=<n> parallel crates; --continue runs every test binary)'
+  finalizedBy 'testSummary'
+  if (selectedPkg) {
+    if (!cargoTestTasks.containsKey(selectedPkg)) {
+      throw new GradleException(
+          "Unknown Rust workspace package '${selectedPkg}'. Available packages: ${topoOrder.join(', ')}")
+    }
+    dependsOn cargoTestTasks[selectedPkg]
+  } else {
+    dependsOn 'compileWorkspaceTests'
+    dependsOn topoOrder.collect { cargoTestTasks[it] }
+  }
+}
+
+// Some crates test against Java expansion services that start from the JARs of this Beam
+// build (build/libs/<artifact>-<version>.jar). Only those crate test tasks depend on the JARs.
+def testExpansionServiceJars = [
+    'apache-beam-external': ':sdks:java:io:google-cloud-platform:expansion-service:shadowJar',
+    'apache-beam-runner-tests': ':sdks:java:io:expansion-service:shadowJar',
+]
+testExpansionServiceJars.each { String pkg, String jar ->
+  cargoTestTasks[pkg]?.configure {
+    dependsOn jar
+  }
+}
