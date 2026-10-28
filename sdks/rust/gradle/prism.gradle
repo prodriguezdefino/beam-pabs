@@ -110,12 +110,12 @@ tasks.register('fetchPrismLinux') {
   configurePrismTask(it, prismLinuxBinary, 'linux')
 }
 
-cargoTestTasks.each { String pkg, TaskProvider<Exec> tp ->
+cargoTestTasks.each { String pkg, def tp ->
   if ('apache-beam-runner-prism' in crateClosure[pkg]) {
+    crateExtraEnv[pkg]['BEAM_PRISM_PATH'] = prismHostBinary.absolutePath
     tp.configure {
       dependsOn 'fetchPrism'
       inputs.file(prismHostBinary).withPathSensitivity(PathSensitivity.NONE)
-      environment 'BEAM_PRISM_PATH', prismHostBinary.absolutePath
     }
   }
 }

@@ -28,9 +28,29 @@
 
 def hostOs = System.getProperty('os.name').toLowerCase().contains('mac') ? 'darwin' : 'linux'
 
+// The executable and source of bench `name`, from the JSON output of `cargo build --bench`.
+def benchArtifact(String messages, String name) {
+  def slurper = new groovy.json.JsonSlurper()
+  def artifact = messages.readLines()
+      .findAll { it.startsWith('{') }
+      .collect { slurper.parseText(it) }
+      .find { it.reason == 'compiler-artifact' && it.target?.name == name && it.executable }
+  if (!artifact) {
+    throw new GradleException("cargo did not build an executable for bench '${name}'.")
+  }
+  return [executable: artifact.executable, srcPath: artifact.target.src_path]
+}
+
+// A criterion bench takes criterion flags, not pipeline flags.
+def isCriterionBench(String srcPath) {
+  return srcPath && new File(srcPath).text.contains('criterion_main!')
+}
+
+def criterionProfileSeconds = 10
+
 tasks.register('profilePrism') {
   group = 'Application'
-  description = 'Profile a Rust example locally on Prism with samply and/or time (-Pexample=<name> [-Pbin=<bin> -Ppkg=<crate>] [-PextraArgs="<pipeline flags>"] [-Prows=<n>] [-Pmode=cpu|memory|both] [-PcargoProfile=worker|release] [-Pout=<dir>]). -Pmode=both runs the pipeline two times.'
+  description = 'Profile a Rust example locally on Prism with samply and/or time (-Pexample=<name> [-Pbin=<bin> -Ppkg=<crate>] [-PcargoExample=<name> | -PcargoBench=<name>] [-PextraArgs="<pipeline flags>"] [-Prows=<n>] [-Pmode=cpu|memory|both] [-PcargoProfile=worker|release] [-Pout=<dir>]). -Pmode=both runs the pipeline two times.'
 
   dependsOn 'fetchPrism'
 
@@ -42,9 +62,11 @@ tasks.register('profilePrism') {
   }
   def profileEnv = "CARGO_PROFILE_${cargoProfile.toUpperCase()}"
   def resolve = propsFor(selectedExample)
-  // A Cargo example of a workspace crate (`--example`), instead of a binary (`--bin`).
+  // A Cargo example (`--example`) or bench (`--bench`, with `harness = false`) of a workspace
+  // crate, instead of a binary (`--bin`).
   def cargoExample = project.findProperty('cargoExample')?.toString()
-  def binArg = cargoExample ?: project.findProperty('bin') ?: selectedExample
+  def cargoBench = project.findProperty('cargoBench')?.toString()
+  def binArg = cargoExample ?: cargoBench ?: project.findProperty('bin') ?: selectedExample
   def pkgArg = project.findProperty('pkg') ?: selectedExample
   def rowsArg = project.findProperty('rows')
   def outArg = project.findProperty('out') ?: "${buildDir}/reports/profile/${binArg}-${System.currentTimeMillis()}"
@@ -82,6 +104,8 @@ tasks.register('profilePrism') {
     def summaryTxt = file("${outDir}/summary.md")
 
     println "Building binary ${binArg} in ${pkgArg} with the '${cargoProfile}' profile..."
+    // The file name of a bench binary has a hash, so cargo reports its path in JSON.
+    def buildOutput = new ByteArrayOutputStream()
     project.exec {
       workingDir rustDir
       environment "${profileEnv}_DEBUG", 'line-tables-only'
@@ -89,19 +113,30 @@ tasks.register('profilePrism') {
       if (hostOs == 'darwin') {
         environment "${profileEnv}_SPLIT_DEBUGINFO", 'unpacked'
       }
-      def cmd = ['cargo', 'build', '--profile', cargoProfile, '-p', pkgArg] +
-          (cargoExample ? ['--example', cargoExample] : ['--bin', binArg])
+      def target = cargoExample ? ['--example', cargoExample] :
+          cargoBench ? ['--bench', cargoBench, '--message-format=json-render-diagnostics'] :
+          ['--bin', binArg]
+      def cmd = ['cargo', 'build', '--profile', cargoProfile, '-p', pkgArg] + target
       if (featureFlags) { cmd += featureFlags }
       commandLine cmd
+      if (cargoBench) { standardOutput = buildOutput }
     }
 
-    def binPath = file(cargoExample ?
-        "${cargoTargetDir}/${cargoProfile}/examples/${cargoExample}" :
-        "${cargoTargetDir}/${cargoProfile}/${binArg}").absolutePath
-    def runArgs = [
-      '--runner=PrismRunner',
-      '--environment_type=LOOPBACK'
-    ] + gcpArgs + extraArgs
+    def bench = cargoBench ? benchArtifact(buildOutput.toString(), cargoBench) : null
+    def binPath = bench ?
+        bench.executable :
+        file(cargoExample ?
+            "${cargoTargetDir}/${cargoProfile}/examples/${cargoExample}" :
+            "${cargoTargetDir}/${cargoProfile}/${binArg}").absolutePath
+    // Profile mode skips criterion's analysis. sdk.properties holds pipeline flags, so only
+    // -PextraArgs applies.
+    def benchArgs = (project.findProperty('extraArgs') ?: '').toString().tokenize(' ')
+    def profileTime = benchArgs.any { it.startsWith('--profile-time') } ? [] :
+        ['--profile-time', criterionProfileSeconds.toString()]
+    def runArgs = bench && isCriterionBench(bench.srcPath) ?
+        ['--bench'] + profileTime + benchArgs :
+        ['--runner=PrismRunner', '--environment_type=LOOPBACK'] + gcpArgs + extraArgs
+    println "Arguments: ${runArgs.join(' ')}"
 
     if (mode in ['cpu', 'both']) {
       println "Running CPU profile (samply)..."
