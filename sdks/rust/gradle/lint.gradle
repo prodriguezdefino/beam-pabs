@@ -1,0 +1,146 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.provider.ListProperty
+import org.gradle.api.provider.MapProperty
+import org.gradle.api.provider.Property
+import org.gradle.workers.WorkAction
+import org.gradle.workers.WorkParameters
+
+// `build`, `fmt` and `check` (rustfmt and clippy). Each check writes a stamp, so it is
+// UP-TO-DATE while its inputs do not change.
+
+interface ExecCheckWorkParams extends WorkParameters {
+  Property<File> getWorkingDir()
+  ListProperty<String> getCommand()
+  MapProperty<String, String> getEnvironment()
+  RegularFileProperty getStampFile()
+  Property<Boolean> getStreamLive()
+  Property<String> getLabel()
+}
+
+abstract class ExecCheckWorkAction implements WorkAction<ExecCheckWorkParams> {
+  @Override
+  void execute() {
+    def p = parameters
+    def pb = new ProcessBuilder(p.command.get())
+    pb.directory(p.workingDir.get())
+    pb.redirectErrorStream(true)
+    pb.environment().putAll(p.environment.get())
+    Process proc = pb.start()
+    def captured = new StringBuilder()
+    boolean stream = p.streamLive.get()
+    proc.inputStream.eachLine('UTF-8') { String line ->
+      if (stream) {
+        System.out.println(line)
+      } else {
+        captured.append(line).append('\n')
+      }
+    }
+    int exit = proc.waitFor()
+    File stamp = p.stampFile.asFile.orNull
+    if (exit != 0) {
+      if (!stream && captured.length() > 0) {
+        System.err.print(captured.toString())
+      }
+      if (stamp != null) stamp.delete()
+      throw new GradleException("${p.label.get()} failed with exit code ${exit}")
+    }
+    if (stamp != null) {
+      stamp.parentFile.mkdirs()
+      stamp.text = "ok\n"
+    }
+  }
+}
+
+cargoTask('fmt', 'Verification', 'Format all Rust code (cargo fmt)',
+    ['fmt'])
+
+cargoTask('buildWorkspace', 'Build',
+    'Compile all crates in the Rust workspace (or one crate with -Ppkg=<crate>)',
+    ['build'] + cargoScope).configure {
+  mustRunAfter 'fmt'
+  inputs.property('beamSdkVersion', beamSdkVersion)
+  inputs.property('cargoScope', cargoScope)
+  inputs.files(workspaceRootFiles).withPathSensitivity(PathSensitivity.RELATIVE)
+  inputs.files(modelProtoDirs).withPathSensitivity(PathSensitivity.RELATIVE)
+  def buildInputs = (selectedPkg && crateClosure.containsKey(selectedPkg))
+      ? crateClosure[selectedPkg].collectMany { crateLibInputFiles(it) } + crateTestInputFiles(selectedPkg)
+      : workspaceLibAndTestFiles
+  inputs.files(buildInputs).withPathSensitivity(PathSensitivity.RELATIVE)
+  def buildKey = selectedPkg
+      ? "${selectedPkg}-${onlyFeatures ?: 'default'}".replaceAll('[^a-zA-Z0-9_-]', '_')
+      : 'workspace'
+  def stampFile = file("${buildDir}/test-results/cargo/build-${buildKey}.txt")
+  outputs.file(stampFile)
+  outputs.upToDateWhen { file("${rustDir}/target").exists() }
+  doLast {
+    stampFile.parentFile.mkdirs()
+    stampFile.text = "ok\n"
+  }
+}
+
+tasks.register('fmtCheck') {
+  group = 'Verification'
+  description = 'Verify formatting (cargo fmt --check)'
+  mustRunAfter 'fmt'
+  inputs.files(file("${rustDir}/rustfmt.toml"), file("${rustDir}/Cargo.toml"))
+      .withPathSensitivity(PathSensitivity.RELATIVE)
+  inputs.files(workspaceLibAndTestFiles).withPathSensitivity(PathSensitivity.RELATIVE)
+  def stampFile = file("${buildDir}/test-results/cargo/fmtCheck.txt")
+  outputs.file(stampFile)
+  outputs.cacheIf { true }
+  doLast {
+    rustWorkerExecutor.noIsolation().submit(ExecCheckWorkAction) { p ->
+      p.workingDir.set(rustDir)
+      p.command.set(['cargo', 'fmt', '--check'])
+      p.environment.set(beamCargoEnv)
+      p.stampFile.set(stampFile)
+      p.streamLive.set(false)
+      p.label.set('cargo fmt --check')
+    }
+  }
+}
+
+tasks.register('clippy') {
+  group = 'Verification'
+  description = 'Run clippy on all targets (-D warnings)'
+  mustRunAfter 'fmt'
+  inputs.property('beamSdkVersion', beamSdkVersion)
+  inputs.files(workspaceRootFiles + [file("${rustDir}/clippy.toml")])
+      .withPathSensitivity(PathSensitivity.RELATIVE)
+  inputs.files(modelProtoDirs).withPathSensitivity(PathSensitivity.RELATIVE)
+  inputs.files(workspaceLibAndTestFiles).withPathSensitivity(PathSensitivity.RELATIVE)
+  def stampFile = file("${buildDir}/test-results/cargo/clippy.txt")
+  outputs.file(stampFile)
+  outputs.cacheIf { true }
+  doLast {
+    rustWorkerExecutor.noIsolation().submit(ExecCheckWorkAction) { p ->
+      p.workingDir.set(rustDir)
+      p.command.set(['cargo', 'clippy'] + workspaceScope + ['--all-targets', '--', '-D', 'warnings'])
+      p.environment.set(beamCargoEnv)
+      p.stampFile.set(stampFile)
+      p.streamLive.set(true)
+      p.label.set('cargo clippy')
+    }
+  }
+}
+
+build.dependsOn 'buildWorkspace'
+check.dependsOn 'fmtCheck', 'clippy'

@@ -1,0 +1,276 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Benchmarks: Dataflow benchmarks of Rust examples (registerRustBenchmark, for example
+// `wordcountBenchmark`), local CPU profiles on Prism (`profileCompare`), and the unit tests of
+// the Python scripts (`pythonScriptsTest`, part of `check`).
+//
+// A benchmark runs variants. A variant is a launch command: see scripts/benchmarks/report.py.
+// gitRefVariants gives the current checkout and, with -Pbaseline=<git ref>, that ref from a
+// temporary git worktree under build/benchmarks/. Other sources of variants, for example
+// pipelines of other SDKs, give their own launch commands to runDataflowBenchmark. The scripts
+// in scripts/benchmarks/ run the rounds and write results.json and report.md to
+// build/reports/benchmarks/<task>-<timestamp>/. See docs/development.md.
+
+def benchScripts = "${rustDir}/scripts/benchmarks"
+// -P properties that a Dataflow benchmark gives to the `dataflow` task of each variant as is.
+def dataflowPassthrough = ['gcpProject', 'gcpRegion', 'gcpTempLocation', 'sdkContainerImage',
+                           'network', 'subnetwork', 'serviceAccountEmail', 'usePublicIps',
+                           'diskSizeGb', 'workerDiskType', 'autoscalingAlgorithm',
+                           'dataflowServiceOptions', 'numberOfWorkerHarnessThreads',
+                           'workerTargetCpu', 'exampleFeatures']
+// -P properties that profileCompare gives to the `profilePrism` task of each variant as is.
+def profilePassthrough = ['pkg', 'bin', 'cargoExample', 'cargoBench', 'exampleFeatures']
+
+def isSet = { String name ->
+  def value = project.findProperty(name)
+  value != null && value.toString() != 'false'
+}
+
+def passthrough = { List<String> names ->
+  names.findAll { project.findProperty(it) != null }.collect { "-P${it}=${project.findProperty(it)}".toString() }
+}
+
+def gitOutput = { List<String> args ->
+  def out = new ByteArrayOutputStream()
+  project.exec {
+    commandLine(['git', '-C', rootDir.absolutePath] + args)
+    standardOutput = out
+  }
+  out.toString().trim()
+}
+
+def reportDir = { String task ->
+  file("${buildDir}/reports/benchmarks/${task}-${new Date().format('yyyyMMdd-HHmmss')}")
+}
+
+// A relative path (or glob) from the command line is relative to the directory where Gradle
+// started, as in a shell.
+def userPath = { String path ->
+  new File(path).absolute ? path : new File(gradle.startParameter.currentDir, path).absolutePath
+}
+
+def commonArgs = { ->
+  def compareTo = project.findProperty('compareTo')?.toString()
+  ["--runs=${project.findProperty('runs') ?: 3}"] +
+      (compareTo ? ["--compare-to=${userPath(compareTo)}"] : []) +
+      (isSet('dryRun') ? ['--dry-run'] : [])
+}
+
+def writeVariants = { String task, List<Map> variants ->
+  def path = file("${buildDir}/tmp/benchmarks/${task}-variants.json")
+  path.parentFile.mkdirs()
+  path.text = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(variants))
+  path
+}
+
+// Calls `body` with the checkouts to compare: maps [label:, root:, describe:], the baseline
+// first. With -Pbaseline, a detached git worktree at build/benchmarks/baseline holds that ref.
+// The worktree stays between runs and only checks out the new ref: Cargo finds changed sources
+// by their modification time, so a new checkout of all files would build everything again.
+// The worktree gets a copy of sdks/rust/.local. With -PdryRun, the git commands are only printed.
+ext.gitRefVariants = { Closure body ->
+  def current = [label: 'current', root: rootDir.absolutePath,
+                 describe: "${gitOutput(['rev-parse', '--short', 'HEAD'])} with local changes".toString()]
+  def baseline = project.findProperty('baseline')?.toString()
+  if (!baseline) {
+    body([current])
+    return
+  }
+  def sha = gitOutput(['rev-parse', '--short', '--verify', "${baseline}^{commit}"])
+  def tree = file("${buildDir}/benchmarks/baseline")
+  def worktree = ['git', '-C', rootDir.absolutePath, 'worktree']
+  // A worktree that git does not know any more (for example after `clean`) is made again.
+  def known = tree.directory && project.exec {
+    commandLine 'git', '-C', tree.absolutePath, 'rev-parse', '--is-inside-work-tree'
+    ignoreExitValue = true
+    standardOutput = new ByteArrayOutputStream()
+    errorOutput = new ByteArrayOutputStream()
+  }.exitValue == 0
+  def commands = known ?
+      [['git', '-C', tree.absolutePath, 'checkout', '--force', '--detach', sha],
+       ['git', '-C', tree.absolutePath, 'clean', '-fd']] :
+      [worktree + ['prune'], worktree + ['add', '--force', '--detach', tree.absolutePath, sha]]
+  def local = file("${rustDir}/.local")
+  def variants = [[label: 'baseline', root: tree.absolutePath, describe: "${baseline} (${sha})".toString()],
+                  current]
+  if (isSet('dryRun')) {
+    commands.each { println "Would run: ${it.join(' ')}" }
+    println "Would copy ${local} to ${tree}/sdks/rust/.local"
+    body(variants)
+    return
+  }
+  if (!known) {
+    project.delete tree
+  }
+  commands.each { cmd -> project.exec { commandLine cmd } }
+  if (local.exists()) {
+    project.copy { from local; into "${tree}/sdks/rust/.local" }
+  }
+  body(variants)
+}
+
+// Runs Dataflow jobs of `variants` (launch commands, see scripts/benchmarks/report.py) for
+// -Pruns rounds and writes the report. `cfg` holds task:, describe:, and optionally
+// countOutput:, countName: and counter: (see scripts/benchmarks/dataflow_job.py).
+ext.runDataflowBenchmark = { Map cfg, List<Map> variants ->
+  def resolve = propsFor('dataflow')
+  def gcpProject = gcpProjectFrom(resolve) ?: (isSet('dryRun') ? '<gcpProject>' : null)
+  if (!gcpProject) {
+    throw new GradleException("${cfg.task} needs gcpProject in sdks/rust/.local/sdk.properties or -PgcpProject.")
+  }
+  def cmd = ['python3', "${benchScripts}/dataflow_job.py", 'run',
+             "--task=${cfg.task}",
+             "--project=${gcpProject}",
+             "--region=${resolve('gcpRegion', 'GCP_REGION', 'us-central1')}",
+             "--out-dir=${reportDir(cfg.task)}",
+             "--variants=${writeVariants(cfg.task, variants)}",
+             "--describe=${cfg.describe}",
+             "--count-output=${cfg.countOutput ?: ''}",
+             "--count-name=${cfg.countName ?: 'elements'}",
+             "--monitoring-wait=${project.findProperty('monitoringWait') ?: 360}"] +
+      (cfg.counter ? ["--counter=${cfg.counter}"] : []) +
+      (isSet('prepareOnly') ? ['--prepare-only'] : []) + commonArgs()
+  project.exec { commandLine cmd*.toString() }
+}
+
+// The launch command of a Rust example on Dataflow from a checkout of gitRefVariants. Its
+// prepare command runs the same task with --dataflow_job_file: that builds the worker and the
+// launcher with the same inputs and environment, writes the job description and submits
+// nothing. The launches then find the builds up to date and start their jobs together.
+ext.rustDataflowVariant = { Map checkout, String example, List<String> props, String extraArgs ->
+  def flags = { List<String> first -> (first + (extraArgs ? [extraArgs] : [])).join(' ') }
+  def task = { List<String> first ->
+    (["${checkout.root}/gradlew", '--console=plain', ':sdks:rust:dataflow', "-Pexample=${example}"] +
+        props + ["-PextraArgs=${flags(first)}"])*.toString()
+  }
+  [label: checkout.label, describe: checkout.describe, cwd: checkout.root,
+   prepare: task(["--dataflow_job_file={out_dir}/${checkout.label}-prepare-job.json".toString()]),
+   argv: task(['--job_name={job_name}', '--labels={labels}'])]
+}
+
+// Registers a Dataflow benchmark of a Rust example, with rounds, -Pbaseline, -PcompareTo,
+// -PdryRun, -PminCpuPlatform and the -P properties of the `dataflow` task.
+//   task, example, description: the task, the example crate, the task description.
+//   inputs, defaultInput: named input globs; -P<inputProperty> (default inputName) selects one.
+//     -Pinput=<glob> overrides them.
+//   countOutput, countName: the output whose ElementCount the report counts, and its noun.
+//   counter: a user counter whose rate the report gives.
+//   extraArgs: pipeline flags for every job. -PextraArgs adds more.
+ext.registerRustBenchmark = { Map cfg ->
+  def inputProperty = cfg.inputProperty ?: 'inputName'
+  tasks.register(cfg.task) {
+    group = 'Verification'
+    description = "${cfg.description} ([-P${inputProperty}=${(cfg.inputs ?: [:]).keySet().join('|')}] " +
+        '[-Pinput=<glob>] [-Pruns=3] [-Pbaseline=<git ref>] [-PcompareTo=<results.json>] ' +
+        '[-PnumWorkers=1] [-PmaxNumWorkers=10] [-PworkerMachineType=n2-standard-4] ' +
+        '[-PminCpuPlatform=<platform>] [-PextraArgs=<pipeline flags>] [-PdryRun])'
+
+    doLast {
+      def inputName = (project.findProperty(inputProperty) ?: cfg.defaultInput)?.toString()
+      def input = project.findProperty('input')?.toString() ?: cfg.inputs?.get(inputName)
+      if (cfg.inputs && !input) {
+        throw new GradleException("-P${inputProperty} must be ${cfg.inputs.keySet().join(' or ')}, not '${inputName}'.")
+      }
+      def workers = (project.findProperty('numWorkers') ?: '1').toString()
+      def maxWorkers = (project.findProperty('maxNumWorkers') ?: '10').toString()
+      def machine = (project.findProperty('workerMachineType') ?: 'n2-standard-4').toString()
+      // Do not pin a CPU platform by default: a pinned platform can stock out in a region.
+      def minCpu = project.findProperty('minCpuPlatform')?.toString()
+      def experiments = ([project.findProperty('experiments')?.toString()] +
+          (minCpu ? ["min_cpu_platform=${minCpu}"] : [])).findAll { it }.join(',')
+      def props = (input ? ["-Pinput=${input}"] : []) +
+          ["-PnumWorkers=${workers}", "-PmaxNumWorkers=${maxWorkers}", "-PworkerMachineType=${machine}"] +
+          (experiments ? ["-Pexperiments=${experiments}"] : []) + passthrough(dataflowPassthrough)
+      def extraArgs = [cfg.extraArgs, project.findProperty('extraArgs')].findAll { it }.join(' ')
+      def summary = "Example ${cfg.example}, input ${input ?: 'default'}, ${machine}, " +
+          "${workers} to ${maxWorkers} workers" + (minCpu ? ", minimum CPU platform ${minCpu}" : '') + '.'
+
+      gitRefVariants { List<Map> checkouts ->
+        runDataflowBenchmark(cfg + [describe: summary],
+            checkouts.collect { rustDataflowVariant(it, cfg.example, props*.toString(), extraArgs) })
+      }
+    }
+  }
+}
+
+registerRustBenchmark(
+    task: 'wordcountBenchmark',
+    description: 'Run wordcount on Dataflow for some rounds and report its CPU metrics',
+    example: 'wordcount',
+    inputProperty: 'shards',
+    inputs: [
+      '100': 'gs://apache-beam-samples/wikipedia_edits/wiki_data-0000000000[0-9][0-9].json',
+      '300': 'gs://apache-beam-samples/wikipedia_edits/wiki_data-000000000[0-2][0-9][0-9].json',
+    ],
+    defaultInput: '100',
+    countOutput: 'ExtractWords',
+    countName: 'words',
+    counter: 'line_count',
+)
+
+tasks.register('profileCompare') {
+  group = 'Verification'
+  description = 'Profile a Rust example on Prism for some rounds (profilePrism, worker profile, CPU mode) ' +
+      'and compare the CPU time ([-Pexample=wordcount] [-Ppkg=.. -Pbin=..|-PcargoExample=..|-PcargoBench=..] ' +
+      '[-Pinput=<local glob>] [-Prows=<n>] [-PextraArgs=<flags>] [-Pruns=3] [-Pbaseline=<git ref>] ' +
+      '[-PcompareTo=<results.json>] [-Ptop=10] [-PdryRun])'
+
+  doLast {
+    def example = (project.findProperty('example') ?: 'wordcount').toString()
+    def input = project.findProperty('input')?.toString()?.with { userPath(it) }
+    // An input goes to the pipeline as --input, with --output under the directory of the run.
+    def flags = ((input ? ["--input=${input}", '--output={run_dir}/out/counts'] : []) +
+        (project.findProperty('extraArgs') ? [project.property('extraArgs')] : [])).join(' ')
+    def props = ["-Pexample=${example}", '-Pmode=cpu', '-PcargoProfile=worker', '-Prows={rows}',
+                 '-Pout={run_dir}'] + passthrough(profilePassthrough) +
+        (flags ? ["-PextraArgs=${flags}"] : [])
+
+    gitRefVariants { List<Map> checkouts ->
+      def variants = checkouts.collect { checkout ->
+        [label: checkout.label, describe: checkout.describe, cwd: checkout.root,
+         argv: (["${checkout.root}/gradlew", '--console=plain', ':sdks:rust:profilePrism'] + props)*.toString()]
+      }
+      def cmd = ['python3', "${benchScripts}/local_profile.py",
+                 "--out-dir=${reportDir('profileCompare')}",
+                 "--variants=${writeVariants('profileCompare', variants)}",
+                 "--describe=Example ${example}",
+                 "--top=${project.findProperty('top') ?: 10}"] +
+          (input ? ["--input=${input}"] : []) +
+          (project.findProperty('rows') ? ["--rows=${project.property('rows')}"] : []) +
+          commonArgs()
+      project.exec { commandLine cmd*.toString() }
+    }
+  }
+}
+
+tasks.register('pythonScriptsTest') {
+  group = 'Verification'
+  description = 'Run the unit tests (*_test.py) of the Python scripts in scripts/benchmarks and scripts/profiling'
+
+  doLast {
+    ['benchmarks', 'profiling'].each { dir ->
+      project.exec {
+        workingDir "${rustDir}/scripts/${dir}"
+        commandLine 'python3', '-m', 'unittest', 'discover', '-s', '.', '-p', '*_test.py'
+      }
+    }
+  }
+}
+
+check.dependsOn 'pythonScriptsTest'

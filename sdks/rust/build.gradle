@@ -26,6 +26,9 @@ description = "Apache Beam :: SDKs :: Rust"
 
 apply from: 'gradle/versions.gradle'
 apply from: 'gradle/cargo.gradle'
+apply from: 'gradle/workspace.gradle'
+apply from: 'gradle/lint.gradle'
+apply from: 'gradle/tests.gradle'
 apply from: 'gradle/config.gradle'
 apply from: 'gradle/prism.gradle'
 apply from: 'gradle/profiling.gradle'
@@ -34,4 +37,5 @@ apply from: 'gradle/containers.gradle'
 apply from: 'gradle/validates-runner.gradle'
 apply from: 'gradle/xlang.gradle'
 apply from: 'gradle/quality.gradle'
+apply from: 'gradle/benchmarks.gradle'
 
