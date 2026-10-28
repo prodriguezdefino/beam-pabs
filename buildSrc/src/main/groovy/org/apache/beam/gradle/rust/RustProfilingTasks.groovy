@@ -17,6 +17,8 @@
  */
 package org.apache.beam.gradle.rust
 
+import groovy.json.JsonSlurper
+import groovy.transform.CompileDynamic
 import groovy.transform.CompileStatic
 import org.gradle.api.Action
 import org.gradle.api.GradleException
@@ -29,6 +31,8 @@ import org.gradle.process.ExecSpec
 @CompileStatic
 class RustProfilingTasks {
 
+  private static final int CRITERION_PROFILE_SECONDS = 10
+
   static void register(RustConfig config) {
     RustSdkBuild build = config.build
     Project project = build.project
@@ -37,7 +41,7 @@ class RustProfilingTasks {
     project.tasks.register('profilePrism') { Task task ->
       task.group = 'Application'
       task.description = 'Profile a Rust example locally on Prism with samply and/or time ' +
-          '(-Pexample=<name> [-Pbin=<bin> -Ppkg=<crate>] [-PcargoExample=<name>] ' +
+          '(-Pexample=<name> [-Pbin=<bin> -Ppkg=<crate>] [-PcargoExample=<name> | -PcargoBench=<name>] ' +
           '[-PextraArgs="<pipeline flags>"] [-Prows=<n>] [-Pmode=cpu|memory|both] ' +
           '[-PcargoProfile=worker|release] [-Pout=<dir>]). -Pmode=both runs the pipeline twice.'
       task.dependsOn('fetchPrism')
@@ -50,7 +54,8 @@ class RustProfilingTasks {
       String profileEnv = "CARGO_PROFILE_${cargoProfile.toUpperCase()}"
       String example = config.selectedExample
       String cargoExample = project.findProperty('cargoExample')?.toString()
-      String binArg = (cargoExample ?: project.findProperty('bin') ?: example).toString()
+      String cargoBench = project.findProperty('cargoBench')?.toString()
+      String binArg = (cargoExample ?: cargoBench ?: project.findProperty('bin') ?: example).toString()
       String pkgArg = (project.findProperty('pkg') ?: example).toString()
       Object rowsArg = project.findProperty('rows')
       String outArg = (project.findProperty('out')
@@ -89,7 +94,10 @@ class RustProfilingTasks {
         File summaryTxt = new File(outDir, 'summary.md')
 
         task.logger.lifecycle("Building binary ${binArg} in ${pkgArg} with the '${cargoProfile}' profile...")
-        List<String> target = cargoExample != null ? ['--example', cargoExample] : ['--bin', binArg]
+        ByteArrayOutputStream buildOutput = new ByteArrayOutputStream()
+        List<String> target = cargoExample != null ? ['--example', cargoExample]
+            : (cargoBench != null ? ['--bench', cargoBench, '--message-format=json-render-diagnostics']
+                : ['--bin', binArg])
         List<String> scope = featureFlags.isEmpty() ? build.workspaceScope : ['-p', pkgArg] + featureFlags
         List<String> buildCmd = ['cargo', 'build', '--profile', cargoProfile] + scope + target
         project.exec({ ExecSpec spec ->
@@ -101,12 +109,26 @@ class RustProfilingTasks {
             spec.environment("${profileEnv}_SPLIT_DEBUGINFO", 'unpacked')
           }
           spec.commandLine(buildCmd)
+          if (cargoBench != null) {
+            spec.standardOutput = buildOutput
+          }
         } as Action<ExecSpec>)
 
-        String binPath = new File(cargoExample != null
-            ? "${cargoTargetDir}/${cargoProfile}/examples/${cargoExample}"
-            : "${cargoTargetDir}/${cargoProfile}/${binArg}").absolutePath
-        List<String> runArgs = ['--runner=PrismRunner', '--environment_type=LOOPBACK'] + gcpArgs + extraArgs
+        Map<String, String> bench = cargoBench != null
+            ? benchArtifact(buildOutput.toString('UTF-8'), cargoBench) : null
+        String binPath = bench != null
+            ? bench.executable
+            : new File(cargoExample != null
+                ? "${cargoTargetDir}/${cargoProfile}/examples/${cargoExample}"
+                : "${cargoTargetDir}/${cargoProfile}/${binArg}").absolutePath
+
+        List<String> benchArgs = (project.findProperty('extraArgs') ?: '').toString().tokenize(' ')
+        List<String> profileTime = benchArgs.any { String a -> a.startsWith('--profile-time') }
+            ? new ArrayList<String>()
+            : ['--profile-time', CRITERION_PROFILE_SECONDS.toString()]
+        List<String> runArgs = (bench != null && isCriterionBench(bench.srcPath))
+            ? ['--bench'] + profileTime + benchArgs
+            : ['--runner=PrismRunner', '--environment_type=LOOPBACK'] + gcpArgs + extraArgs
         task.logger.lifecycle("Arguments: ${runArgs.join(' ')}")
 
         if (mode in ['cpu', 'both']) {
@@ -170,4 +192,20 @@ class RustProfilingTasks {
     }
   }
 
+  @CompileDynamic
+  private static Map<String, String> benchArtifact(String messages, String name) {
+    JsonSlurper slurper = new JsonSlurper()
+    def artifact = messages.readLines()
+        .findAll { String line -> line.startsWith('{') }
+        .collect { String line -> slurper.parseText(line) }
+        .find { def msg -> msg.reason == 'compiler-artifact' && msg.target?.name == name && msg.executable }
+    if (!artifact) {
+      throw new GradleException("cargo did not build an executable for bench '${name}'.")
+    }
+    return [executable: artifact.executable.toString(), srcPath: artifact.target.src_path?.toString()]
+  }
+
+  private static boolean isCriterionBench(String srcPath) {
+    return srcPath != null && new File(srcPath).text.contains('criterion_main!')
+  }
 }
