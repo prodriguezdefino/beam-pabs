@@ -26,6 +26,8 @@ description = "Worker harness and Fn API runtime for Apache Beam Rust SDK"
 
 [lib]
 name = "harness"
+test = false
+doctest = false
 
 [dependencies]
 beam = { package = "apache-beam-core", path = "../core", version = "2.79.0-SNAPSHOT" }
@@ -47,6 +49,9 @@ foldhash = { workspace = true }
 [dev-dependencies]
 beam = { package = "apache-beam-core", path = "../core", version = "2.79.0-SNAPSHOT", features = ["derive"] }
 harness = { package = "apache-beam-harness", path = "." }
+criterion = { workspace = true }
+libc = { workspace = true }
+futures = { workspace = true }
 serde = { workspace = true }
 testutils = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
@@ -54,9 +59,22 @@ tokio = { workspace = true, features = ["full", "test-util"] }
 [[bin]]
 name = "boot"
 path = "src/boot.rs"
+test = false
 
 [[bench]]
 name = "chain_throughput"
+harness = false
+
+[[bench]]
+name = "process_bundle"
+harness = false
+
+[[bench]]
+name = "data_plane"
+harness = false
+
+[[bench]]
+name = "user_state"
 harness = false
 
 [lints]
