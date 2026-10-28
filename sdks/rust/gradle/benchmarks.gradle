@@ -265,16 +265,76 @@ tasks.register('profileCompare') {
   }
 }
 
+// Benchmarks of the harness crate (benches/), run on this machine. criterion writes its reports
+// to target/criterion/ and keeps named baselines there. chain_throughput is not criterion: it
+// prints ns/word and takes no criterion flags.
+def harnessBenches = ['process_bundle', 'data_plane', 'user_state', 'chain_throughput']
+tasks.register('harnessBenchmark', Exec) {
+  group = 'Verification'
+  description = 'Run the criterion benchmarks of the harness crate ' +
+      "([-Pbench=${harnessBenches.join('|')}] [-Pfilter=<benchmark id regex>] [-PsmokeTest] " +
+      '[-PsaveBaseline=<name>] [-PbaselineName=<name>] [-PcargoProfile=<profile>])'
+  workingDir rustDir
+  def bench = project.findProperty('bench')?.toString()
+  doFirst {
+    if (bench && !(bench in harnessBenches)) {
+      throw new GradleException("-Pbench must be one of ${harnessBenches}, not '${bench}'")
+    }
+  }
+  def criterionArgs = [project.findProperty('filter')?.toString()] +
+      (project.hasProperty('smokeTest') ? ['--test'] : []) +
+      (project.findProperty('saveBaseline') ? ['--save-baseline', project.property('saveBaseline')] : []) +
+      (project.findProperty('baselineName') ? ['--baseline', project.property('baselineName')] : [])
+  // `worker` builds with the fat LTO of the binaries that run on a runner.
+  def profileArgs = project.findProperty('cargoProfile') ? ['--profile', project.property('cargoProfile')] : []
+  commandLine((['cargo', 'bench', '-p', 'apache-beam-harness'] + profileArgs +
+      (bench ? ['--bench', bench] : harnessBenches.collectMany { ['--bench', it] }) +
+      ['--'] + criterionArgs.findAll { it })*.toString())
+}
+
+interface PythonTestWorkParams extends org.gradle.workers.WorkParameters {
+  org.gradle.api.provider.ListProperty<File> getDirs()
+  org.gradle.api.file.RegularFileProperty getStampFile()
+}
+
+abstract class PythonTestWorkAction implements org.gradle.workers.WorkAction<PythonTestWorkParams> {
+  @Override
+  void execute() {
+    for (File dir : parameters.dirs.get()) {
+      def pb = new ProcessBuilder('python3', '-m', 'unittest', 'discover', '-s', '.', '-p', '*_test.py')
+      pb.directory(dir)
+      pb.redirectErrorStream(true)
+      Process proc = pb.start()
+      String out = proc.inputStream.getText('UTF-8')
+      int exit = proc.waitFor()
+      if (exit != 0) {
+        System.err.print(out)
+        parameters.stampFile.get().asFile.delete()
+        throw new GradleException("pythonScriptsTest failed in ${dir.name} with exit code ${exit}")
+      }
+    }
+    File stamp = parameters.stampFile.get().asFile
+    stamp.parentFile.mkdirs()
+    stamp.text = "ok\n"
+  }
+}
+
 tasks.register('pythonScriptsTest') {
   group = 'Verification'
   description = 'Run the unit tests (*_test.py) of the Python scripts in benchmarks/tools and scripts/profiling'
+  mustRunAfter 'fmt'
+  inputs.files(
+      project.fileTree("${rustDir}/benchmarks/tools") { include '**/*.py' },
+      project.fileTree("${rustDir}/scripts/profiling") { include '**/*.py' },
+  ).withPathSensitivity(PathSensitivity.RELATIVE)
+  def stampFile = file("${buildDir}/test-results/cargo/pythonScriptsTest.txt")
+  outputs.file(stampFile)
 
   doLast {
-    ["${rustDir}/benchmarks/tools", "${rustDir}/scripts/profiling"].each { dir ->
-      project.exec {
-        workingDir dir
-        commandLine 'python3', '-m', 'unittest', 'discover', '-s', '.', '-p', '*_test.py'
-      }
+    def dirs = [file("${rustDir}/benchmarks/tools"), file("${rustDir}/scripts/profiling")]
+    rustWorkerExecutor.noIsolation().submit(PythonTestWorkAction) { p ->
+      p.dirs.set(dirs)
+      p.stampFile.set(stampFile)
     }
   }
 }

@@ -31,8 +31,8 @@ Run builds and tests through Gradle. The rest of the Beam repository uses it too
 ```bash
 # Core Lifecycle Tasks
 ./gradlew :sdks:rust:build             # Compile all crates in workspace (cargo build --workspace)
-./gradlew :sdks:rust:check             # Run formatting checks and clippy (fmtCheck + clippy)
-./gradlew :sdks:rust:test              # Run all tests on a host Prism (or one crate: -Ppkg=apache-beam-core)
+./gradlew :sdks:rust:check             # Run formatting, clippy and script tests in parallel
+./gradlew :sdks:rust:test              # Run all tests on a host Prism (-Ppkg=<crate>, -PtestConcurrency=4)
 ./gradlew :sdks:rust:test --continue   # Run every test binary and report all failures (cargo --no-fail-fast)
 ./gradlew :sdks:rust:fmt               # Apply code formatting (cargo fmt)
 ./gradlew :sdks:rust:clean             # Remove the cargo target directory (cleanSdk) and build/
@@ -49,9 +49,22 @@ Run builds and tests through Gradle. The rest of the Beam repository uses it too
 ./gradlew :sdks:rust:buildWorker               # Linux worker binary for an example (-Pexample=wordcount)
 ./gradlew :sdks:rust:expansionServiceImage     # Expansion service image; the binary is also the worker
 ./gradlew :sdks:rust:validatesRunnerPrism      # ValidatesRunner conformance suite on Prism
+./gradlew :sdks:rust:validatesRunnerPrismStreaming     # The same suite on Prism in streaming mode
 ./gradlew :sdks:rust:validatesRunnerDataflow   # ValidatesRunner conformance suite on Dataflow
+./gradlew :sdks:rust:validatesRunnerDataflowStreaming  # The same suite on Dataflow in streaming mode
 ./gradlew :sdks:rust:validatesCrossLanguageRunnerPythonPrism     # Python xlang suite on Prism against the Rust test expansion service
 ./gradlew :sdks:rust:validatesCrossLanguageRunnerPythonDataflow  # Python xlang suite on Dataflow against the Rust test expansion service
+./gradlew :sdks:rust:validatesCrossLanguageRunnerJavaServicePrism  # Rust xlang suite on Prism against the Java test expansion service
+
+# Tasks that other tasks use
+./gradlew :sdks:rust:buildWorkspace            # cargo build of the workspace, for `build`
+./gradlew :sdks:rust:fmtCheck                  # Format check, for `check`
+./gradlew :sdks:rust:compileWorkspaceTests     # All test binaries in one cargo pass, for `test`
+./gradlew :sdks:rust:test_<pkg>                # The tests of one crate, for `test`
+./gradlew :sdks:rust:testSummary               # The summary table after `test`
+./gradlew :sdks:rust:fetchPrism                # Download the host Prism binary (fetchPrismLinux: the Linux one)
+./gradlew :sdks:rust:setupXlangPythonEnv       # Python virtualenv for the Python xlang suite
+./gradlew :sdks:rust:pythonSdkDataflowImage    # Python SDK image for the Python xlang suite on Dataflow
 ```
 
 ## Profiling
@@ -115,8 +128,24 @@ with an earlier result. `-PdryRun` prints the commands and runs nothing.
 gsutil cp gs://apache-beam-samples/wikipedia_edits/wiki_data-000000000000.json build/bench-input/
 ./gradlew :sdks:rust:profileCompare -Pinput='build/bench-input/*.json' -Pbaseline=HEAD~1
 ./gradlew :sdks:rust:profileCompare -Ppkg=apache-beam-harness -PcargoBench=chain_throughput
+
+# Criterion benchmarks of the harness crate, on this machine.
+./gradlew :sdks:rust:harnessBenchmark -Pbench=data_plane -PsaveBaseline=before
+./gradlew :sdks:rust:harnessBenchmark -Pbench=data_plane -PbaselineName=before
 ```
 
+- `harnessBenchmark` runs the criterion benches in
+  [harness/benches/](../beam/harness/benches/). `process_bundle` runs bundles through a worker
+  and an in-process runner over gRPC, with the pipelines and 16 concurrent callers of Java's
+  `ProcessBundleBenchmark` (`sdks/java/harness/jmh`); its times are per operation, so
+  1 / time compares with JMH's ops/s. `data_plane` measures inbound routing, outbound
+  buffering and the wait one slow bundle causes another on the same stream. `user_state`
+  measures bag state against an in-process state server. `chain_throughput` is not a
+  criterion bench: it runs a fused WordCount chain with and without a user counter per word,
+  and prints the ns/word of each. `-Pfilter` selects benchmark ids,
+  `-PsmokeTest` runs each once. `-PcargoProfile=worker` builds with the fat LTO of the
+  binaries that run on a runner; compare with other SDKs only in that profile. Reports and
+  baselines are in `target/criterion/`.
 - A Dataflow benchmark first builds the worker and the launcher of each variant, so the jobs
   of a round start together. The report flags a round whose jobs started more than 60 s
   apart. It takes `-PnumWorkers` (1), `-PmaxNumWorkers` (10), `-PworkerMachineType`
@@ -297,9 +326,16 @@ binary first. Without it, the workers run in the launching process with
 
 ## Incremental builds
 
-The lifecycle tasks (`build`, `check`, `test`, `fmt`) always run cargo, which
-does its own incremental build. So their result is always the real result of
-the cargo command.
+These tasks write a stamp file and report `UP-TO-DATE` (or `FROM-CACHE`) when
+their inputs did not change: `buildWorkspace`, `fmtCheck`, `clippy`,
+`pythonScriptsTest`, `compileWorkspaceTests` and each `test_<pkg>`. The inputs
+are the sources of the crate and of the crates that it uses, `Cargo.toml`,
+`Cargo.lock`, the model protos and the SDK version. `fmt` always runs cargo.
+
+`test` without `-Ppkg` builds all test binaries in one
+`cargo test --workspace --no-run`, so cargo unifies the features of all crates.
+With `-Ppkg=<crate>`, cargo resolves the features of that crate only. The two
+modes keep separate stamps, so one mode never makes the other `UP-TO-DATE`.
 
 The Linux binary tasks track the workspace sources (`**/*.rs`, `Cargo.toml`,
 `Cargo.lock`) and their properties (example, architecture, SDK version,

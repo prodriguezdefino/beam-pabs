@@ -39,6 +39,28 @@ pub use timeout::{
     DEFAULT_TEST_TIMEOUT, TEST_TIMEOUT_ENV, test_timeout, with_custom_timeout, with_timeout,
 };
 
+/// User and system CPU time consumed by all threads of the current process.
+#[cfg(unix)]
+pub fn process_cpu_time() -> std::time::Duration {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+    // SAFETY: `RUSAGE_SELF` is valid and `getrusage` fills `usage`. Zeroed is also valid.
+    let usage = unsafe {
+        libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr());
+        usage.assume_init()
+    };
+    let duration = |time: libc::timeval| {
+        std::time::Duration::from_secs(u64::try_from(time.tv_sec).unwrap_or(0))
+            + std::time::Duration::from_micros(u64::try_from(time.tv_usec).unwrap_or(0))
+    };
+    duration(usage.ru_utime) + duration(usage.ru_stime)
+}
+
+/// User and system CPU time consumed by all threads of the current process.
+#[cfg(not(unix))]
+pub fn process_cpu_time() -> std::time::Duration {
+    std::time::Duration::ZERO
+}
+
 /// Reads and concatenates all output shards that match `prefix`, in shard order (for
 /// example `output.txt` matches `output-00000-of-00002.txt`, ...).
 ///
