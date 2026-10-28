@@ -1,0 +1,414 @@
+{
+ "job": {
+  "id": "2026-10-27_17_29_35-2973435830020872277",
+  "name": "wordcount-bench-current-r1-1793146571",
+  "currentState": "JOB_STATE_DONE",
+  "createTime": "2026-10-28T00:29:36.010969Z",
+  "startTime": "2026-10-28T00:29:36.010969Z",
+  "currentStateTime": "2026-10-28T00:37:08.215541Z",
+  "environment": {
+   "workerPools": [
+    {
+     "machineType": "n2-standard-4",
+     "numWorkers": 1
+    }
+   ]
+  }
+ },
+ "jobs_list": {
+  "jobs": [
+   {
+    "id": "2026-10-27_17_29_35-2973435830020872277",
+    "name": "wordcount-bench-current-r1-1793146571",
+    "currentState": "JOB_STATE_DONE",
+    "createTime": "2026-10-28T00:29:36.010969Z"
+   }
+  ]
+ },
+ "cpu": [
+  {
+   "metric": {
+    "labels": {
+     "instance_name": "wordcount-bench-current-r-10271729-bjqq-harness-xbpf"
+    },
+    "type": "compute.googleapis.com/instance/cpu/utilization"
+   },
+   "resource": {
+    "type": "gce_instance",
+    "labels": {
+     "project_id": "test-project",
+     "instance_id": "1026905260201671918",
+     "zone": "us-central1-f"
+    }
+   },
+   "metricKind": "GAUGE",
+   "valueType": "DOUBLE",
+   "points": [
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:36:08.215541Z",
+      "endTime": "2026-10-28T00:36:08.215541Z"
+     },
+     "value": {
+      "doubleValue": 0.7495889842689726
+     }
+    },
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:35:08.215541Z",
+      "endTime": "2026-10-28T00:35:08.215541Z"
+     },
+     "value": {
+      "doubleValue": 0.9027615497596405
+     }
+    },
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:34:08.215541Z",
+      "endTime": "2026-10-28T00:34:08.215541Z"
+     },
+     "value": {
+      "doubleValue": 0.9063454432871237
+     }
+    },
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:33:08.215541Z",
+      "endTime": "2026-10-28T00:33:08.215541Z"
+     },
+     "value": {
+      "doubleValue": 0.9067828656216299
+     }
+    },
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:32:08.215541Z",
+      "endTime": "2026-10-28T00:32:08.215541Z"
+     },
+     "value": {
+      "doubleValue": 0.6597314231110708
+     }
+    },
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:31:08.215541Z",
+      "endTime": "2026-10-28T00:31:08.215541Z"
+     },
+     "value": {
+      "doubleValue": 0.20038418511697378
+     }
+    },
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:30:08.215541Z",
+      "endTime": "2026-10-28T00:30:08.215541Z"
+     },
+     "value": {
+      "doubleValue": 0.003272228013756067
+     }
+    }
+   ]
+  }
+ ],
+ "memory": [
+  {
+   "metric": {
+    "labels": {
+     "container": "harness"
+    },
+    "type": "dataflow.googleapis.com/worker/memory/bytes_used"
+   },
+   "resource": {
+    "type": "dataflow_worker",
+    "labels": {
+     "location": "us-central1",
+     "worker_id": "wordcount-bench-current-r-10271729-bjqq-harness-xbpf",
+     "worker_type": "USER_WORKER",
+     "project_id": "test-project",
+     "job_name": "wordcount-bench-current-r1-1793146571",
+     "job_id": "2026-10-27_17_29_35-2973435830020872277"
+    }
+   },
+   "metricKind": "GAUGE",
+   "valueType": "INT64",
+   "points": [
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:35:48.325130Z",
+      "endTime": "2026-10-28T00:35:48.325130Z"
+     },
+     "value": {
+      "int64Value": "315506688"
+     }
+    },
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:34:48.343710Z",
+      "endTime": "2026-10-28T00:34:48.343710Z"
+     },
+     "value": {
+      "int64Value": "417980416"
+     }
+    },
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:33:48.324123Z",
+      "endTime": "2026-10-28T00:33:48.324123Z"
+     },
+     "value": {
+      "int64Value": "296599552"
+     }
+    },
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:32:48.327762Z",
+      "endTime": "2026-10-28T00:32:48.327762Z"
+     },
+     "value": {
+      "int64Value": "188792832"
+     }
+    },
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:31:48.335690Z",
+      "endTime": "2026-10-28T00:31:48.335690Z"
+     },
+     "value": {
+      "int64Value": "74248192"
+     }
+    }
+   ]
+  },
+  {
+   "metric": {
+    "labels": {
+     "container": "sdk-0-0"
+    },
+    "type": "dataflow.googleapis.com/worker/memory/bytes_used"
+   },
+   "resource": {
+    "type": "dataflow_worker",
+    "labels": {
+     "location": "us-central1",
+     "worker_type": "USER_WORKER",
+     "job_id": "2026-10-27_17_29_35-2973435830020872277",
+     "job_name": "wordcount-bench-current-r1-1793146571",
+     "project_id": "test-project",
+     "worker_id": "wordcount-bench-current-r-10271729-bjqq-harness-xbpf"
+    }
+   },
+   "metricKind": "GAUGE",
+   "valueType": "INT64",
+   "points": [
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:35:48.325130Z",
+      "endTime": "2026-10-28T00:35:48.325130Z"
+     },
+     "value": {
+      "int64Value": "811651072"
+     }
+    },
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:34:48.343710Z",
+      "endTime": "2026-10-28T00:34:48.343710Z"
+     },
+     "value": {
+      "int64Value": "987844608"
+     }
+    },
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:33:48.324123Z",
+      "endTime": "2026-10-28T00:33:48.324123Z"
+     },
+     "value": {
+      "int64Value": "895029248"
+     }
+    },
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:32:48.327762Z",
+      "endTime": "2026-10-28T00:32:48.327762Z"
+     },
+     "value": {
+      "int64Value": "965050368"
+     }
+    },
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:31:48.335690Z",
+      "endTime": "2026-10-28T00:31:48.335690Z"
+     },
+     "value": {
+      "int64Value": "852516864"
+     }
+    }
+   ]
+  }
+ ],
+ "vcpus": [
+  {
+   "metric": {
+    "labels": {
+     "job_id": "2026-10-27_17_29_35-2973435830020872277"
+    },
+    "type": "dataflow.googleapis.com/job/current_num_vcpus"
+   },
+   "resource": {
+    "type": "dataflow_job",
+    "labels": {
+     "project_id": "test-project",
+     "region": "us-central1",
+     "job_name": "wordcount-bench-current-r1-1793146571"
+    }
+   },
+   "metricKind": "GAUGE",
+   "valueType": "INT64",
+   "points": [
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:37:00Z",
+      "endTime": "2026-10-28T00:37:00Z"
+     },
+     "value": {
+      "int64Value": "4"
+     }
+    },
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:36:00Z",
+      "endTime": "2026-10-28T00:36:00Z"
+     },
+     "value": {
+      "int64Value": "4"
+     }
+    },
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:35:00Z",
+      "endTime": "2026-10-28T00:35:00Z"
+     },
+     "value": {
+      "int64Value": "4"
+     }
+    },
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:34:00Z",
+      "endTime": "2026-10-28T00:34:00Z"
+     },
+     "value": {
+      "int64Value": "4"
+     }
+    },
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:33:00Z",
+      "endTime": "2026-10-28T00:33:00Z"
+     },
+     "value": {
+      "int64Value": "4"
+     }
+    },
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:32:00Z",
+      "endTime": "2026-10-28T00:32:00Z"
+     },
+     "value": {
+      "int64Value": "4"
+     }
+    },
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:31:00Z",
+      "endTime": "2026-10-28T00:31:00Z"
+     },
+     "value": {
+      "int64Value": "4"
+     }
+    }
+   ]
+  }
+ ],
+ "counter": [
+  {
+   "metric": {
+    "labels": {
+     "job_id": "2026-10-27_17_29_35-2973435830020872277",
+     "metric_name": "line_count",
+     "ptransform": "CountWords/ExtractWords"
+    },
+    "type": "dataflow.googleapis.com/job/user_counter"
+   },
+   "resource": {
+    "type": "dataflow_job",
+    "labels": {
+     "project_id": "test-project",
+     "region": "us-central1",
+     "job_name": "wordcount-bench-current-r1-1793146571"
+    }
+   },
+   "metricKind": "GAUGE",
+   "valueType": "DOUBLE",
+   "points": [
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:37:00Z",
+      "endTime": "2026-10-28T00:37:00Z"
+     },
+     "value": {
+      "doubleValue": 62762451
+     }
+    },
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:36:00Z",
+      "endTime": "2026-10-28T00:36:00Z"
+     },
+     "value": {
+      "doubleValue": 60434121
+     }
+    },
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:35:00Z",
+      "endTime": "2026-10-28T00:35:00Z"
+     },
+     "value": {
+      "doubleValue": 47356558
+     }
+    },
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:34:00Z",
+      "endTime": "2026-10-28T00:34:00Z"
+     },
+     "value": {
+      "doubleValue": 33716951
+     }
+    },
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:33:00Z",
+      "endTime": "2026-10-28T00:33:00Z"
+     },
+     "value": {
+      "doubleValue": 20021914
+     }
+    },
+    {
+     "interval": {
+      "startTime": "2026-10-28T00:32:00Z",
+      "endTime": "2026-10-28T00:32:00Z"
+     },
+     "value": {
+      "doubleValue": 6193830
+     }
+    }
+   ]
+  }
+ ]
+}

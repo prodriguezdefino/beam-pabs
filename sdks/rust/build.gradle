@@ -34,4 +34,5 @@ apply from: 'gradle/containers.gradle'
 apply from: 'gradle/validates-runner.gradle'
 apply from: 'gradle/xlang.gradle'
 apply from: 'gradle/quality.gradle'
+apply from: 'gradle/benchmarks.gradle'
 

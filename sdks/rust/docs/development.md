@@ -69,6 +69,10 @@ the `time` output and a summary to `build/reports/profile/<binary>-<timestamp>/`
   binary of the workspace.
 - `-Ppkg=<crate> -PcargoExample=<name>` runs a Cargo example of a crate (a file in its
   `examples` directory), for example a program that profiles one connector.
+- `-Ppkg=<crate> -PcargoBench=<name>` runs a Cargo bench of a crate (`harness = false`), for
+  example `-Ppkg=apache-beam-harness -PcargoBench=chain_throughput`. A criterion bench gets
+  `--bench --profile-time 10` and `-PextraArgs`, not the pipeline flags. It runs for a fixed
+  time, so compare its hot frames, not its CPU seconds.
 - `-Pmode=cpu` records with samply, `memory` runs `/usr/bin/time` (`-l` on macOS, `-v` on
   Linux), and `both` (the default) does both. With `both`, the pipeline runs two times.
 - `-PextraArgs="<pipeline flags>"` passes flags to the pipeline.
@@ -87,6 +91,59 @@ CPU time of each thread, each sample counts its CPU time. A thread that waits in
 call, for example in `poll()`, then counts as idle. To open the profile in the Firefox
 profiler, run `samply load <dir>/profile.json.gz`. Keep `profile.json.syms.json` in the same
 directory: it holds the function names.
+
+## Benchmarks
+
+[gradle/benchmarks.gradle](../gradle/benchmarks.gradle) defines the benchmarks. Each runs
+some rounds (`-Pruns`, default 3), one after the other, and writes `results.json` and
+`report.md` to `build/reports/benchmarks/<task>-<timestamp>/`. The report gives each run and
+the medians. The scripts are in [scripts/benchmarks/](../scripts/benchmarks/).
+
+A benchmark runs the current checkout. With `-Pbaseline=<git ref>`, it also runs that ref
+from a git worktree at `build/benchmarks/baseline` and gives the change against it. The
+worktree gets a copy of `.local/`. It stays between runs (about 10 GB with its builds), so the
+next baseline builds only what changed. To get the disk space back, delete it and run
+`git worktree prune`. `-PcompareTo=<results.json>` also compares
+with an earlier result. `-PdryRun` prints the commands and runs nothing.
+
+```bash
+# Wordcount on Dataflow, 100 or 300 Wikipedia shards.
+./gradlew :sdks:rust:wordcountBenchmark -Pshards=100
+./gradlew :sdks:rust:wordcountBenchmark -Pbaseline=origin/master -Pruns=3
+
+# A Rust example or bench on Prism with profilePrism (worker profile, CPU mode).
+gsutil cp gs://apache-beam-samples/wikipedia_edits/wiki_data-000000000000.json build/bench-input/
+./gradlew :sdks:rust:profileCompare -Pinput='build/bench-input/*.json' -Pbaseline=HEAD~1
+./gradlew :sdks:rust:profileCompare -Ppkg=apache-beam-harness -PcargoBench=chain_throughput
+```
+
+- A Dataflow benchmark first builds the worker and the launcher of each variant, so the jobs
+  of a round start together. The report flags a round whose jobs started more than 60 s
+  apart. It takes `-PnumWorkers` (1), `-PmaxNumWorkers` (10), `-PworkerMachineType`
+  (`n2-standard-4`), `-PminCpuPlatform`, `-PextraArgs` and the GCP properties of the
+  `dataflow` task. It finds each job by its name and gives it the labels `benchmark`,
+  `variant`, `round` and `run_id`. `-PprepareOnly` runs only the builds, without jobs.
+- The report gives the vCPU·s, the counted elements per vCPU·s, memory, PD, shuffle, the
+  ProcessElement time of each step, the peak memory of each container, peak workers, CPU
+  platform, warnings, and the start and end times. Cloud Monitoring gives the used vCPU·s,
+  the container memory and the counter rate. It can be some minutes late, so the script
+  waits up to 6 minutes for it, then marks the missing values. `-PmonitoringWait=<seconds>`
+  changes the wait.
+- The total vCPU·s includes worker startup and idle autoscaled workers. The used vCPU·s does
+  not. To compare the code of two builds, use the step CPU seconds per 1M elements.
+- The CPU platform of the workers changes the results by about 20% (for example, Cascade
+  Lake or Ice Lake on `n2`). The report flags a round whose jobs ran on different platforms,
+  a job that autoscaled beyond 1 worker, and stockout or quota warnings. Do not pin a
+  platform with `-PminCpuPlatform` unless necessary: a pinned platform can stock out.
+- To add a Dataflow benchmark of a Rust example, call `registerRustBenchmark` (see
+  `wordcountBenchmark`). For other launchers, give launch commands to `runDataflowBenchmark`.
+- `profileCompare` takes `-Pexample` (`wordcount`) or the target properties of `profilePrism`.
+  It alternates the order of the variants in each round. `profilePrism` builds before it
+  records, so the profile does not include the build. The report gives the Rust and Prism
+  CPU seconds, the Rust CPU seconds per 1M rows and the hottest frames. `-Pinput` gives the
+  pipeline `--input` and `--output`. `-Prows` sets the rows; the default is the lines of the
+  input.
+- `check` runs `pythonScriptsTest`, the unit tests of the Python scripts.
 
 ## Public API Changes
 
