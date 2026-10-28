@@ -39,6 +39,53 @@ pub use timeout::{
     DEFAULT_TEST_TIMEOUT, TEST_TIMEOUT_ENV, test_timeout, with_custom_timeout, with_timeout,
 };
 
+/// User and system CPU time consumed by all threads of the current process.
+#[cfg(unix)]
+pub fn process_cpu_time() -> std::time::Duration {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+    // SAFETY: `RUSAGE_SELF` is valid and `getrusage` fills `usage`. Zeroed is also valid.
+    let usage = unsafe {
+        libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr());
+        usage.assume_init()
+    };
+    let duration = |time: libc::timeval| {
+        std::time::Duration::from_secs(u64::try_from(time.tv_sec).unwrap_or(0))
+            + std::time::Duration::from_micros(u64::try_from(time.tv_usec).unwrap_or(0))
+    };
+    duration(usage.ru_utime) + duration(usage.ru_stime)
+}
+
+/// User and system CPU time consumed by all threads of the current process.
+#[cfg(not(unix))]
+pub fn process_cpu_time() -> std::time::Duration {
+    std::time::Duration::ZERO
+}
+
+/// User and system CPU time consumed by the calling thread.
+#[cfg(unix)]
+pub fn thread_cpu_time() -> std::time::Duration {
+    let mut time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `time` is a valid `timespec` that `clock_gettime` fills. Linux and macOS support
+    // `CLOCK_THREAD_CPUTIME_ID`.
+    let failed = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &raw mut time) } != 0;
+    if failed {
+        return std::time::Duration::ZERO;
+    }
+    std::time::Duration::new(
+        u64::try_from(time.tv_sec).unwrap_or(0),
+        u32::try_from(time.tv_nsec).unwrap_or(0),
+    )
+}
+
+/// User and system CPU time consumed by the calling thread.
+#[cfg(not(unix))]
+pub fn thread_cpu_time() -> std::time::Duration {
+    std::time::Duration::ZERO
+}
+
 /// Reads and concatenates all output shards that match `prefix`, in shard order (for
 /// example `output.txt` matches `output-00000-of-00002.txt`, ...).
 ///
