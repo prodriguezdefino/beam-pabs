@@ -36,6 +36,7 @@ members = [
 ]
 exclude = [
     "examples/build",
+    "benchmarks/tools",
 ]
 
 [workspace.package]
