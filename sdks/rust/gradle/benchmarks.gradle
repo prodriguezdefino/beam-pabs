@@ -259,6 +259,33 @@ tasks.register('profileCompare') {
   }
 }
 
+// Benchmarks of the harness crate (benches/), run on this machine. criterion writes its reports
+// to target/criterion/ and keeps named baselines there. chain_throughput is not criterion: it
+// prints ns/word and takes no criterion flags.
+def harnessBenches = ['process_bundle', 'data_plane', 'user_state', 'chain_throughput']
+tasks.register('harnessBenchmark', Exec) {
+  group = 'Verification'
+  description = 'Run the criterion benchmarks of the harness crate ' +
+      "([-Pbench=${harnessBenches.join('|')}] [-Pfilter=<benchmark id regex>] [-PsmokeTest] " +
+      '[-PsaveBaseline=<name>] [-PbaselineName=<name>] [-PcargoProfile=<profile>])'
+  workingDir rustDir
+  def bench = project.findProperty('bench')?.toString()
+  doFirst {
+    if (bench && !(bench in harnessBenches)) {
+      throw new GradleException("-Pbench must be one of ${harnessBenches}, not '${bench}'")
+    }
+  }
+  def criterionArgs = [project.findProperty('filter')?.toString()] +
+      (project.hasProperty('smokeTest') ? ['--test'] : []) +
+      (project.findProperty('saveBaseline') ? ['--save-baseline', project.property('saveBaseline')] : []) +
+      (project.findProperty('baselineName') ? ['--baseline', project.property('baselineName')] : [])
+  // `worker` builds with the fat LTO of the binaries that run on a runner.
+  def profileArgs = project.findProperty('cargoProfile') ? ['--profile', project.property('cargoProfile')] : []
+  commandLine((['cargo', 'bench', '-p', 'apache-beam-harness'] + profileArgs +
+      (bench ? ['--bench', bench] : harnessBenches.collectMany { ['--bench', it] }) +
+      ['--'] + criterionArgs.findAll { it })*.toString())
+}
+
 tasks.register('pythonScriptsTest') {
   group = 'Verification'
   description = 'Run the unit tests (*_test.py) of the Python scripts in scripts/benchmarks and scripts/profiling'

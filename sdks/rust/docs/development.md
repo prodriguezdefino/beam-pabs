@@ -115,8 +115,24 @@ with an earlier result. `-PdryRun` prints the commands and runs nothing.
 gsutil cp gs://apache-beam-samples/wikipedia_edits/wiki_data-000000000000.json build/bench-input/
 ./gradlew :sdks:rust:profileCompare -Pinput='build/bench-input/*.json' -Pbaseline=HEAD~1
 ./gradlew :sdks:rust:profileCompare -Ppkg=apache-beam-harness -PcargoBench=chain_throughput
+
+# Criterion benchmarks of the harness crate, on this machine.
+./gradlew :sdks:rust:harnessBenchmark -Pbench=data_plane -PsaveBaseline=before
+./gradlew :sdks:rust:harnessBenchmark -Pbench=data_plane -PbaselineName=before
 ```
 
+- `harnessBenchmark` runs the criterion benches in
+  [harness/benches/](../beam/harness/benches/). `process_bundle` runs bundles through a worker
+  and an in-process runner over gRPC, with the pipelines and 16 concurrent callers of Java's
+  `ProcessBundleBenchmark` (`sdks/java/harness/jmh`); its times are per operation, so
+  1 / time compares with JMH's ops/s. `data_plane` measures inbound routing, outbound
+  buffering and the wait one slow bundle causes another on the same stream. `user_state`
+  measures bag state against an in-process state server. `chain_throughput` is not a
+  criterion bench: it runs a fused WordCount chain with and without a user counter per word,
+  and prints the ns/word of each. `-Pfilter` selects benchmark ids,
+  `-PsmokeTest` runs each once. `-PcargoProfile=worker` builds with the fat LTO of the
+  binaries that run on a runner; compare with other SDKs only in that profile. Reports and
+  baselines are in `target/criterion/`.
 - A Dataflow benchmark first builds the worker and the launcher of each variant, so the jobs
   of a round start together. The report flags a round whose jobs started more than 60 s
   apart. It takes `-PnumWorkers` (1), `-PmaxNumWorkers` (10), `-PworkerMachineType`

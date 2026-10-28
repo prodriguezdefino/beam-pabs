@@ -47,6 +47,9 @@ foldhash = { workspace = true }
 [dev-dependencies]
 beam = { package = "apache-beam-core", path = "../core", version = "2.78.0-SNAPSHOT", features = ["derive"] }
 harness = { package = "apache-beam-harness", path = "." }
+criterion = { workspace = true }
+libc = { workspace = true }
+futures = { workspace = true }
 serde = { workspace = true }
 testutils = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
@@ -57,6 +60,18 @@ path = "src/boot.rs"
 
 [[bench]]
 name = "chain_throughput"
+harness = false
+
+[[bench]]
+name = "process_bundle"
+harness = false
+
+[[bench]]
+name = "data_plane"
+harness = false
+
+[[bench]]
+name = "user_state"
 harness = false
 
 [lints]
