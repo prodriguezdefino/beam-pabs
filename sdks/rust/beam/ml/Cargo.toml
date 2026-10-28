@@ -73,6 +73,7 @@ crossbeam-channel = { workspace = true, optional = true }
 [dev-dependencies]
 beam_fluent = { package = "apache-beam-fluent", path = "../fluent" }
 beam_testing = { workspace = true, features = ["prism"] }
+criterion = { workspace = true }
 tokio = { workspace = true }
 wiremock = { workspace = true }
 
@@ -95,3 +96,8 @@ required-features = ["onnx"]
 name = "candle"
 path = "tests/candle/main.rs"
 required-features = ["candle"]
+
+[[bench]]
+name = "onnx_pool"
+harness = false
+required-features = ["onnx"]

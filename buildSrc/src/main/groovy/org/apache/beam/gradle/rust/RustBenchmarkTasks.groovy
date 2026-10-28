@@ -25,6 +25,7 @@ import org.gradle.api.GradleException
 import org.gradle.api.Project
 import org.gradle.api.Task
 import org.gradle.api.file.CopySpec
+import org.gradle.api.tasks.Exec
 import org.gradle.process.ExecSpec
 
 /**
@@ -45,6 +46,11 @@ class RustBenchmarkTasks {
 
   private static final List<String> PROFILE_PASSTHROUGH = [
     'pkg', 'bin', 'cargoExample', 'cargoBench', 'exampleFeatures',
+  ]
+
+  private static final List<String> HARNESS_BENCHES = [
+    'process_bundle', 'data_plane', 'user_state', 'side_input',
+    'chain_throughput', 'window_into', 'row_coder', 'logging',
   ]
 
   final RustDataflowTasks dataflow
@@ -343,6 +349,7 @@ class RustBenchmarkTasks {
     ])
 
     registerProfileCompare()
+    registerHarnessBenchmark()
   }
 
   private void registerProfileCompare() {
@@ -406,4 +413,48 @@ class RustBenchmarkTasks {
     }
   }
 
+  private void registerHarnessBenchmark() {
+    Project project = build.project
+    project.tasks.register('harnessBenchmark', Exec) { Exec task ->
+      task.group = 'Verification'
+      task.description = 'Run the criterion benchmarks of the harness crate (or another crate with -Ppkg=<crate>) ' +
+          "([-Ppkg=apache-beam-harness] [-Pbench=${HARNESS_BENCHES.join('|')}] [-Pfilter=<benchmark id regex>] [-PsmokeTest] " +
+          '[-PsaveBaseline=<name>] [-PbaselineName=<name>] [-PcargoProfile=<profile>])'
+      task.workingDir(build.rustDir)
+      task.environment(build.versions.cargoEnv())
+
+      String pkg = (project.findProperty('pkg') ?: 'apache-beam-harness').toString()
+      String bench = project.findProperty('bench')?.toString()
+      task.doFirst {
+        if (pkg == 'apache-beam-harness' && bench != null && !(bench in HARNESS_BENCHES)) {
+          throw new GradleException("-Pbench must be one of ${HARNESS_BENCHES}, not '${bench}'")
+        }
+        if (pkg != 'apache-beam-harness' && (bench == null || bench.isEmpty())) {
+          throw new GradleException("-Pbench is required when -Ppkg is '${pkg}'")
+        }
+      }
+
+      List<String> criterionArgs = []
+      String filter = project.findProperty('filter')?.toString()
+      if (filter != null && !filter.isEmpty()) {
+        criterionArgs.add(filter)
+      }
+      if (project.hasProperty('smokeTest')) {
+        criterionArgs.add('--test')
+      }
+      if (project.findProperty('saveBaseline') != null) {
+        criterionArgs.addAll(['--save-baseline', project.property('saveBaseline').toString()])
+      }
+      if (project.findProperty('baselineName') != null) {
+        criterionArgs.addAll(['--baseline', project.property('baselineName').toString()])
+      }
+      List<String> profileArgs = project.findProperty('cargoProfile') != null
+          ? ['--profile', project.property('cargoProfile').toString()]
+          : new ArrayList<String>()
+      List<String> benchFlags = (bench != null && !bench.isEmpty())
+          ? ['--bench', bench]
+          : HARNESS_BENCHES.collectMany { String b -> ['--bench', b] }
+      task.commandLine(['cargo', 'bench'] + build.workspaceScope + profileArgs + benchFlags + ['--'] + criterionArgs)
+    }
+  }
 }
