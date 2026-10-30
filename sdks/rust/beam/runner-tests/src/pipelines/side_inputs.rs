@@ -29,7 +29,7 @@ use beam::runners::PipelineResult;
 use beam::testing::{TestPipeline, TestPipelineError, TestStream, passert};
 use beam::transforms::WithFinalizer;
 
-use super::finalization::{marker_dir, words_in, write_marker};
+use super::finalization::{LocalMarkerCleanup, marker_dir, words_in, write_marker};
 use crate::dofns::{
     AssignTimestampDoFn, BufferSideSingletonDoFn, BufferWithSideListDoFn, EnrichOrderDoFn,
     SideInputInTimerDoFn, SideTaggedPCollections, TaggedSideInputsDoFn,
@@ -720,8 +720,9 @@ pub fn check_bundle_finalization_with_side_input(
     runner: RunnerKind,
     result: std::result::Result<PipelineResult, TestPipelineError>,
 ) {
-    result.expect("the pipeline should succeed");
     let dir = marker_dir("side-input");
+    let _cleanup = LocalMarkerCleanup(&dir);
+    result.expect("the pipeline should succeed");
     let markers: BTreeSet<String> = get_filesystem(&dir)
         .and_then(|fs| fs.match_files(&format!("{dir}/side-*")))
         .expect("list the markers")

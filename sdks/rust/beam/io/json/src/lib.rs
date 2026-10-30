@@ -19,8 +19,9 @@
 
 //! JSON and Beam rows: Beam schemas from JSON Schemas, and rows to and from JSON objects.
 //!
-//! Connectors that read or write JSON records use this crate. A pipeline step can also use it,
-//! through `beam::io::json` with the `json` feature of `beam`.
+//! Connectors that read or write JSON records use this crate, for example the native Kafka
+//! connector with the `JSON` format. A pipeline step can also use it, through `beam::io::json`
+//! with the `json` feature of `beam`.
 //!
 //! The schema mapping is the mapping of `JsonUtils` in the Java SDK, so a JSON Schema gives the
 //! same Beam schema in both SDKs:

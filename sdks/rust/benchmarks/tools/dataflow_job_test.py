@@ -232,6 +232,25 @@ class TestDataflowJob(unittest.TestCase):
     runs = [run(1, "rust", ["A"], peak=4.0), run(1, "java", ["A"], peak=5.0)]
     self.assertEqual(dataflow_job.flags(runs, 4), ["Round 1 java: autoscaled to 5 workers"])
 
+  def test_render_with_io_metrics_and_a_named_variant(self):
+    runs = [{**run(1, "java", ["A"]), "metrics": {"processing_s": 100.0}},
+            {**run(1, "rust", ["A"]), "metrics": {"processing_s": 80.0}}]
+    results = {"task": "bigQueryBenchmark", "created": "now",
+               "config": {"description": "d", "current": "rust", "io": {"rows": "rows"},
+                          "variants": {"java": "reader java", "rust": "reader rust"}},
+               "runs": runs, "medians": report.medians(runs, dataflow_job.SECTIONS), "flags": []}
+    text = "\n".join(dataflow_job.render(results, None))
+    self.assertIn("| Processing time (s) | 100 | 80 | -20.0% |", text)
+    self.assertIn("rust vs java", text)
+
+  def test_summarize_with_io(self):
+    job = {"id": "j1", "currentState": "JOB_STATE_DONE", "createTime": "2026-10-27T23:20:31Z",
+           "currentStateTime": "2026-10-27T23:30:31Z"}
+    io = {"pipeline": "python", "namespace": "wordcount", "rows": "line_count"}
+    record = dataflow_job.summarize({"job": job, "metrics": METRICS, "messages": MESSAGES},
+                                    "", None, io)
+    self.assertAlmostEqual(record["metrics"]["rows_per_vcpu_s"], 40 / 1500)
+
   def test_render(self):
     runs = [{**run(1, "current", ["A"]), **dataflow_job.parse_metrics(METRICS, "ExtractWords"),
              "memory": {"sdk-0-0": 900.0}, "job_id": "j1"}]

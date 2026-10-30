@@ -120,6 +120,9 @@ Write functional, data-oriented, idiomatic Rust that follows current practice.
 - **Current Rust.** Use the workspace edition and its idioms: `let`-`else`,
   `async fn` in traits where it fits, `std::sync::LazyLock` instead of
   `lazy_static`. Code must pass `./gradlew :sdks:rust:check` with no warnings.
+- **Tests in `tests/`.** Put tests in the `tests` directory of the crate, not in
+  a `#[cfg(test)]` module in `src`. To test an internal module, make it
+  `#[doc(hidden)] pub` and keep the user API unchanged.
 - **Test layout.** Cargo builds each top-level entry of `tests/` as one binary. Make one
   binary for each area of `src` (`tests/<area>/main.rs`, one submodule per topic). Keep
   tests that start a runtime, a mock server or Prism in a different binary from fast pure

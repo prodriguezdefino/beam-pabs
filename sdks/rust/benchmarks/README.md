@@ -29,6 +29,7 @@ the repository root. [docs/build.md](../docs/build.md) gives the build and test 
 ./gradlew :sdks:rust:nexmarkPrism      # Launch Nexmark on PrismRunner ([-Psuite=SMOKE] [-Pquery=0] [-Pstreaming])
 ./gradlew :sdks:rust:nexmarkDataflow   # Launch Nexmark on Dataflow ([-Psuite=DEFAULT] [-Pquery=0] [-Pstreaming])
 ./gradlew :sdks:rust:profilePrism      # Profile locally on Prism (-Pexample=wordcount [-Pmode=cpu|memory|both] ...)
+./gradlew :sdks:rust:bigQueryBenchmark           # BigQuery benchmark on Dataflow ([-Ppipeline=python|java|rust] [-Pshape=count|per_key|copy] -Preader=...|-Preaders=a,b [-Pwriter=...] [-PnumWorkers=4] [-PmaxNumWorkers=10] [-Pruns=1] [-PdryRun])
 ```
 
 ## Profiling
@@ -50,6 +51,8 @@ the `time` output and a summary to `build/reports/profile/<binary>-<timestamp>/`
   example `-Ppkg=apache-beam-harness -PcargoBench=chain_throughput`. A criterion bench gets
   `--bench --profile-time 10` and `-PextraArgs`, not the pipeline flags. It runs for a fixed
   time, so compare its hot frames, not its CPU seconds.
+  For the Kafka copy bench, use `-Ppkg=apache-beam-io-kafka -PcargoBench=copy_throughput
+  -PexampleFeatures=native`, and `-PextraArgs="--runs=1 --formats=bytes"` for one copy.
 - `-Pmode=cpu` records with samply, `memory` runs `/usr/bin/time` (`-l` on macOS, `-v` on
   Linux), and `both` (the default) does both. With `both`, the pipeline runs two times.
 - `-PextraArgs="<pipeline flags>"` passes flags to the pipeline.
@@ -144,9 +147,43 @@ gsutil cp gs://apache-beam-samples/wikipedia_edits/wiki_data-000000000000.json b
 - To add a Dataflow benchmark of a Rust example, call `registerRustBenchmark` (see
   `wordcountBenchmark`). For other launchers, give launch commands to `runDataflowBenchmark`
   (see `nexmarkBenchmark`).
+- The I/O benchmarks (`bigQueryBenchmark`, `bigtableBenchmark`, `kafkaBenchmark`, see
+  [gradle/io-benchmarks.gradle](../gradle/io-benchmarks.gradle)) give one variant for each
+  reader of `-Preaders=a,b` (or `-Preader`) and each writer of `-Pwriters` (or `-Pwriter`) in
+  the pipeline of `-Ppipeline`. They run 1 round by default. The report compares the last
+  variant with the others, and also gives the processing time, the rows per vCPU·s, the
+  latency and the backlog of a streaming job (`io_report.py`). For a Rust pipeline, the script
+  polls the job and drains a streaming job at `-PexpectedRows` or `-PdrainAfterSeconds`
+  (`job_wait.py`). See [rust-native-io-providers.md](../docs/rust-native-io-providers.md#9-benchmarks).
 - `profileCompare` takes `-Pexample` (`wordcount`) or the target properties of `profilePrism`.
   It alternates the order of the variants in each round. `profilePrism` builds before it
   records, so the profile does not include the build. The report gives the Rust and Prism
   CPU seconds, the Rust CPU seconds per 1M rows and the hottest frames. `-Pinput` gives the
   pipeline `--input` and `--output`. `-Prows` sets the rows. The default is the number of lines
   of the input.
+
+### BigQuery benchmark
+
+`bigQueryBenchmark` has three shapes. `count` and `per_key` only read.
+`copy` reads and passes each row through a step in the pipeline language.
+Then it writes the rows to a new table in `-Pdataset` (or `example.benchmark.dataset`).
+After each `copy` job, the task checks the rows and drops the table.
+
+The readers depend on the pipeline:
+
+- `-Ppipeline=python` (the default): `python`, `java` or `rust`.
+- `-Ppipeline=java`: `java-native`, `java-managed` or `rust`.
+- `-Ppipeline=rust`: `rust`.
+
+The default reader is `rust`.
+`-Preaders=java,rust` runs one job for each reader in each round. `copy` also needs
+`-Pwriter` (or `-Pwriters`). The writers are `java` or `rust` for `-Ppipeline=python`,
+`java-native`, `java-managed` or `rust` for `-Ppipeline=java`, and `rust` for `-Ppipeline=rust`.
+The Rust pipeline ([`apache-beam-benchmark-bigquery`](io/bigquery/rust)) runs
+`count` and `copy` in one Rust SDK harness. Its `count` adds the total to the `e2e/rows`
+counter, and the script checks `-PexpectedRows` against it.
+`-ProwRestriction` limits the
+rows for a smoke run. Every shape runs on fixed workers (`-PnumWorkers=4`) or
+with autoscaling (`-PnumWorkers=1 -PmaxNumWorkers=10`). See
+[`io-bigquery.gradle`](../gradle/benchmarks/io-bigquery.gradle) for the
+other properties.

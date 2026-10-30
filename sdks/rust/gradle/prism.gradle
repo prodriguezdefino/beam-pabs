@@ -120,11 +120,6 @@ cargoTestTasks.each { String pkg, def tp ->
   }
 }
 
-tasks.matching { it.name == 'testBenchmarks' }.configureEach {
-  dependsOn 'fetchPrism'
-  environment 'BEAM_PRISM_PATH', prismHostBinary.absolutePath
-}
-
 tasks.register('prism', Exec) {
   group = 'Application'
   description = 'Run a Rust example on the local Prism Runner (-Pexample=wordcount [-Pdocker])'

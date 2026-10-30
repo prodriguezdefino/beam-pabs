@@ -21,6 +21,7 @@ use std::fs;
 use std::io::Read as _;
 use std::time::Duration;
 
+use beam::io::file::textio;
 use beam::io::file::{
     FileBasedSource, FileFormat, FileNamingContext, FileRecordReader, FileSystem, FormatSink,
     WriteFiles,
@@ -33,17 +34,16 @@ use beam::transforms::sdf::{OffsetRangeTracker, RestrictionTracker};
 use beam::values::IsBounded;
 use beam::windowing::{GlobalWindows, Trigger};
 use beam_fluent::prelude::{PCollectionExt, PCollectionKeyedExt};
-use beam_io_file::textio;
 use beam_runner_prism::PrismRunner;
+use beam_runner_tests::TempDir;
 
 /// Building a pipeline must not touch the destination; only running it may.
 #[tokio::test]
 async fn test_textio_write_leaves_destination_untouched_until_run() {
-    let temp_dir =
-        std::env::temp_dir().join(format!("beam_textio_deferred_{}", std::process::id()));
+    let dir = TempDir::new("textio_deferred");
+    let temp_dir = dir.as_path();
     let out_file = temp_dir.join("existing.txt");
 
-    fs::create_dir_all(&temp_dir).unwrap();
     fs::write(&out_file, "pre-existing content\n").unwrap();
 
     let p = Pipeline::new();
@@ -63,15 +63,12 @@ async fn test_textio_write_leaves_destination_untouched_until_run() {
     assert!(res.is_ok(), "PrismRunner failed: {res:?}");
 
     assert_eq!(fs::read_to_string(&out_file).unwrap(), "replacement\n");
-
-    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[tokio::test]
 async fn test_textio_multi_file_glob_and_write() {
-    let temp_dir =
-        std::env::temp_dir().join(format!("beam_textio_glob_test_{}", std::process::id()));
-    fs::create_dir_all(&temp_dir).unwrap();
+    let dir = TempDir::new("textio_glob_test");
+    let temp_dir = dir.as_path();
 
     let file_a = temp_dir.join("input_a.txt");
     let file_b = temp_dir.join("input_b.txt");
@@ -99,15 +96,12 @@ async fn test_textio_multi_file_glob_and_write() {
     let mut result_lines: Vec<&str> = result_content.lines().collect();
     result_lines.sort();
     assert_eq!(result_lines, vec!["ALPHA", "BETA", "DELTA", "GAMMA"]);
-
-    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[tokio::test]
 async fn test_textio_empty_file() {
-    let temp_dir =
-        std::env::temp_dir().join(format!("beam_textio_empty_test_{}", std::process::id()));
-    fs::create_dir_all(&temp_dir).unwrap();
+    let dir = TempDir::new("textio_empty_test");
+    let temp_dir = dir.as_path();
 
     let in_file = temp_dir.join("empty_input.txt");
     let out_file = temp_dir.join("empty_output.txt");
@@ -132,15 +126,12 @@ async fn test_textio_empty_file() {
         result_content, "",
         "Empty file should result in 0 lines written"
     );
-
-    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[tokio::test]
 async fn test_textio_crlf_newlines() {
-    let temp_dir =
-        std::env::temp_dir().join(format!("beam_textio_crlf_test_{}", std::process::id()));
-    fs::create_dir_all(&temp_dir).unwrap();
+    let dir = TempDir::new("textio_crlf_test");
+    let temp_dir = dir.as_path();
 
     let in_file = temp_dir.join("crlf_input.txt");
     let out_file = temp_dir.join("crlf_output.txt");
@@ -162,15 +153,12 @@ async fn test_textio_crlf_newlines() {
 
     let result_content = fs::read_to_string(&out_file).unwrap();
     assert_eq!(result_content, "line1\nline2\nline3\n");
-
-    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[tokio::test]
 async fn test_textio_read_with_filename() {
-    let temp_dir =
-        std::env::temp_dir().join(format!("beam_textio_with_name_test_{}", std::process::id()));
-    fs::create_dir_all(&temp_dir).unwrap();
+    let dir = TempDir::new("textio_with_name_test");
+    let temp_dir = dir.as_path();
 
     let in_file = temp_dir.join("file_named.txt");
     let out_file = temp_dir.join("out_named.txt");
@@ -202,15 +190,12 @@ async fn test_textio_read_with_filename() {
     let expected = [format!("{in_str} -> item1"), format!("{in_str} -> item2")];
     let expected_refs: Vec<&str> = expected.iter().map(String::as_str).collect();
     assert_eq!(lines, expected_refs);
-
-    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[tokio::test]
 async fn test_textio_no_matching_files_error() {
-    let temp_dir =
-        std::env::temp_dir().join(format!("beam_textio_err_test_{}", std::process::id()));
-    fs::create_dir_all(&temp_dir).unwrap();
+    let dir = TempDir::new("textio_err_test");
+    let temp_dir = dir.as_path();
 
     let non_existent_pattern = format!("{}/does_not_exist_*.txt", temp_dir.to_str().unwrap());
     let out_file = temp_dir.join("out.txt");
@@ -229,8 +214,6 @@ async fn test_textio_no_matching_files_error() {
         .expect_err("Expected pipeline execution to fail when no files match pattern");
     let message = format!("{err:?}");
     assert!(message.contains("No files matched pattern"), "{message}");
-
-    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[derive(Clone, Default)]
@@ -251,9 +234,8 @@ impl DoFn for AssignStringTimestampDoFn {
 
 #[tokio::test]
 async fn test_textio_windowed_writes_fixed_windows() {
-    let temp_dir =
-        std::env::temp_dir().join(format!("beam_textio_windowed_{}", std::process::id()));
-    fs::create_dir_all(&temp_dir).unwrap();
+    let dir = TempDir::new("textio_windowed");
+    let temp_dir = dir.as_path();
     let out_file = temp_dir.join("output.txt");
 
     let p = Pipeline::new();
@@ -295,8 +277,6 @@ async fn test_textio_windowed_writes_fixed_windows() {
         fs::read_to_string(&win2_file).unwrap(),
         "window 2 line 1\nwindow 2 line 2\n"
     );
-
-    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[derive(Clone, Default)]
@@ -314,8 +294,8 @@ impl FileFormat<(String, i64)> for CsvFormat {
 
 #[tokio::test]
 async fn test_write_files_custom_csv_format() {
-    let temp_dir = std::env::temp_dir().join(format!("beam_csv_sink_{}", std::process::id()));
-    fs::create_dir_all(&temp_dir).unwrap();
+    let dir = TempDir::new("csv_sink");
+    let temp_dir = dir.as_path();
     let out_file = temp_dir.join("scores.csv");
 
     let p = Pipeline::new();
@@ -338,8 +318,6 @@ async fn test_write_files_custom_csv_format() {
         fs::read_to_string(&out_file).unwrap(),
         "name,score\nAlice,100\nBob,85\n"
     );
-
-    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[derive(Clone, Default)]
@@ -377,8 +355,8 @@ impl FileRecordReader<(String, i64)> for CsvRecordReader {
 
 #[tokio::test]
 async fn test_filebasedsource_custom_csv_format() {
-    let temp_dir = std::env::temp_dir().join(format!("beam_csv_source_{}", std::process::id()));
-    fs::create_dir_all(&temp_dir).unwrap();
+    let dir = TempDir::new("csv_source");
+    let temp_dir = dir.as_path();
     let in_file = temp_dir.join("scores.csv");
     let out_file = temp_dir.join("formatted.txt");
 
@@ -408,15 +386,12 @@ async fn test_filebasedsource_custom_csv_format() {
         .collect();
     lines.sort();
     assert_eq!(lines, vec!["Alice=100", "Bob=85"]);
-
-    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[tokio::test]
 async fn test_textio_non_windowed_writes_on_windowed_collection() {
-    let temp_dir =
-        std::env::temp_dir().join(format!("beam_textio_rewindow_{}", std::process::id()));
-    fs::create_dir_all(&temp_dir).unwrap();
+    let dir = TempDir::new("textio_rewindow");
+    let temp_dir = dir.as_path();
     let out_file = temp_dir.join("collapsed_output.txt");
 
     let p = Pipeline::new();
@@ -447,8 +422,6 @@ async fn test_textio_non_windowed_writes_on_windowed_collection() {
     let mut lines: Vec<&str> = content.lines().collect();
     lines.sort();
     assert_eq!(lines, vec!["window 1 line", "window 2 line"]);
-
-    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[test]
@@ -489,9 +462,8 @@ fn test_unbounded_write_after_a_map_without_windowed_writes_is_a_construction_er
 
 #[tokio::test]
 async fn test_textio_custom_pane_filename_policy() {
-    let temp_dir =
-        std::env::temp_dir().join(format!("beam_textio_pane_policy_{}", std::process::id()));
-    fs::create_dir_all(&temp_dir).unwrap();
+    let dir = TempDir::new("textio_pane_policy");
+    let temp_dir = dir.as_path();
     let out_file = temp_dir.join("data.txt");
 
     let p = Pipeline::new();
@@ -532,15 +504,12 @@ async fn test_textio_custom_pane_filename_policy() {
     assert!(win2.exists(), "File {win2:?} must exist");
     assert_eq!(fs::read_to_string(&win1).unwrap(), "line 1\n");
     assert_eq!(fs::read_to_string(&win2).unwrap(), "line 2\n");
-
-    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[tokio::test]
 async fn test_textio_triggered_early_pane_writes() {
-    let temp_dir =
-        std::env::temp_dir().join(format!("beam_textio_early_pane_{}", std::process::id()));
-    fs::create_dir_all(&temp_dir).unwrap();
+    let dir = TempDir::new("textio_early_pane");
+    let temp_dir = dir.as_path();
     let out_file = temp_dir.join("output.txt");
 
     let composite_trigger =
@@ -579,7 +548,7 @@ async fn test_textio_triggered_early_pane_writes() {
     let res = p.run_with_runner(&PrismRunner::new()).await;
     assert!(res.is_ok(), "PrismRunner failed: {res:?}");
 
-    let mut entries = fs::read_dir(&temp_dir)
+    let mut entries = fs::read_dir(temp_dir)
         .unwrap()
         .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
         .collect::<Vec<_>>();
@@ -616,19 +585,16 @@ async fn test_textio_triggered_early_pane_writes() {
             "{name}: {lines:?}"
         );
     }
-
-    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 /// The `build_textio_roundtrip` pipeline on Prism: what was read is asserted in the
 /// pipeline, and the written file is read back by the driver.
 #[tokio::test]
 async fn test_textio_roundtrip_validation() {
-    let temp_dir =
-        std::env::temp_dir().join(format!("beam_textio_validate_{}", std::process::id()));
-    fs::create_dir_all(&temp_dir).unwrap();
+    let dir = TempDir::new("textio_validate");
+    let temp_dir = dir.as_path();
     let p = beam_runner_tests::test_pipeline();
-    beam_runner_tests::build_textio_roundtrip(&p, &temp_dir);
+    beam_runner_tests::build_textio_roundtrip(&p, temp_dir);
     beam_runner_tests::Expectation::Succeeds.check(
         "textio_roundtrip",
         beam_runner_tests::RunnerKind::Prism,
@@ -636,5 +602,4 @@ async fn test_textio_roundtrip_validation() {
     );
     let read_back = fs::read_to_string(temp_dir.join("output.txt")).unwrap();
     assert_eq!(read_back, beam_runner_tests::TEXTIO_ROUNDTRIP_CONTENTS);
-    let _ = fs::remove_dir_all(&temp_dir);
 }

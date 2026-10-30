@@ -33,6 +33,7 @@ use std::collections::BTreeSet;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use beam::io::file::get_filesystem;
 use beam::prelude::*;
 use beam::runners::PipelineResult;
 use beam::testing::{TestPipeline, TestPipelineError};
@@ -41,7 +42,6 @@ use beam::transforms::sdf::{
     OffsetRange, OffsetRangeTracker, ProcessContinuation, RestrictionTracker, SplittableDoFn,
     SplittableParDo,
 };
-use beam_io_file::get_filesystem;
 
 use crate::env::scratch_root;
 
@@ -70,6 +70,22 @@ pub(crate) fn marker_dir(case: &str) -> String {
         std::fs::create_dir_all(&dir).expect("create the local marker directory");
     }
     dir
+}
+
+/// Removes a local marker directory on drop, and its run directory when no other case
+/// uses it. A drop guard also cleans up after a failed check. Remote directories stay.
+pub(crate) struct LocalMarkerCleanup<'a>(pub(crate) &'a str);
+
+impl Drop for LocalMarkerCleanup<'_> {
+    fn drop(&mut self) {
+        let dir = std::path::Path::new(self.0);
+        if self.0.contains("://") {
+            return;
+        }
+        let _ = std::fs::remove_dir_all(dir);
+        // Fails while another case still has markers in the run directory.
+        let _ = dir.parent().map(std::fs::remove_dir);
+    }
 }
 
 /// Creates one `(dir, word)` pair for each of `words`.
@@ -221,8 +237,9 @@ pub fn check_bundle_finalization(
     _runner: crate::RunnerKind,
     result: std::result::Result<PipelineResult, TestPipelineError>,
 ) {
-    result.expect("the pipeline should succeed");
     let dir = marker_dir("bundle");
+    let _cleanup = LocalMarkerCleanup(&dir);
+    result.expect("the pipeline should succeed");
     let markers: BTreeSet<String> = get_filesystem(&dir)
         .and_then(|fs| fs.match_files(&format!("{dir}/*")))
         .expect("list the markers")
@@ -351,8 +368,9 @@ pub fn check_test_stream_bundle_finalization_with_state(
     _runner: crate::RunnerKind,
     result: std::result::Result<PipelineResult, TestPipelineError>,
 ) {
-    result.expect("the pipeline should succeed");
     let dir = marker_dir("test-stream-stateful");
+    let _cleanup = LocalMarkerCleanup(&dir);
+    result.expect("the pipeline should succeed");
     let markers: BTreeSet<String> = get_filesystem(&dir)
         .and_then(|fs| fs.match_files(&format!("{dir}/ts-stateful-*")))
         .expect("list the markers")

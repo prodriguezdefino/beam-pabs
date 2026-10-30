@@ -17,8 +17,11 @@
  * under the License.
  */
 
-//! Google Cloud BigQuery I/O through the SchemaTransform providers for Storage Read,
-//! Storage Write and File Loads.
+//! Google Cloud BigQuery I/O.
+//!
+//! This module holds the transforms that expand through the Java SchemaTransform providers
+//! for Storage Read, Storage Write and File Loads. [`storage`] holds the native Storage Read
+//! and Storage Write connectors, with the `bigquery-storage` feature.
 //!
 //! Reads and [`WriteMethod::Auto`] or at-least-once writes expand through Managed I/O
 //! (`beam:transform:managed:v1`, [`managed_io`]), so runners such as Dataflow can upgrade
@@ -54,6 +57,10 @@
 //!         .with_method(WriteMethod::StorageWriteApi)
 //! );
 //! ```
+
+#[cfg(feature = "bigquery-storage")]
+pub mod storage;
+pub mod table;
 
 use std::sync::{Arc, LazyLock};
 
@@ -114,6 +121,21 @@ impl From<CreateDisposition> for &'static str {
     }
 }
 
+impl std::str::FromStr for CreateDisposition {
+    type Err = String;
+
+    /// Parses a name of [`as_str`](Self::as_str), in any case.
+    fn from_str(name: &str) -> Result<Self, String> {
+        match name.to_ascii_uppercase().as_str() {
+            "CREATE_IF_NEEDED" => Ok(Self::CreateIfNeeded),
+            "CREATE_NEVER" => Ok(Self::CreateNever),
+            _ => Err(format!(
+                "Unknown create disposition '{name}': expected CREATE_IF_NEEDED or CREATE_NEVER"
+            )),
+        }
+    }
+}
+
 /// Specifies the action to take when the destination table already exists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum WriteDisposition {
@@ -155,6 +177,22 @@ impl From<WriteDisposition> for &'static str {
     }
 }
 
+impl std::str::FromStr for WriteDisposition {
+    type Err = String;
+
+    /// Parses a name of [`as_str`](Self::as_str), in any case.
+    fn from_str(name: &str) -> Result<Self, String> {
+        match name.to_ascii_uppercase().as_str() {
+            "WRITE_APPEND" => Ok(Self::WriteAppend),
+            "WRITE_TRUNCATE" => Ok(Self::WriteTruncate),
+            "WRITE_EMPTY" => Ok(Self::WriteEmpty),
+            _ => Err(format!(
+                "Unknown write disposition '{name}': expected WRITE_APPEND, WRITE_TRUNCATE or WRITE_EMPTY"
+            )),
+        }
+    }
+}
+
 /// Method used to write data into BigQuery.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum WriteMethod {
@@ -182,12 +220,10 @@ impl WriteMethod {
 /// The name of the method in Java's `BigQueryIO.Write.Method`, for example `FILE_LOADS`.
 impl std::fmt::Display for WriteMethod {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let name = match self {
-            Self::Auto => "DEFAULT",
-            Self::StorageWriteApi => "STORAGE_WRITE_API",
-            Self::FileLoads => "FILE_LOADS",
-            Self::StorageApiAtLeastOnce => "STORAGE_API_AT_LEAST_ONCE",
-        };
+        let (_, name) = Self::NAMES
+            .iter()
+            .find(|(method, _)| method == self)
+            .expect("NAMES has every method");
         f.write_str(name)
     }
 }

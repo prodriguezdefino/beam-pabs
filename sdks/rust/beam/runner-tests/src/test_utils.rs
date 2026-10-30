@@ -22,42 +22,41 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Temporary directory fixture for tests.
-///
-/// Removes the directory on drop.
+/// Temporary directory fixture for tests. Removes the directory on drop.
 pub struct TempDir {
-    path: PathBuf,
+    dir: tempfile::TempDir,
 }
 
 impl TempDir {
-    /// Creates a temporary directory with a prefix and the process id.
+    /// Creates a directory with a unique name that starts with `beam_test_<prefix>_`.
     pub fn new(prefix: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("beam_test_{prefix}_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).expect("create temp test directory");
-        Self { path }
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("beam_test_{prefix}_"))
+            .tempdir()
+            .expect("create temp test directory");
+        Self { dir }
     }
 
     /// Returns a reference to the directory path.
     pub fn as_path(&self) -> &Path {
-        &self.path
+        self.dir.path()
     }
 
     /// Joins a child path component to the directory path.
     pub fn join(&self, name: &str) -> String {
-        self.path.join(name).to_string_lossy().into_owned()
+        self.as_path().join(name).to_string_lossy().into_owned()
     }
 
     /// Creates a file in the directory with the given content.
     pub fn create_file(&self, name: &str, content: &str) -> PathBuf {
-        let file_path = self.path.join(name);
+        let file_path = self.as_path().join(name);
         fs::write(&file_path, content).expect("write temp test file");
         file_path
     }
 
     /// Returns sorted paths of all files that end with suffix.
     pub fn files_with_suffix(&self, suffix: &str) -> Vec<String> {
-        let mut files: Vec<String> = fs::read_dir(&self.path)
+        let mut files: Vec<String> = fs::read_dir(self.as_path())
             .expect("read temp dir")
             .map(|entry| {
                 entry
@@ -74,7 +73,7 @@ impl TempDir {
 
     /// Returns sorted names of all directory entries.
     pub fn entries(&self) -> Vec<String> {
-        let mut names: Vec<String> = fs::read_dir(&self.path)
+        let mut names: Vec<String> = fs::read_dir(self.as_path())
             .expect("read temp dir")
             .map(|entry| {
                 entry
@@ -86,11 +85,5 @@ impl TempDir {
             .collect();
         names.sort();
         names
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
     }
 }

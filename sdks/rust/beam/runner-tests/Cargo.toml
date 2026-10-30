@@ -53,7 +53,7 @@ harness = false
 test = false
 
 [dependencies]
-beam = { workspace = true, features = ["fluent", "io-file", "gcp-gcs", "gcp-bigquery", "gcp-bigtable", "gcp-pubsub", "derive", "external", "prism", "dataflow", "testing", "parquet", "avro", "tfrecord"] }
+beam = { workspace = true, features = ["fluent", "io-file", "gcp-gcs", "gcp-bigquery", "gcp-bigquery-storage", "gcp-bigtable", "gcp-pubsub", "derive", "external", "prism", "dataflow", "testing", "parquet", "avro", "tfrecord"] }
 beam_runner_prism = { workspace = true }
 beam_io_file = { workspace = true }
 beam_io_gcp = { workspace = true, features = ["gcs"] }
@@ -65,6 +65,7 @@ inventory = { workspace = true }
 prost = { workspace = true }
 rust_decimal = { workspace = true }
 serde = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
@@ -72,6 +73,9 @@ tracing = { workspace = true }
 beam_harness = { workspace = true }
 beam_model = { workspace = true }
 tonic = { workspace = true }
+google-cloud-bigquery = { workspace = true }
+google-cloud-bigquery-v2 = { workspace = true }
+google-cloud-gax = { workspace = true }
 
 [lints]
 workspace = true

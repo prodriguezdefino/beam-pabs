@@ -19,10 +19,10 @@
 
 use std::io::{Read, Write};
 
+use beam::io::file::textio;
+use beam::io::file::{FileSystem, get_filesystem};
+use beam::io::gcp::gcs::GcsFileSystem;
 use beam::prelude::*;
-use beam_io_file::textio;
-use beam_io_file::{FileSystem, get_filesystem};
-use beam_io_gcp::gcs::GcsFileSystem;
 use beam_runner_prism::PrismRunner;
 
 /// Names the bucket the live GCS tests run against.

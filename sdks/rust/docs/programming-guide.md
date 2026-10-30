@@ -65,7 +65,7 @@ struct CleanWords;
 impl PTransform<PCollection<String>> for CleanWords {
     type Output = PCollection<String>;
 
-    fn expand(self, input: &PCollection<String>) -> PCollection<String> {
+    fn expand(&self, input: &PCollection<String>) -> PCollection<String> {
         input
             .apply("NotEmpty", Filter::new(|w: &String| !w.is_empty()))
             .apply("Lower", Map::new(|w: String| w.to_lowercase()))
@@ -794,7 +794,7 @@ impl StatefulDoFn for IdleCounter {
         ctx: &mut StatefulContext<'_, Self>,
     ) -> beam::Result {
         let n = state.count.read()?.unwrap_or(0) + 1;
-        state.count.write(&n)?;
+        state.count.write(n)?;
         ctx.timer(IdleTimers::Expiry("idle".to_string()))
             .after(Duration::from_secs(10 * 60))
     }
@@ -851,7 +851,7 @@ impl StatefulDoFn for SumPerWindow {
         state: &mut Self::State,
         _ctx: &mut StatefulContext<'_, Self>,
     ) -> beam::Result {
-        state.values.append(&value)
+        state.values.append(value)
     }
 
     fn on_window_expiration(
@@ -1449,7 +1449,12 @@ Other SDKs can expand Rust transforms over gRPC:
   [`SchemaTransformProvider`](../beam/expansion/src/lib.rs) implementations across crates
   at link time.
 - The `beam-expansion-service` binary ([main.rs](../beam/expansion/src/main.rs)) serves
-  them over TCP (default port `8097`) or in a worker pool.
+  them over TCP (`--port`, default `8097`; `--host`; `--docker_image`). When a
+  container boot program starts it with `--worker`, the same binary runs as the
+  SDK worker for the transforms that it expanded.
+- `beam-gcp-expansion-service` (crate `apache-beam-io-gcp-expansion-service`)
+  serves the native GCP connectors (BigQuery Storage Read and Write). See
+  [beam/io/gcp/expansion-service](../beam/io/gcp/expansion-service/src/lib.rs).
 
 ### Managed I/O (`beam::io::managed`)
 
@@ -1466,12 +1471,12 @@ use std::collections::BTreeMap;
 use beam::io::managed::{self, ManagedRead, ManagedWrite};
 use beam::prelude::*;
 
-let rows: PCollection<Row> = p.try_apply("Managed Read(ICEBERG)", ManagedRead::new(managed::ICEBERG)
+let rows: PCollection<Row> = p.apply("Managed Read(ICEBERG)", ManagedRead::new(managed::ICEBERG)
         .with_config_entry("table", "db.events")
         .with_config_entry("catalog_name", "local")
         .with_config_entry("catalog_properties", BTreeMap::from([("type", "hadoop"), ("warehouse", "gs://b/w")])),
-)?;
-rows.try_apply("Managed Write(POSTGRES)", ManagedWrite::new(managed::POSTGRES).with_config_url("gs://b/postgres.yaml"))?;
+);
+rows.apply("Managed Write(POSTGRES)", ManagedWrite::new(managed::POSTGRES).with_config_url("gs://b/postgres.yaml"));
 ```
 
 - **Config**: `with_config` takes any `Serialize` map (struct, `BTreeMap`,
@@ -1496,10 +1501,10 @@ rows.try_apply("Managed Write(POSTGRES)", ManagedWrite::new(managed::POSTGRES).w
   without an expansion service. Expansion fails if Java does not produce a declared tag.
 
 ```rust
-let written = rows.try_apply("Managed Write(ICEBERG)", ManagedWrite::new(managed::ICEBERG).with_config(cfg).with_outputs())?;
+let written = rows.apply("Managed Write(ICEBERG)", ManagedWrite::new(managed::ICEBERG).with_config(cfg).with_outputs());
 let snapshots = written.try_get(managed::SNAPSHOTS)?;
 
-let read = p.try_apply("ReadEvents", KafkaRead::new("broker:9092", "t").with_error_handling("errors").to_managed()?.with_all_outputs())?;
+let read = p.apply("ReadEvents", KafkaRead::new("broker:9092", "t").with_error_handling("errors").to_managed()?.with_all_outputs());
 let (records, errors) = (read.try_get(managed::OUTPUT)?, read.try_get("errors")?);
 ```
 

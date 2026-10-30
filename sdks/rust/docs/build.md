@@ -33,6 +33,7 @@ Run builds and tests through Gradle. The rest of the Beam repository uses it too
 ```bash
 # Core Lifecycle Tasks
 ./gradlew :sdks:rust:build             # Compile all crates in workspace (cargo build --workspace)
+./gradlew :sdks:rust:build -Ppkg=apache-beam-io-gcp -PonlyFeatures=bigtable  # One crate with only these features (also for test)
 ./gradlew :sdks:rust:check             # Run formatting, clippy and script tests in parallel
 ./gradlew :sdks:rust:clippyFix         # Apply the machine-applicable lint fixes (cargo clippy --fix)
 ./gradlew :sdks:rust:test              # Run all tests on a host Prism (-Ppkg=<crate>, -PtestConcurrency=4)
@@ -58,8 +59,21 @@ Run builds and tests through Gradle. The rest of the Beam repository uses it too
 ./gradlew :sdks:rust:validatesRunnerDataflowStreaming  # The same suite on Dataflow in streaming mode
 ./gradlew :sdks:rust:validatesCrossLanguageRunnerPythonPrism     # Python xlang suite on Prism against the Rust test expansion service
 ./gradlew :sdks:rust:validatesCrossLanguageRunnerPythonDataflow  # Python xlang suite on Dataflow against the Rust test expansion service
+./gradlew :sdks:rust:validatesCrossLanguageRunnerJavaPrism       # Java xlang suite on Prism against the Rust test expansion service
+./gradlew :sdks:rust:validatesCrossLanguageRunnerJavaDataflow    # Java xlang suite on Dataflow against the Rust test expansion service
+./gradlew :sdks:rust:validatesCrossLanguageRunnerGoPrism         # Go xlang suite on Prism against the Rust test expansion service
+./gradlew :sdks:rust:validatesCrossLanguageRunnerGoDataflow      # Go xlang suite on Dataflow against the Rust test expansion service
 ./gradlew :sdks:rust:validatesCrossLanguageRunnerJavaServicePrism  # Rust xlang suite on Prism against the Java test expansion service
 ./gradlew :sdks:rust:validatesCrossLanguageRunnerPythonServicePrism # Rust xlang suite on Prism against the Python test expansion service
+./gradlew :sdks:rust:gcpExpansionServiceImage    # Expansion service image of the native Google Cloud connectors
+./gradlew :sdks:rust:gcpExpansionServiceDataflowImage  # The same image for linux/amd64, pushed for Dataflow (used by bigQueryBenchmark)
+./gradlew :sdks:rust:gcpExpansionServiceTestingImage   # GCP expansion service image for its Python tests on Prism
+./gradlew :sdks:rust:gcpExpansionServiceTestingDataflowImage  # The same image for linux/amd64, pushed for Dataflow
+./gradlew :sdks:rust:bigQueryIntegrationTest     # Native BigQuery reads against public tables on Prism
+./gradlew :sdks:rust:gcpExpansionServicePythonTest  # Python pipelines on Prism against the GCP expansion service
+./gradlew :sdks:rust:gcpExpansionServicePythonTestDataflow  # The same Python pipelines on Dataflow ([-Ptests=bigquery_storage] [-PtestFilter=unbounded])
+./gradlew :sdks:rust:kafkaExpansionServiceImage  # Expansion service image of the native Kafka connector
+./gradlew :sdks:rust:kafkaExpansionServicePythonTest  # Python pipelines on Prism against the Kafka expansion service and a local broker in Docker
 
 # Tasks that other tasks use
 ./gradlew :sdks:rust:buildWorkspace            # cargo build of the workspace, for `build`
@@ -70,6 +84,10 @@ Run builds and tests through Gradle. The rest of the Beam repository uses it too
 ./gradlew :sdks:rust:fetchPrism                # Download the host Prism binary (fetchPrismLinux: the Linux one)
 ./gradlew :sdks:rust:setupXlangPythonEnv       # Python virtualenv for the Python xlang suite
 ./gradlew :sdks:rust:pythonSdkDataflowImage    # Python SDK image for the Python xlang suite on Dataflow
+./gradlew :sdks:rust:testingExpansionServiceImage          # Test expansion service image of the xlang suites
+./gradlew :sdks:rust:testingExpansionServiceDataflowImage  # The same image for linux/amd64, pushed for Dataflow
+./gradlew :sdks:rust:javaSdkDataflowImage        # Java SDK container of this tree for Dataflow
+./gradlew :sdks:rust:goSdkDataflowImage          # Go SDK container of this tree for Dataflow
 ```
 
 Start each ValidatesRunner suite in its own Gradle command, so that the suites run in
