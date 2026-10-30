@@ -178,13 +178,6 @@ class RustPrismTasks {
       task.dependsOn('fetchPrism')
       task.inputs.file(prismHostBinary).withPathSensitivity(PathSensitivity.NONE)
     }
-
-    project.tasks.matching { Task task -> task.name == 'testBenchmarks' }.configureEach { Task task ->
-      task.dependsOn('fetchPrism')
-      if (task instanceof Exec) {
-        ((Exec) task).environment('BEAM_PRISM_PATH', prismHostBinary.absolutePath)
-      }
-    }
   }
 
   private void provideBinary(File binary, String goos) {

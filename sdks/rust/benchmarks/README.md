@@ -27,6 +27,7 @@ This page gives the tasks that measure the performance of the SDK: local profile
 ./gradlew :sdks:rust:nexmarkPrism      # Launch Nexmark on PrismRunner ([-Psuite=SMOKE] [-Pquery=0] [-Pstreaming])
 ./gradlew :sdks:rust:nexmarkDataflow   # Launch Nexmark on Dataflow ([-Psuite=DEFAULT] [-Pquery=0] [-Pstreaming])
 ./gradlew :sdks:rust:profilePrism      # Profile locally on Prism (-Pexample=wordcount [-Pmode=cpu|memory|both] ...)
+./gradlew :sdks:rust:bigQueryBenchmark           # BigQuery benchmark on Dataflow ([-Ppipeline=python|java|rust] [-Pshape=count|per_key|copy] -Preader=...|-Preaders=a,b [-Pwriter=...] [-PnumWorkers=4] [-PmaxNumWorkers=10] [-Pruns=1] [-PdryRun])
 ```
 
 ## Profiling
@@ -39,7 +40,7 @@ The `profilePrism` task runs a pipeline on the local Prism runner and records a 
 
 - `-Pexample=<name>` runs an example. `-Ppkg=<crate> -Pbin=<binary>` runs another binary of the workspace.
 - `-Ppkg=<crate> -PcargoExample=<name>` runs a Cargo example of a crate (a file in its `examples` directory), for example a program that profiles one connector.
-- `-Ppkg=<crate> -PcargoBench=<name>` runs a Cargo bench of a crate (`harness = false`), for example `-Ppkg=apache-beam-harness -PcargoBench=chain_throughput`. A criterion bench gets `--bench --profile-time 10` and `-PextraArgs`, not the pipeline flags. It runs for a fixed time, so compare its hot frames, not its CPU seconds.
+- `-Ppkg=<crate> -PcargoBench=<name>` runs a Cargo bench of a crate (`harness = false`), for example `-Ppkg=apache-beam-harness -PcargoBench=chain_throughput`. A criterion bench gets `--bench --profile-time 10` and `-PextraArgs`, not the pipeline flags. It runs for a fixed time, so compare its hot frames, not its CPU seconds. For the Kafka copy bench, use `-Ppkg=apache-beam-io-kafka -PcargoBench=copy_throughput -PexampleFeatures=native`, and `-PextraArgs="--runs=1 --formats=bytes"` for one copy.
 - `-Pmode=cpu` records with samply, `memory` runs `/usr/bin/time` (`-l` on macOS, `-v` on Linux), and `both` (the default) does both. With `both`, the pipeline runs two times.
 - `-PextraArgs="<pipeline flags>"` passes flags to the pipeline.
 - `-Prows=<n>` adds the CPU seconds for each 1M rows to the summary.
@@ -82,4 +83,17 @@ gcloud storage cp gs://apache-beam-samples/wikipedia_edits/wiki_data-00000000000
 - The total vCPU·s includes worker startup and idle autoscaled workers. The used vCPU·s does not. To compare the code of two builds, use the step CPU seconds per 1M elements.
 - The CPU platform of the workers changes the results by about 20% (for example, Cascade Lake or Ice Lake on `n2`). The report flags a round whose jobs ran on different platforms. It also flags a job that autoscaled beyond its initial workers, and stockout or quota warnings. Do not pin a platform with `-PminCpuPlatform` unless necessary: a pinned platform can stock out.
 - To add a Dataflow benchmark of a Rust example, call `registerRustBenchmark` (see `wordcountBenchmark`). For other launchers, give launch commands to `runDataflowBenchmark` (see `nexmarkBenchmark`).
+- The I/O benchmarks (`bigQueryBenchmark`, `bigtableBenchmark`, `kafkaBenchmark`, see [RustIoBenchmarkSupport.groovy](../../../buildSrc/src/main/groovy/org/apache/beam/gradle/rust/RustIoBenchmarkSupport.groovy)) give one variant for each reader of `-Preaders=a,b` (or `-Preader`) and each writer of `-Pwriters` (or `-Pwriter`) in the pipeline of `-Ppipeline`. They run 1 round by default. The report compares the last variant with the others, and also gives the processing time, the rows per vCPU·s, the latency and the backlog of a streaming job (`io_report.py`). For a Rust pipeline, the script polls the job and drains a streaming job at `-PexpectedRows` or `-PdrainAfterSeconds` (`job_wait.py`). See [rust-native-io-providers.md](../docs/rust-native-io-providers.md#9-benchmarks).
 - `profileCompare` takes `-Pexample` (`wordcount`) or the target properties of `profilePrism`. It alternates the order of the variants in each round. `profilePrism` builds before it records, so the profile does not include the build. The report gives the Rust and Prism CPU seconds, the Rust CPU seconds per 1M rows and the hottest frames. `-Pinput` gives the pipeline `--input` and `--output`. `-Prows` sets the rows. The default is the number of lines of the input.
+
+### BigQuery benchmark
+
+`bigQueryBenchmark` has three shapes. `count` and `per_key` only read. `copy` reads and passes each row through a step in the pipeline language. Then it writes the rows to a new table in `-Pdataset` (or `example.benchmark.dataset`). After each `copy` job, the task checks the rows and drops the table.
+
+The readers depend on the pipeline:
+
+- `-Ppipeline=python` (the default): `python`, `java` or `rust`.
+- `-Ppipeline=java`: `java-native`, `java-managed` or `rust`.
+- `-Ppipeline=rust`: `rust`.
+
+The default reader is `rust`. `-Preaders=java,rust` runs one job for each reader in each round. `copy` also needs `-Pwriter` (or `-Pwriters`). The writers are `java` or `rust` for `-Ppipeline=python`, `java-native`, `java-managed` or `rust` for `-Ppipeline=java`, and `rust` for `-Ppipeline=rust`. The Rust pipeline ([`apache-beam-benchmark-bigquery`](io/bigquery/rust)) runs `count` and `copy` in one Rust SDK harness. Its `count` adds the total to the `e2e/rows` counter, and the script checks `-PexpectedRows` against it. `-ProwRestriction` limits the rows for a smoke run. Every shape runs on fixed workers (`-PnumWorkers=4`) or with autoscaling (`-PnumWorkers=1 -PmaxNumWorkers=10`). See [`RustBigQueryBenchmark.groovy`](../../../buildSrc/src/main/groovy/org/apache/beam/gradle/rust/RustBigQueryBenchmark.groovy) for the other properties.

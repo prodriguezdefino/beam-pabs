@@ -21,15 +21,14 @@ import groovy.transform.CompileStatic
 import java.net.ServerSocket
 import java.net.Socket
 import org.gradle.api.Action
+import org.gradle.api.DefaultTask
 import org.gradle.api.GradleException
-import org.gradle.api.JavaVersion
 import org.gradle.api.Project
 import org.gradle.api.Task
 import org.gradle.api.tasks.Exec
-import org.gradle.api.tasks.bundling.AbstractArchiveTask
 import org.gradle.process.ExecSpec
 
-/** Cross-language ValidatesRunner tasks and expansion-service lifecycle helpers. */
+/** Shared cross-language infrastructure and expansion-service lifecycle helpers. */
 @CompileStatic
 class RustXlangTasks {
 
@@ -39,8 +38,6 @@ class RustXlangTasks {
     String container
   }
 
-  private static final String PYTHON_SUITE =
-      'apache_beam/transforms/validate_runner_xlang_test.py::ValidateRunnerXlangTest'
   private static final String VENV_EXTRAS = 'gcp,test'
 
   final RustContainerTasks containers
@@ -53,8 +50,7 @@ class RustXlangTasks {
   final File pythonDir
   final File pythonSdist
   final File xlangVenv
-  final String imagePythonVersion
-  final String pythonSdkImage
+  String pythonSdkImage
 
   private RustXlangTasks(RustContainerTasks containers) {
     this.containers = containers
@@ -72,13 +68,14 @@ class RustXlangTasks {
     pythonDir = new File(project.rootDir, 'sdks/python')
     pythonSdist = new File(pythonDir, 'build/apache-beam.tar.gz')
     xlangVenv = build.buildFile('xlang-venv')
-    imagePythonVersion = (project.findProperty('pythonVersion') ?: '3.12').toString()
-    pythonSdkImage = config.resolveProp('xlang', 'pythonSdkImage')
   }
 
   static RustXlangTasks register(RustContainerTasks containers) {
     RustXlangTasks xlang = new RustXlangTasks(containers)
-    xlang.registerAll()
+    xlang.registerCore()
+    RustXlangPythonTasks.register(xlang)
+    RustXlangJavaTasks.register(xlang)
+    RustXlangGoTasks.register(xlang)
     return xlang
   }
 
@@ -95,17 +92,8 @@ class RustXlangTasks {
     throw new GradleException("The expansion service did not open port ${port} in ${timeoutSeconds} s.")
   }
 
-  static int freeLocalPort() {
-    ServerSocket socket = new ServerSocket(0)
-    try {
-      return socket.localPort
-    } finally {
-      socket.close()
-    }
-  }
-
   void requireDataflowRoot(String root = dataflowRoot) {
-    if (root == null || root.isEmpty()) {
+    if (!root) {
       throw new GradleException(
           'Set dataflowRepositoryRoot in sdks/rust/.local/sdk.properties or with -P.')
     }
@@ -113,63 +101,210 @@ class RustXlangTasks {
 
   List<String> selectedTests(Closure<String> transform) {
     String raw = build.project.findProperty('tests')?.toString()
-    if (raw == null) {
+    if (raw == null || raw.isEmpty()) {
       return null
     }
-    return raw.tokenize(',').collect { String item -> transform.call(item.trim()) }
+    return raw.tokenize(',').collect { String item -> transform.call(item.trim()).toString() }
   }
 
   void registerDataflowExpansionImageTasks(Map<String, Object> cfg) {
-    String root = (cfg.containsKey('root') ? cfg.root : dataflowRoot)?.toString()
-    String imageName = cfg.imageName.toString()
+    String root = (cfg.containsKey('root') ? cfg['root'] : dataflowRoot)?.toString()
+    String imageName = cfg['imageName'].toString()
+    String imageTask = cfg['imageTask'].toString()
     containers.registerExpansionImageTasks([
-      buildTask       : cfg.buildTask,
-      imageTask       : cfg.imageTask,
-      bin             : cfg.bin,
+      buildTask       : cfg['buildTask'],
+      imageTask       : imageTask,
+      bin             : cfg['bin'],
       arch            : 'amd64',
-      image           : (root != null && !root.isEmpty())
-          ? containers.rustImageName(imageName, root) : 'unset',
-      baseImage       : (root != null && !root.isEmpty())
-          ? containers.rustImageName('sdk', root) : null,
+      image           : root != null ? containers.rustImageName(imageName, root) : 'unset',
+      baseImage       : root != null ? containers.rustImageName('sdk', root) : null,
       push            : true,
-      buildDescription: cfg.buildDescription,
-      imageDescription: cfg.imageDescription,
+      buildDescription: cfg['buildDescription'],
+      imageDescription: cfg['imageDescription'],
     ])
-    build.project.tasks.named(cfg.imageTask.toString()).configure { Task task ->
+    build.project.tasks.named(imageTask).configure { Task task ->
       task.doFirst { requireDataflowRoot(root) }
     }
   }
 
-  ServiceHandle startExpansionService(Map<String, Object> cfg = [:]) {
-    String image = (cfg.image ?: testingImage).toString()
-    String workerImage = (cfg.workerImage ?: image).toString()
-    int port = freeLocalPort()
-    String container = "beam-rust-expansion-${port}".toString()
-    List<String> cmd = ['docker', 'run', '-d', '--rm', '--name', container, '-p', "${port}:8097".toString()]
-    if (cfg.platform != null) {
-      cmd.addAll(['--platform', cfg.platform.toString()])
+  String registerSdkDataflowImageTask(Map<String, Object> cfg) {
+    Project project = build.project
+    String sdk = cfg['sdk'].toString()
+    String sdkLower = sdk.toLowerCase()
+    String prop = "${sdkLower}SdkImage"
+    String defaultTag = (cfg['defaultTag'] ?: build.versions.sdkVersion).toString()
+    String tag = (project.rootProject.findProperty('docker-tag') ?: defaultTag).toString()
+    String hint = cfg['extraHint'] ? "${cfg['extraHint']} ".toString() : ''
+    String imageSuffix = cfg['imageSuffix'].toString()
+    String gradleTask = cfg['gradleTask'].toString()
+    @SuppressWarnings('unchecked')
+    List<String> extraArgs = ((Iterable<Object>) (cfg['extraArgs'] ?: [])).collect { Object it -> it.toString() }
+
+    project.tasks.register("${sdkLower}SdkDataflowImage", Exec) { Exec task ->
+      task.group = 'Build'
+      task.description = "Build and push the linux/amd64 ${sdk} SDK container of this tree for the Dataflow " +
+          "cross-language suite (${hint}[-PdataflowRepositoryRoot=<registry>])"
+      String image = dataflowRoot != null
+          ? BeamModuleExtras.containerImageName(
+              project,
+              "${BeamModuleExtras.dockerDefaultRepoPrefix(project)}${imageSuffix}",
+              dataflowRoot,
+              tag)
+          : null
+      task.workingDir(project.rootDir)
+      task.commandLine([
+        "${project.rootDir.absolutePath}/gradlew".toString(),
+        gradleTask,
+        '-Pcontainer-architecture-list=amd64',
+        "-Pdocker-repository-root=${dataflowRoot}".toString(),
+        '-Ppush-containers',
+      ] + extraArgs)
+      task.doFirst { requireDataflowRoot() }
+      task.doLast {
+        project.logger.lifecycle(
+            "Pushed ${image}. Set example.xlang.${prop}=${image} in sdks/rust/.local/sdk.properties.")
+      }
     }
-    if (cfg.credentials != null) {
-      cmd.addAll([
-        '-v', "${cfg.credentials}:/creds.json:ro".toString(),
+    return config.resolveProp('xlang', prop)
+  }
+
+  @SuppressWarnings('unchecked')
+  <T extends Task> void registerXlangSuiteTasks(
+      Map<String, Object> cfg,
+      Class<T> taskType,
+      Action<T> configurePrism,
+      Action<T> configureDataflow) {
+    Project project = build.project
+    String sdk = cfg['sdk'].toString()
+    String testExamples = cfg['testExamples'].toString()
+    List<String> extraDeps = ((Iterable<Object>) (cfg['dependsOn'] ?: []))
+        .collect { Object it -> it.toString() }
+    List<String> extraPrismDeps = ((Iterable<Object>) (cfg['prismDependsOn'] ?: []))
+        .collect { Object it -> it.toString() }
+    List<String> extraDataflowDeps = ((Iterable<Object>) (cfg['dataflowDependsOn'] ?: []))
+        .collect { Object it -> it.toString() }
+    List<String> commonDeps = ['testingExpansionServiceImage'] + extraDeps
+    List<String> prismDeps = commonDeps + ['fetchPrism'] + extraPrismDeps
+    List<String> dataflowDeps = commonDeps + ['testingExpansionServiceDataflowImage'] + extraDataflowDeps
+
+    String prismHint = cfg['prismHint']?.toString()
+    String dataflowHint = cfg['dataflowHint']?.toString()
+    String prismHints = (["[-Ptests=${testExamples}]".toString()] +
+        (prismHint ? [prismHint] : new ArrayList<String>())).join(' ')
+    String dataflowHints = (["[-Ptests=${testExamples}]".toString()] +
+        (dataflowHint ? [dataflowHint] : new ArrayList<String>())).join(' ')
+
+    project.tasks.register("validatesCrossLanguageRunner${sdk}Prism", taskType) { T task ->
+      task.group = 'Verification'
+      task.description =
+          "Run the ${sdk} cross-language suite against the Rust test expansion service on Prism (${prismHints})"
+      task.dependsOn(prismDeps)
+      configurePrism.execute(task)
+    }
+
+    project.tasks.register("validatesCrossLanguageRunner${sdk}Dataflow", taskType) { T task ->
+      task.group = 'Verification'
+      task.description =
+          "Run the ${sdk} cross-language suite against the Rust test expansion service on Dataflow (${dataflowHints})"
+      task.dependsOn(dataflowDeps)
+      configureDataflow.execute(task)
+    }
+  }
+
+  void registerXlangSuiteTasks(
+      Map<String, Object> cfg,
+      Action<DefaultTask> configurePrism,
+      Action<DefaultTask> configureDataflow) {
+    registerXlangSuiteTasks(cfg, DefaultTask, configurePrism, configureDataflow)
+  }
+
+  @SuppressWarnings('unchecked')
+  List<String> xlangDataflowFlags(Map<String, Object> cfg = [:]) {
+    String gcpProject = config.gcpProjectFrom('xlang')
+    String gcpTempLocation = config.resolveProp('xlang', 'gcpTempLocation', 'GCP_TEMP_LOCATION')
+    if (!gcpProject || !gcpTempLocation) {
+      throw new GradleException(
+          'Set gcpProject and gcpTempLocation in sdks/rust/.local/sdk.properties or with -P.')
+    }
+    String region = config.resolveProp('xlang', 'gcpRegion', 'GCP_REGION', 'us-central1')
+    String runner = (cfg['runner'] ?: 'TestDataflowRunner').toString()
+    String tempFlag = (cfg['tempFlag'] ?: 'temp_location').toString()
+    String tempSuffix = (cfg['tempSuffix'] ?: '').toString()
+    String numWorkersFlag = (cfg['numWorkersFlag'] ?: 'num_workers').toString()
+    String machineTypeFlag = (cfg['machineTypeFlag'] ?: 'machine_type').toString()
+    Object extraRaw = cfg['extraFlags']
+    List<String> extra
+    if (extraRaw instanceof Closure) {
+      extra = ((Iterable<Object>) ((Closure) extraRaw).call(gcpTempLocation)).collect { Object it -> it.toString() }
+    } else if (extraRaw instanceof Iterable) {
+      extra = ((Iterable<Object>) extraRaw).collect { Object it -> it.toString() }
+    } else {
+      extra = []
+    }
+
+    List<String> opts = [
+      "--runner=${runner}".toString(),
+      "--project=${gcpProject}".toString(),
+      "--region=${region}".toString(),
+      "--${tempFlag}=${gcpTempLocation}${tempSuffix}".toString(),
+      "--${numWorkersFlag}=1".toString(),
+    ] + extra
+    ['network', 'subnetwork'].each { String key ->
+      String value = config.resolveProp('xlang', key)
+      if (value != null && !value.isEmpty()) {
+        opts.add("--${key}=${value}".toString())
+      }
+    }
+    String machineType = config.resolveProp('xlang', 'workerMachineType')
+    if (machineType != null && !machineType.isEmpty()) {
+      opts.add("--${machineTypeFlag}=${machineType}".toString())
+    }
+    return opts
+  }
+
+  List<String> pythonDataflowPipelineOptions() {
+    List<String> extra = pythonSdkImage != null
+        ? ["--sdk_container_image=${pythonSdkImage}".toString(), '--sdk_location=container']
+        : ["--sdk_location=${pythonSdist.absolutePath}".toString()]
+    return xlangDataflowFlags([extraFlags: extra])
+  }
+
+  ServiceHandle startExpansionService(Map<String, Object> cfg = [:]) {
+    String image = (cfg['image'] ?: testingImage).toString()
+    String workerImage = (cfg['workerImage'] ?: image).toString()
+    ServerSocket sock = new ServerSocket(0)
+    int port
+    try {
+      port = sock.localPort
+    } finally {
+      sock.close()
+    }
+    String container = "beam-rust-expansion-${port}"
+    List<String> command = ['docker', 'run', '-d', '--rm', '--name', container, '-p', "${port}:8097".toString()]
+    if (cfg['platform']) {
+      command.addAll(['--platform', cfg['platform'].toString()])
+    }
+    if (cfg['credentials']) {
+      command.addAll([
+        '-v', "${cfg['credentials']}:/creds.json:ro".toString(),
         '-e', 'GOOGLE_APPLICATION_CREDENTIALS=/creds.json',
       ])
     }
-    cmd.addAll([
-      '--entrypoint', '/opt/apache/beam/worker_binary',
-      image,
-      '--port', '8097',
-      '--docker-image', workerImage,
+    command.addAll([
+      '--entrypoint', '/opt/apache/beam/worker_binary', image,
+      '--port', '8097', '--docker-image', workerImage,
     ])
-    build.project.exec({ ExecSpec spec -> spec.commandLine(cmd) } as Action<ExecSpec>)
-    ServiceHandle handle = new ServiceHandle(port: port, container: container)
+    build.project.exec({ ExecSpec spec ->
+      spec.commandLine(command)
+    } as Action<ExecSpec>)
+    ServiceHandle service = new ServiceHandle(port: port, container: container)
     try {
       waitForPort(port, 60)
     } catch (GradleException e) {
-      stopExpansionService(handle)
+      stopExpansionService(service)
       throw e
     }
-    return handle
+    return service
   }
 
   void stopExpansionService(ServiceHandle service) {
@@ -180,7 +315,9 @@ class RustXlangTasks {
     } as Action<ExecSpec>)
   }
 
-  void execWithExpansionService(Map<String, Object> cfg = [:], Closure<?> configureExec) {
+  void execWithExpansionService(
+      Map<String, Object> cfg = [:],
+      Closure<?> configureExec) {
     ServiceHandle service = startExpansionService(cfg)
     try {
       String host = config.dockerHost()
@@ -194,6 +331,33 @@ class RustXlangTasks {
       } as Action<ExecSpec>)
     } finally {
       stopExpansionService(service)
+    }
+  }
+
+  void withPrismJobServer(Closure<?> body) {
+    ServerSocket sock = new ServerSocket(0)
+    int jobPort
+    try {
+      jobPort = sock.localPort
+    } finally {
+      sock.close()
+    }
+    ProcessBuilder pb = new ProcessBuilder(
+        config.prism.prismHostBinary.absolutePath,
+        '--serve_http=false',
+        "--job_port=${jobPort}".toString(),
+        '--idle_shutdown_timeout=0s')
+        .inheritIO()
+    String host = config.dockerHost()
+    if (host != null) {
+      pb.environment().put('DOCKER_HOST', host)
+    }
+    Process prismProcess = pb.start()
+    try {
+      waitForPort(jobPort, 30)
+      body.call(jobPort)
+    } finally {
+      prismProcess.destroy()
     }
   }
 
@@ -230,17 +394,25 @@ class RustXlangTasks {
       String addrVar,
       List<String> defaultFilters) {
     Project project = build.project
-    int port = freeLocalPort()
+    ServerSocket sock = new ServerSocket(0)
+    int port
+    try {
+      port = sock.localPort
+    } finally {
+      sock.close()
+    }
     File log = build.buildFile("xlang-${name.toLowerCase()}-test-expansion-service.log")
     log.parentFile.mkdirs()
-    Process service = new ProcessBuilder(command + [port.toString()])
+    List<String> procCmd = command + [port.toString()]
+    Process service = new ProcessBuilder(procCmd)
         .directory(dir)
         .redirectErrorStream(true)
         .redirectOutput(log)
         .start()
     try {
       waitForPort(port, 120)
-      List<String> filters = project.findProperty('filter')?.toString()?.tokenize() ?: defaultFilters
+      String filterProp = project.findProperty('filter')?.toString()
+      List<String> filters = filterProp != null ? filterProp.tokenize() : defaultFilters
       String threads = project.findProperty('testThreads')?.toString()
       List<String> testArgs = new ArrayList<>(filters)
       if (threads != null && !threads.isEmpty()) {
@@ -264,10 +436,10 @@ class RustXlangTasks {
     }
   }
 
-  private void registerAll() {
+  private void registerCore() {
     Project project = build.project
     if (project.gradle.startParameter.taskNames.any { String name ->
-      name.contains('CrossLanguage') || name.contains('Python') || name.contains('Xlang')
+      name.contains('Python') || name.contains('Xlang')
     }) {
       project.evaluationDependsOn(':sdks:python')
     }
@@ -291,18 +463,9 @@ class RustXlangTasks {
       imageDescription: 'Build and push the linux/amd64 test expansion service image for Dataflow ([-PdataflowRepositoryRoot=<registry>])',
     ])
 
-    registerSetupPythonEnv()
-    registerPythonSuiteTasks()
-    registerServicePrismTasks()
-  }
-
-  private void registerSetupPythonEnv() {
-    Project project = build.project
     File venvStamp = new File(xlangVenv, 'beam-extras')
-    boolean refreshVenv = !venvStamp.exists() ||
-        venvStamp.text.trim() != VENV_EXTRAS ||
+    boolean refreshVenv = !venvStamp.exists() || venvStamp.getText('UTF-8').trim() != VENV_EXTRAS ||
         project.hasProperty('refreshXlangPythonEnv')
-
     project.tasks.register('setupXlangPythonEnv') { Task task ->
       task.group = 'Build'
       task.description = 'Create a virtualenv with the Python SDK of this tree for the cross-language suites ' +
@@ -318,189 +481,11 @@ class RustXlangTasks {
           spec.commandLine(interpreter, '-m', 'venv', xlangVenv.absolutePath)
         } as Action<ExecSpec>)
         project.exec({ ExecSpec spec ->
-          spec.commandLine("${xlangVenv}/bin/pip", 'install', '--quiet', "${pythonSdist}[${VENV_EXTRAS}]")
+          spec.commandLine(
+              "${xlangVenv.absolutePath}/bin/pip", 'install', '--quiet',
+              "${pythonSdist.absolutePath}[${VENV_EXTRAS}]")
         } as Action<ExecSpec>)
-        venvStamp.text = VENV_EXTRAS
-      }
-    }
-  }
-
-  private void runPythonSuite(String workerImage, List<String> pipelineOpts, List<String> testOpts) {
-    Project pythonProject = build.project.project(':sdks:python')
-    List<String> selected = selectedTests { String it -> "${PYTHON_SUITE}::test_${it}".toString() }
-        ?: [PYTHON_SUITE]
-    String args = BeamModuleExtras.mapToArgString(pythonProject, [
-      pipeline_opts: pipelineOpts,
-      test_opts    : testOpts + selected,
-      suite        : 'rustXlangValidateRunner',
-    ])
-    execWithExpansionService([workerImage: workerImage]) { ServiceHandle service ->
-      ExecSpec spec = (ExecSpec) delegate
-      spec.workingDir(pythonDir)
-      spec.environment('EXPANSION_PORT', service.port)
-      spec.commandLine('sh', '-c',
-          ". ${xlangVenv.absolutePath}/bin/activate && ./scripts/run_integration_test.sh ${args}")
-    }
-  }
-
-  private void registerPythonSuiteTasks() {
-    Project project = build.project
-    project.tasks.register('validatesCrossLanguageRunnerPythonPrism') { Task task ->
-      task.group = 'Verification'
-      task.description = 'Run the Python cross-language suite against the Rust test expansion service on Prism ' +
-          '([-Ptests=prefix,group_by_key] [-PpythonVersion=3.12])'
-      task.dependsOn('testingExpansionServiceImage', 'fetchPrism', 'setupXlangPythonEnv')
-      task.doLast {
-        runPythonSuite(testingImage, [
-          '--runner=PrismRunner',
-          '--environment_type=LOOPBACK',
-          "--prism_location=${config.prism.prismHostBinary.absolutePath}".toString(),
-        ], new ArrayList<String>())
-      }
-    }
-
-    String pythonTag = (project.rootProject.findProperty('docker-tag') ?: build.versions.sdkVersion).toString()
-    String pushedPythonImage = dataflowRoot != null
-        ? BeamModuleExtras.containerImageName(
-            project,
-            "${BeamModuleExtras.dockerDefaultRepoPrefix(project)}python${imagePythonVersion}_sdk",
-            dataflowRoot,
-            pythonTag)
-        : null
-
-    project.tasks.register('pythonSdkDataflowImage', Exec) { Exec task ->
-      task.group = 'Build'
-      task.description = 'Build and push the linux/amd64 Python SDK container of this tree for the Dataflow ' +
-          'cross-language suite ([-PpythonVersion=3.12] [-PdataflowRepositoryRoot=<registry>])'
-      task.workingDir(project.rootDir)
-      task.commandLine(
-          new File(project.rootDir, 'gradlew').absolutePath,
-          ":sdks:python:container:py${imagePythonVersion.replace('.', '')}:docker",
-          '-Pcontainer-architecture-list=amd64',
-          "-Pdocker-repository-root=${dataflowRoot}",
-          '-Ppush-containers',
-          "-PpythonVersion=${imagePythonVersion}")
-      task.doFirst { requireDataflowRoot() }
-      task.doLast {
-        task.logger.lifecycle(
-            "Pushed ${pushedPythonImage}. Set example.xlang.pythonSdkImage=${pushedPythonImage} in sdks/rust/.local/sdk.properties.")
-      }
-    }
-
-    project.tasks.register('validatesCrossLanguageRunnerPythonDataflow') { Task task ->
-      task.group = 'Verification'
-      task.description = 'Run the Python cross-language suite against the Rust test expansion service on Dataflow ' +
-          '([-Ptests=prefix,group_by_key] [-PxlangParallelism=8] [-PpythonVersion=3.12] [-PpythonSdkImage=<image>])'
-      task.dependsOn('testingExpansionServiceImage', 'testingExpansionServiceDataflowImage', 'setupXlangPythonEnv')
-      if (pythonSdkImage == null) {
-        task.dependsOn(':sdks:python:sdist')
-      }
-      task.doLast {
-        String gcpProject = config.gcpProjectFrom('xlang')
-        String gcpTempLocation = config.resolveProp('xlang', 'gcpTempLocation', 'GCP_TEMP_LOCATION')
-        if (!gcpProject || !gcpTempLocation) {
-          throw new GradleException(
-              'Set gcpProject and gcpTempLocation in sdks/rust/.local/sdk.properties or with -P.')
-        }
-        String region = config.resolveProp('xlang', 'gcpRegion', 'GCP_REGION', 'us-central1')
-        List<String> opts = [
-          '--runner=TestDataflowRunner',
-          "--project=${gcpProject}".toString(),
-          "--region=${region}".toString(),
-          "--temp_location=${gcpTempLocation}".toString(),
-          '--num_workers=1',
-        ]
-        if (pythonSdkImage != null) {
-          opts.add("--sdk_container_image=${pythonSdkImage}".toString())
-          opts.add('--sdk_location=container')
-        } else {
-          opts.add("--sdk_location=${pythonSdist.absolutePath}".toString())
-        }
-        ['network', 'subnetwork'].each { String key ->
-          String val = config.resolveProp('xlang', key)
-          if (val != null && !val.isEmpty()) {
-            opts.add("--${key}=${val}".toString())
-          }
-        }
-        String machineType = config.resolveProp('xlang', 'workerMachineType')
-        if (machineType != null && !machineType.isEmpty()) {
-          opts.add("--machine_type=${machineType}".toString())
-        }
-        String parallelism = (project.findProperty('xlangParallelism') ?: '8').toString()
-        runPythonSuite(dataflowImage, opts, ["--numprocesses=${parallelism}".toString(), '--timeout=1800'])
-      }
-    }
-  }
-
-  private void registerServicePrismTasks() {
-    Project project = build.project
-    String javaTestServiceProject = ':sdks:java:testing:expansion-service'
-    String javaMajor = JavaVersion.current().majorVersion
-    String javaSdkImage = "${BeamModuleExtras.dockerDefaultRepoRoot(project)}/" +
-        "${BeamModuleExtras.dockerDefaultRepoPrefix(project)}java${javaMajor}_sdk:${build.versions.sdkVersion}"
-
-    project.tasks.register('validatesCrossLanguageRunnerJavaServicePrism') { Task task ->
-      task.group = 'Verification'
-      task.description = 'Run the Rust cross-language suite against the Java test expansion service on Prism ' +
-          '([-Pfilter=<test name>] [-PtestThreads=<n>] [-PincludeIgnored] [-PbuildJavaContainer])'
-      task.dependsOn("${javaTestServiceProject}:buildTestExpansionServiceJar", 'fetchPrism')
-      if (project.hasProperty('buildJavaContainer')) {
-        task.dependsOn(":sdks:java:container:java${javaMajor}:docker")
-      }
-      task.doLast {
-        if (!dockerReachable()) {
-          throw new GradleException(
-              'Docker is not reachable. The cross-language suite needs it to start the Java SDK container.')
-        }
-        if (!imageExists(javaSdkImage)) {
-          throw new GradleException("${javaSdkImage} is not available locally. Build it with " +
-              "./gradlew :sdks:java:container:java${javaMajor}:docker, or add -PbuildJavaContainer.")
-        }
-        AbstractArchiveTask jarTask = (AbstractArchiveTask) project.project(javaTestServiceProject)
-            .tasks.named('buildTestExpansionServiceJar').get()
-        File jar = jarTask.archiveFile.get().asFile
-        String java = "${System.getProperty('java.home')}/bin/java"
-        runXlangTestsAgainstService(
-            'Java', [java, '-jar', jar.absolutePath], build.rustDir,
-            'BEAM_JAVA_TEST_EXPANSION_ADDR', new ArrayList<String>())
-      }
-    }
-
-    project.tasks.register('validatesCrossLanguageRunnerPythonServicePrism') { Task task ->
-      task.group = 'Verification'
-      task.description = 'Run the Rust cross-language suite against the Python test expansion service on Prism ' +
-          '([-Pfilter=<test name>] [-PtestThreads=<n>] [-PincludeIgnored] [-PpythonVersion=3.12] [-PbuildPythonContainer])'
-      task.dependsOn('setupXlangPythonEnv', 'fetchPrism')
-      if (project.hasProperty('buildPythonContainer')) {
-        task.dependsOn(":sdks:python:container:py${imagePythonVersion.replace('.', '')}:docker")
-      }
-      task.doLast {
-        if (!dockerReachable()) {
-          throw new GradleException(
-              'Docker is not reachable. The cross-language suite needs it to start the Python SDK container.')
-        }
-        String venvPy = "${xlangVenv.absolutePath}/bin/python"
-        ByteArrayOutputStream pyVerOut = new ByteArrayOutputStream()
-        project.exec({ ExecSpec spec ->
-          spec.commandLine(venvPy, '-c', 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-          spec.standardOutput = pyVerOut
-        } as Action<ExecSpec>)
-        String venvPyVersion = pyVerOut.toString('UTF-8').trim()
-        String localPythonSdkImage = "${BeamModuleExtras.dockerDefaultRepoRoot(project)}/" +
-            "${BeamModuleExtras.dockerDefaultRepoPrefix(project)}python${venvPyVersion}_sdk:${build.versions.sdkVersion}"
-        if (!imageExists(localPythonSdkImage)) {
-          String pyTaskVer = venvPyVersion.replace('.', '')
-          throw new GradleException("${localPythonSdkImage} is not available locally. Build it with " +
-              "./gradlew :sdks:python:container:py${pyTaskVer}:docker, or add " +
-              "-PpythonVersion=${venvPyVersion} -PbuildPythonContainer.")
-        }
-        runXlangTestsAgainstService(
-            'Python',
-            [venvPy, '-m', 'apache_beam.runners.portability.expansion_service_test',
-             '--fully_qualified_name_glob', '*', '-p'],
-            pythonDir,
-            'BEAM_PYTHON_TEST_EXPANSION_ADDR',
-            ['python_service_test'])
+        venvStamp.setText(VENV_EXTRAS, 'UTF-8')
       }
     }
   }

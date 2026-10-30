@@ -29,11 +29,16 @@ members = [
     "beam/ml",
     "beam/runners/*",
     "beam/io/*",
+    "beam/io/gcp/expansion-service",
+    "beam/io/gcp/googleapis",
+    "beam/io/kafka/expansion-service",
     "beam/runner-tests",
     "beam/test-utils",
     "beam/testing",
     "examples/*",
-    "benchmarks/*",
+    "benchmarks/nexmark",
+    "benchmarks/io/support",
+    "benchmarks/io/*/rust",
 ]
 exclude = [
     "examples/build",
@@ -132,8 +137,14 @@ tokenizers = { version = "0.22.2", default-features = false, features = ["fancy-
 ort = { version = "2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "load-dynamic"] }
 google-cloud-storage = "1.18.0"
 google-cloud-gax = "1.14.0"
+# The gRPC transport of the Google Cloud clients. It has no stable API: keep the exact version.
+google-cloud-gax-internal = { version = "=0.7.21", default-features = false, features = ["_internal-grpc-client", "_internal-grpc-server-streaming"] }
 google-cloud-auth = "1.16.0"
 google-cloud-secretmanager-v1 = "1.14.0"
+google-cloud-bigquery = "0.18.0"
+google-cloud-bigquery-v2 = "1.0.0"
+google-cloud-wkt = "1.9.0"
+uuid = { version = "1", features = ["v4"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 proc-macro2 = "1.0"
 quote = "1.0"
@@ -152,6 +163,9 @@ arrow-schema = { version = "60.0.0", default-features = false }
 arrow-ipc = { version = "60.0.0", default-features = false, features = ["lz4", "zstd"] }
 parquet = { version = "60.0.0", default-features = false, features = ["arrow", "flate2-zlib-rs", "lz4", "snap", "zstd"] }
 arrow-avro = { version = "60.0.0", default-features = false, features = ["deflate", "snappy", "zstd"] }
+# Static librdkafka, OpenSSL, zlib and zstd: the worker binary links only libc, libm and libgcc_s,
+# which the distroless runtime image has. See docs/rust-native-io-providers.md, Kafka dependencies.
+rdkafka = { version = "0.39", default-features = false, features = ["tokio", "libz-static", "zstd", "ssl-vendored"] }
 
 # Internal workspace crates
 beam = { package = "apache-beam", path = "beam", version = "2.79.0-SNAPSHOT" }
@@ -164,6 +178,7 @@ beam_external = { package = "apache-beam-external", path = "beam/external", vers
 beam_expansion = { package = "apache-beam-expansion", path = "beam/expansion", version = "2.79.0-SNAPSHOT" }
 beam_io_file = { package = "apache-beam-io-file", path = "beam/io/file", version = "2.79.0-SNAPSHOT" }
 beam_io_gcp = { package = "apache-beam-io-gcp", path = "beam/io/gcp", version = "2.79.0-SNAPSHOT", default-features = false }
+beam_io_gcp_googleapis = { package = "apache-beam-io-gcp-googleapis", path = "beam/io/gcp/googleapis", version = "2.79.0-SNAPSHOT" }
 beam_io_kafka = { package = "apache-beam-io-kafka", path = "beam/io/kafka", version = "2.79.0-SNAPSHOT" }
 beam_io_managed = { package = "apache-beam-io-managed", path = "beam/io/managed", version = "2.79.0-SNAPSHOT" }
 beam_io_arrow = { package = "apache-beam-io-arrow", path = "beam/io/arrow", version = "2.79.0-SNAPSHOT" }
@@ -176,6 +191,7 @@ beam_runner_dataflow = { package = "apache-beam-runner-dataflow", path = "beam/r
 beam_testing = { package = "apache-beam-testing", path = "beam/testing", version = "2.79.0-SNAPSHOT" }
 beam_test_utils = { package = "apache-beam-test-utils", path = "beam/test-utils", version = "2.79.0-SNAPSHOT" }
 beam_derive = { package = "apache-beam-derive", path = "beam/derive", version = "2.79.0-SNAPSHOT" }
+beam_benchmark_io = { package = "apache-beam-benchmark-io", path = "benchmarks/io/support", version = "2.79.0-SNAPSHOT" }
 
 # Keep file:line in panic backtraces without full DWARF debug info.
 [profile.dev]

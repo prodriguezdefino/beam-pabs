@@ -144,7 +144,12 @@ class RustContainerTasks {
             "cp /tmp/target/${rustTarget}/${cargoProfile}/${bin} /workspace/sdks/rust/build/linux_${arch}/${bin}"
           }
           .join(' && ')
-      String compileScript = "CARGO_TARGET_DIR=/tmp/target cargo build --profile ${cargoProfile} " +
+      // librdkafka configure reads CC and CXX. Set cross compilers when host arch differs.
+      Map<String, String> gnuByArch = [amd64: 'x86_64', arm64: 'aarch64']
+      String gnuArch = gnuByArch[arch] ?: 'x86_64'
+      String crossCompilers = "case \"\$(uname -m)\" in ${gnuArch}) ;; *) export CC=${gnuArch}-linux-gnu-gcc " +
+          "CXX=${gnuArch}-linux-gnu-g++ HOST_CC=gcc HOST_CXX=g++ ;; esac"
+      String compileScript = "${crossCompilers} && CARGO_TARGET_DIR=/tmp/target cargo build --profile ${cargoProfile} " +
           "${(jobFlags + targetFlags).join(' ')} --target ${rustTarget} && ${copyOut}"
       project.exec({ ExecSpec spec ->
         spec.workingDir(project.rootDir)

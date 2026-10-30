@@ -19,13 +19,18 @@
 
 //! Sharded and rolling writes (`WriteFiles`) and `ReadMatches` on PrismRunner.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
+use std::time::Duration;
 
+use beam::Instant;
+use beam::io::file::fileio::{self, ReadableFile};
+use beam::io::file::{FormatSink, TextFormat, WriteFiles, textio};
 use beam::pipeline::Pipeline;
+use beam::testing::TestStream;
 use beam::transforms::{Create, Map};
-use beam_io_file::fileio::{self, ReadableFile};
-use beam_io_file::{FormatSink, TextFormat, WriteFiles, textio};
+use beam::windowing::{AccumulationMode, FixedWindows, Trigger, WindowInto};
 use beam_runner_prism::PrismRunner;
 use beam_runner_tests::TempDir;
 
@@ -136,10 +141,8 @@ async fn empty_input_still_writes_empty_output() {
 #[tokio::test]
 async fn write_files_reports_final_filenames_with_suffix() {
     let dir = TempDir::new("filenames");
-    let listing = std::env::temp_dir().join(format!(
-        "beam_writefiles_listing_{}.txt",
-        std::process::id()
-    ));
+    let listing_dir = TempDir::new("writefiles_listing");
+    let listing = listing_dir.as_path().join("listing.txt");
     let p = Pipeline::new();
     p.apply("Create", Create::new(words(5)))
         .apply(
@@ -158,7 +161,6 @@ async fn write_files_reports_final_filenames_with_suffix() {
 
     let mut reported = lines_of(&listing);
     reported.sort();
-    let _ = fs::remove_file(&listing);
     assert_eq!(
         reported,
         vec![
@@ -174,10 +176,8 @@ async fn read_matches_yields_readable_files() {
     dir.create_file("a.json", "{\"a\":1}");
     dir.create_file("b.json", "{\"b\":22}");
     dir.create_file("skip.txt", "no");
-    let out = std::env::temp_dir().join(format!(
-        "beam_writefiles_read_matches_{}.txt",
-        std::process::id()
-    ));
+    let out_dir = TempDir::new("writefiles_read_matches");
+    let out = out_dir.as_path().join("out.txt");
 
     let p = Pipeline::new();
     let from_metadata = p
@@ -213,7 +213,6 @@ async fn read_matches_yields_readable_files() {
 
     let mut lines = lines_of(&out);
     lines.sort();
-    let _ = fs::remove_file(&out);
     assert_eq!(
         lines,
         vec![
@@ -250,4 +249,89 @@ async fn match_disallows_empty_results_by_default() {
     p.run_with_runner(&PrismRunner::new())
         .await
         .expect("wildcard empty match is allowed");
+}
+
+/// Writes a stream of three batches in one window with a trigger that fires for each
+/// element, and returns the sorted names of the output files.
+async fn write_repeated_early_panes(dir: &TempDir, num_shards: u32) -> Vec<String> {
+    let at = |word: &str, millis: i64| (word.to_string(), Instant::from_millis(millis));
+    let p = Pipeline::new();
+    p.apply(
+        "Events",
+        TestStream::new()
+            .add_timestamped_elements([at("a", 1_000), at("b", 1_500)])
+            .advance_watermark_to(Instant::from_millis(2_000))
+            .add_timestamped_elements([at("c", 3_000)])
+            .advance_watermark_to(Instant::from_millis(4_000))
+            .add_timestamped_elements([at("d", 5_000), at("e", 5_500)])
+            .advance_watermark_to_infinity(),
+    )
+    .apply(
+        "FixedWindows",
+        WindowInto::new(FixedWindows::of(Duration::from_secs(10)))
+            .with_trigger(Trigger::repeatedly(Trigger::after_count(1)))
+            .with_accumulation_mode(AccumulationMode::Discarding),
+    )
+    .apply(
+        "TextIO.Write",
+        textio::Write::new(dir.join("out.txt"))
+            .with_num_shards(num_shards)
+            .with_windowed_writes(),
+    );
+    p.run_with_runner(&PrismRunner::new())
+        .await
+        .expect("pipeline failed");
+    dir.entries()
+}
+
+/// Checks that the files hold every element exactly once.
+fn assert_each_element_once(dir: &TempDir, entries: &[String]) {
+    let mut all: Vec<String> = entries
+        .iter()
+        .flat_map(|name| lines_of(&dir.as_path().join(name)))
+        .collect();
+    all.sort();
+    assert_eq!(all, ["a", "b", "c", "d", "e"], "files: {entries:?}");
+}
+
+#[tokio::test]
+async fn windowed_runner_sharded_writes_keep_every_firing() {
+    let dir = TempDir::new("windowed_runner_sharded");
+    let entries = write_repeated_early_panes(&dir, 0).await;
+    assert!(
+        entries.iter().all(|name| name.starts_with("out-0-10000")),
+        "{entries:?}"
+    );
+    assert!(
+        entries.len() > 1,
+        "each firing writes its own files: {entries:?}"
+    );
+    assert_each_element_once(&dir, &entries);
+}
+
+#[tokio::test]
+async fn windowed_fixed_shard_writes_keep_every_firing() {
+    let dir = TempDir::new("windowed_fixed_shards");
+    let entries = write_repeated_early_panes(&dir, 2).await;
+    assert_each_element_once(&dir, &entries);
+    // Each shard firing writes one file, named by its own pane and its shard index. A shard
+    // with no data in a firing writes no file, so no file is empty.
+    let panes: BTreeSet<&str> = entries
+        .iter()
+        .map(|name| {
+            name.strip_suffix("-00000-of-00002.txt")
+                .or_else(|| name.strip_suffix("-00001-of-00002.txt"))
+                .unwrap_or_else(|| panic!("unexpected file {name}"))
+        })
+        .collect();
+    assert!(
+        panes.len() > 1,
+        "each firing writes its own files: {entries:?}"
+    );
+    for name in &entries {
+        assert!(
+            !lines_of(&dir.as_path().join(name)).is_empty(),
+            "{name} is empty: {entries:?}"
+        );
+    }
 }

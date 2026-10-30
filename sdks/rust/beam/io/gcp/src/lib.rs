@@ -38,6 +38,8 @@ pub mod bigquery;
 pub mod bigtable;
 #[cfg(feature = "gcs")]
 pub mod gcs;
+#[cfg(any(feature = "bigtable", feature = "bigquery-storage"))]
+mod grpc;
 pub mod options;
 #[cfg(feature = "pubsub")]
 pub mod pubsub;

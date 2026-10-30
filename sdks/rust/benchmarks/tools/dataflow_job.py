@@ -29,7 +29,8 @@ writes results.json and report.md.
 
 A variant can also have "labels" (more job labels), "wait" (what to do after a launcher that
 does not wait for its job, see job_wait.py) and "after" (a command that runs after each job,
-with the same placeholders, for example a check of the output).
+with the same placeholders, for example a check of the output). With --io, the report also
+has the metrics of the I/O benchmarks (see io_report.py).
 
 With --producer, each round starts a companion load job when the measured jobs run. With
 --shared-producer, the runs of several tasks on this host share one companion. results.json
@@ -57,6 +58,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
+import io_report
 import job_wait
 import monitoring
 import report
@@ -159,6 +161,11 @@ def fetch(project: str, region: str, job_id: str) -> Dict[str, Any]:
   }
 
 
+def io_namespace(io: Optional[io_report.Config]) -> Optional[str]:
+  """The namespace of the user metrics of an I/O benchmark, or None."""
+  return io.get("namespace") if io else None
+
+
 def collect_monitoring(project: str, details: Dict[str, Any], counter: Optional[str],
                        wait_seconds: float, namespace: Optional[str] = None
                        ) -> Dict[str, monitoring.Series]:
@@ -170,6 +177,13 @@ def collect_monitoring(project: str, details: Dict[str, Any], counter: Optional[
   return monitoring.collect(lambda query: monitoring.time_series(project, token, query),
                             job["id"], job["createTime"], job["currentStateTime"], counter,
                             wait_seconds, expected)
+
+
+def collect_io(args: argparse.Namespace, details: Dict[str, Any]) -> Dict[str, Any]:
+  """The logs and Monitoring series of io_report.py for a job from `fetch`."""
+  token = access_token()
+  return io_report.collect(args.project, token, details, args.io,
+                           lambda query: monitoring.time_series(args.project, token, query))
 
 
 def platform_command(project: str, job_name: str) -> List[str]:
@@ -265,19 +279,22 @@ def machine_type(job: Dict[str, Any]) -> Optional[str]:
   return next((p["machineType"] for p in pools if p.get("machineType")), None)
 
 
-def summarize(details: Dict[str, Any], count_output: str,
-              counter: Optional[str] = None) -> Dict[str, Any]:
-  """The record of one job from the reply of `fetch` and its "monitoring" series, if any."""
+def summarize(details: Dict[str, Any], count_output: str, counter: Optional[str] = None,
+              io: Optional[io_report.Config] = None) -> Dict[str, Any]:
+  """The record of one job from the reply of `fetch` and its "monitoring" series, if any.
+  With `io`, the record also has the metrics of io_report.py."""
   job = details["job"]
-  parsed = parse_metrics(details["metrics"], count_output, counter)
+  parsed = parse_metrics(details["metrics"], count_output, counter, io_namespace(io))
   events = parse_messages(details["messages"])
   watched = monitoring.summarize(details.get("monitoring", {}), machine_type(job),
                                  parsed["metrics"].get("total_vcpu_s"),
                                  parsed["metrics"].get("counter_total"))
+  extra = io_report.summarize(details, io, parsed["metrics"].get("total_vcpu_s")) if io \
+      else {"metrics": {}, "environments": {}}
   start, end = job.get("startTime") or job.get("createTime"), job.get("currentStateTime")
   wall = (monitoring.parse_time(end) - monitoring.parse_time(start)).total_seconds() \
       if start and end else None
-  metrics = {**parsed["metrics"], **watched["metrics"],
+  metrics = {**parsed["metrics"], **watched["metrics"], **extra["metrics"],
              "peak_workers": events["peak_workers"], "wall_s": wall}
   return {
       "job_id": job.get("id"),
@@ -288,7 +305,7 @@ def summarize(details: Dict[str, Any], count_output: str,
       "end": end,
       "metrics": {k: v for k, v in metrics.items() if v is not None},
       "steps": parsed["steps"],
-      "memory": watched["memory"],
+      "memory": io_report.name_containers(watched["memory"], extra["environments"]),
       "monitoring_missing": watched["monitoring_missing"],
       **{k: events[k] for k in ("warnings", "stockout", "quota")},
   }
@@ -347,7 +364,8 @@ def ranked_columns(all_medians: report.Medians, section: str, minimum: float,
 def render(results: Dict[str, Any], saved: Optional[Dict[str, Any]]) -> List[str]:
   all_medians = report.with_saved(results["medians"], saved)
   runs, config = results["runs"], results["config"]
-  metrics = columns(config.get("count_name", "elements"), config.get("counter"))
+  metrics = columns(config.get("count_name", "elements"), config.get("counter")) + \
+      (io_report.columns(config["io"]) if config.get("io") else [])
   current = config.get("current", report.CURRENT)
   compare = lambda section, cols: report.compare_table(all_medians, section, cols, current=current)
   extra = [("CPU platform", lambda r: ", ".join(r.get("platforms", [])) or "?"),
@@ -509,7 +527,7 @@ def launch(args: argparse.Namespace, variant: report.Variant, round_number: int,
           or known
       return found["job"]
     counter = spec.get("counter", "")
-    namespace = spec.get("namespace")
+    namespace = spec.get("namespace") or io_namespace(args.io)
     waited = job_wait.wait(spec, poll,
                            lambda j: counter_value(args.project, args.region, j["id"], counter,
                                                    namespace),
@@ -529,11 +547,13 @@ def launch(args: argparse.Namespace, variant: report.Variant, round_number: int,
             "metrics": {}}
   details = fetch(args.project, args.region, job_id)
   details["monitoring"] = collect_monitoring(args.project, details, args.counter,
-                                             args.monitoring_wait)
+                                             args.monitoring_wait, io_namespace(args.io))
+  if args.io:
+    details["io"] = collect_io(args, details)
   with open(f"{base}-job.json", "w") as f:
     json.dump(details, f, indent=2)
   errors = [e for e in (waited.get("error"), after(variant, values, base)) if e]
-  return {**record, **summarize(details, args.count_output, args.counter),
+  return {**record, **summarize(details, args.count_output, args.counter, args.io),
           **({"error": "; ".join(errors)} if errors else {})}
 
 
@@ -774,7 +794,7 @@ def run(args: argparse.Namespace) -> None:
       "created": datetime.datetime.now().isoformat(timespec="seconds"),
       "config": {"description": args.describe, "runs": args.runs,
                  "count_name": args.count_name, "counter": args.counter,
-                 "current": args.current,
+                 "current": args.current, "io": args.io,
                  "variants": {v["label"]: v.get("describe", v["cwd"]) for v in variants}},
       "runs": runs,
       "companions": companions,
@@ -796,6 +816,7 @@ def main(argv: Sequence[str]) -> None:
     sub.add_argument("--counter", help="A user counter whose rate the report gives.")
     sub.add_argument("--monitoring-wait", type=float, default=360,
                      help="Seconds to wait for Cloud Monitoring data after the job.")
+    sub.add_argument("--io", type=json.loads, help="JSON configuration of io_report.py.")
   run_parser, fetch_parser = commands.choices["run"], commands.choices["fetch"]
   run_parser.add_argument("--task", required=True, help="The benchmark, for names and labels.")
   run_parser.add_argument("--name-prefix", help="The start of the job names. Default: the task.")
@@ -827,8 +848,11 @@ def main(argv: Sequence[str]) -> None:
   records = []
   for job_id in args.jobs:
     details = fetch(args.project, args.region, job_id)
-    details["monitoring"] = collect_monitoring(args.project, details, args.counter, 0)
-    records.append(summarize(details, args.count_output, args.counter))
+    details["monitoring"] = collect_monitoring(args.project, details, args.counter, 0,
+                                               io_namespace(args.io))
+    if args.io:
+      details["io"] = collect_io(args, details)
+    records.append(summarize(details, args.count_output, args.counter, args.io))
   print(json.dumps(records, indent=2))
 
 
