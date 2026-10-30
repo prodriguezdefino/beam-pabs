@@ -169,12 +169,13 @@ The SDK is a Cargo workspace with its root at `sdks/rust`:
 | `apache-beam-derive` | `beam/derive/` | `#[derive(BeamRow)]` and `#[derive(BeamEnum)]` proc-macros. Re-exported through `apache-beam-core`; not depended on directly. |
 | `apache-beam-harness` | `beam/harness/` | Worker harness: Fn API control/data/state/logging dispatch and bundle execution. |
 | `apache-beam-io-file` | `beam/io/file/` | Generic file-based sources and sinks (`FileBasedSource`, `WriteFiles`, `FileSink`, `TextIO`, `FileIO`). |
-| `apache-beam-io-gcp` | `beam/io/gcp/` | GCS filesystem, GCP authentication, and cross-language Pub/Sub, BigQuery and Bigtable. |
+| `apache-beam-io-gcp` | `beam/io/gcp/` | GCS filesystem, GCP authentication, Secret Manager, and cross-language Pub/Sub, BigQuery and Bigtable. The optional `bigquery-storage` feature adds a native BigQuery Storage Read API reader and Storage Write API writer. Exposed as `beam::io::gcp` by the `gcp-*` features, and the native BigQuery connectors by `gcp-bigquery-storage`. |
+| `apache-beam-io-gcp-expansion-service` | `beam/io/gcp/expansion-service/` | `beam-gcp-expansion-service` binary: serves the native GCP connectors (BigQuery Storage Read and Write) to other SDKs as SchemaTransforms. |
 | `apache-beam-io-arrow` | `beam/io/arrow/` | Beam schema/`Row` ⇄ Arrow `Schema`/`RecordBatch` conversion and the `RowCodec` abstraction shared by columnar I/O. |
 | `apache-beam-io-parquet` | `beam/io/parquet/` | `parquetio`: row-group-splittable Parquet reads and sharded Parquet writes on arrow-rs. |
 | `apache-beam-io-avro` | `beam/io/avro/` | `avroio`: block-splittable Avro OCF reads and sharded Avro writes on `arrow-avro`. |
 | `apache-beam-io-json` | `beam/io/json/` | Beam schema/`Row` ⇄ JSON: Beam schemas from JSON Schemas, a reader that decodes each object straight into a row, and a writer. Exposed as `beam::io::json` by the `json` feature. |
-| `apache-beam-io-kafka` | `beam/io/kafka/` | Cross-language `KafkaRead` and `KafkaWrite` over the Java `kafka_read`/`kafka_write` SchemaTransforms, expanded through Managed. Exposed as `beam::io::kafka` by the `kafka` feature. |
+| `apache-beam-io-kafka` | `beam/io/kafka/` | The native Kafka connector on librdkafka (`native`), and cross-language `KafkaRead` and `KafkaWrite` over the Java `kafka_read`/`kafka_write` SchemaTransforms, expanded through Managed. Exposed as `beam::io::kafka` by the `kafka` feature, and the native connector as `beam::io::kafka::native` by `kafka-native`. |
 | `apache-beam-io-managed` | `beam/io/managed/` | Managed I/O: `ManagedRead` and `ManagedWrite` over Java's `beam:transform:managed:v1`, plus the `Row`-to-config bridge typed connectors use. Exposed as `beam::io::managed` by the `managed` feature. |
 | `apache-beam-ml` | `beam/ml/` | Machine learning inference framework (`RunInference`, `ModelHandler`, micro-batching, DLQ) and acceleration backends (Candle, ONNX Runtime, Vertex AI remote LLMs). Exposed as `beam::ml` by the `ml` feature. |
 | `apache-beam-external` | `beam/external/` | Cross-language expansion *client* and automated Java expansion service management (`expansionx`). |
@@ -202,9 +203,11 @@ apache-beam-harness                       ─> apache-beam-runner-prism, apache-
                                              apache-beam-testing (optional, with prism)
 apache-beam-external                      ─> apache-beam-io-managed ─> apache-beam-io-kafka
 apache-beam-io-file + external + managed  ─> apache-beam-io-gcp
-apache-beam-io-file + io-gcp              ─> apache-beam-runner-dataflow
+apache-beam-io-file + io-gcp + testing    ─> apache-beam-runner-dataflow
 apache-beam-io-file + io-arrow            ─> apache-beam-io-parquet, apache-beam-io-avro
 all of the above (optional features)      ─> apache-beam (facade) ─> apache-beam-runner-tests
+apache-beam (facade) + expansion          ─> apache-beam-io-gcp-expansion-service,
+                                             apache-beam-io-kafka-expansion-service
 ```
 
 `apache-beam-core` and `apache-beam-fluent` do not depend on a runner or an

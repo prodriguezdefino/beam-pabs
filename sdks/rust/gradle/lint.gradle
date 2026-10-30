@@ -120,7 +120,7 @@ tasks.register('fmtCheck') {
 
 tasks.register('clippy') {
   group = 'Verification'
-  description = 'Run clippy on all targets (-D warnings)'
+  description = 'Run clippy on all targets but the benchmarks (-D warnings)'
   mustRunAfter 'fmt'
   inputs.property('beamSdkVersion', beamSdkVersion)
   inputs.files(workspaceRootFiles + [file("${rustDir}/clippy.toml")])
@@ -140,6 +140,18 @@ tasks.register('clippy') {
       p.label.set('cargo clippy')
     }
   }
+}
+
+// The benchmark pipelines stay out of `clippy` and `test`. These tasks check them.
+def benchmarkScope = benchmarkPackages.collectMany { ['-p', it] }
+cargoTask('clippyBenchmarks', 'Verification', 'Run clippy on the benchmark pipelines (-D warnings)',
+    ['clippy'] + benchmarkScope + ['--all-targets', '--', '-D', 'warnings'])
+cargoTask('testBenchmarks', 'Verification', 'Run the tests of the benchmark pipelines',
+    ['test'] + benchmarkScope)
+tasks.register('checkBenchmarks') {
+  group = 'Verification'
+  description = 'Run clippy and the tests of the benchmark pipelines'
+  dependsOn 'clippyBenchmarks', 'testBenchmarks'
 }
 
 build.dependsOn 'buildWorkspace'

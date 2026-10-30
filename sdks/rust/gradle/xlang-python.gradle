@@ -1,0 +1,84 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Python cross-language ValidatesRunner tasks (`validatesCrossLanguageRunnerPythonPrism`,
+// `validatesCrossLanguageRunnerPythonDataflow`, `pythonSdkDataflowImage`).
+
+def pythonSuite = 'apache_beam/transforms/validate_runner_xlang_test.py::ValidateRunnerXlangTest'
+def imagePythonVersion = (project.findProperty('pythonVersion') ?: '3.12').toString()
+
+// With the defaults, each Dataflow worker builds the staged SDK of this tree into a wheel before
+// the Python worker starts. `pythonSdkImage` names a Python SDK container that already holds
+// the SDK of this tree, so the task stages nothing. `pythonSdkDataflowImage` builds that
+// container with the Python container tasks and pushes it to `dataflowRepositoryRoot`.
+ext.pythonSdkImage = registerSdkDataflowImageTask(
+    sdk: 'Python',
+    imageSuffix: "python${imagePythonVersion}_sdk",
+    defaultTag: beamSdkVersion,
+    gradleTask: ":sdks:python:container:py${imagePythonVersion.replace('.', '')}:docker",
+    extraArgs: ["-PpythonVersion=${imagePythonVersion}"],
+    extraHint: '[-PpythonVersion=3.12]',
+)
+
+// The options of the Dataflow jobs of the Python tests. The Python workers run the SDK of this
+// tree: from `pythonSdkImage`, or else from the staged sdist.
+ext.pythonDataflowPipelineOptions = { ->
+  xlangDataflowFlags(
+      extraFlags: pythonSdkImage
+          ? ["--sdk_container_image=${pythonSdkImage}", '--sdk_location=container']
+          : ["--sdk_location=${pythonSdist.absolutePath}"],
+  )
+}
+
+def runPythonSuite = { String workerImage, List pipelineOpts, List testOpts = [] ->
+  def args = project.project(':sdks:python').mapToArgString([
+    'pipeline_opts': pipelineOpts,
+    'test_opts': testOpts + (selectedTests { "${pythonSuite}::test_${it}" } ?: [pythonSuite]),
+    'suite': 'rustXlangValidateRunner',
+  ])
+  execWithExpansionService(workerImage: workerImage) { service ->
+    workingDir pythonDir
+    environment 'EXPANSION_PORT', service.port
+    commandLine 'sh', '-c', ". ${xlangVenv}/bin/activate && ./scripts/run_integration_test.sh ${args}"
+  }
+}
+
+registerXlangSuiteTasks(
+    sdk: 'Python',
+    testExamples: 'prefix,group_by_key',
+    dependsOn: ['setupXlangPythonEnv'],
+    dataflowDependsOn: pythonSdkImage ? [] : [':sdks:python:sdist'],
+    prismHint: '[-PpythonVersion=3.12]',
+    dataflowHint: '[-PxlangParallelism=8] [-PpythonVersion=3.12] [-PpythonSdkImage=<image>]',
+    configurePrism: { task ->
+      task.doLast {
+        runPythonSuite(testingImage, [
+          '--runner=PrismRunner',
+          '--environment_type=LOOPBACK',
+          "--prism_location=${prismHostBinary.absolutePath}",
+        ])
+      }
+    },
+    configureDataflow: { task ->
+      task.doLast {
+        def parallelism = (project.findProperty('xlangParallelism') ?: '8').toString()
+        runPythonSuite(dataflowImage, pythonDataflowPipelineOptions(),
+            ["--numprocesses=${parallelism}".toString(), '--timeout=1800'])
+      }
+    },
+)

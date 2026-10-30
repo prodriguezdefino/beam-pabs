@@ -42,7 +42,9 @@ def readCargoMetadata = { ->
   return [packages: []]
 }
 
+// The benchmark pipelines get no per-crate tasks (see `benchmarkPackages`).
 def metadata = readCargoMetadata()
+metadata.packages.removeAll { it.name in benchmarkPackages }
 
 def crateDir = [:]
 def dirToPkg = [:]

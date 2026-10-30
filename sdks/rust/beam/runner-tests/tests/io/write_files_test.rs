@@ -22,10 +22,10 @@
 use std::fs;
 use std::path::Path;
 
+use beam::io::file::fileio::{self, ReadableFile};
+use beam::io::file::{FormatSink, TextFormat, WriteFiles, textio};
 use beam::pipeline::Pipeline;
 use beam::transforms::{Create, Map};
-use file::fileio::{self, ReadableFile};
-use file::{FormatSink, TextFormat, WriteFiles, textio};
 use prism::PrismRunner;
 use tests::TempDir;
 

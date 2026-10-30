@@ -24,10 +24,10 @@
 
 use std::fs;
 
+use beam::io::file::fileio::{FileMetadata, Match};
+use beam::io::file::textio::{self, ReadFiles, ReadFilesWithFilename};
 use beam::pipeline::Pipeline;
 use beam::transforms::Create;
-use file::fileio::{FileMetadata, Match};
-use file::textio::{self, ReadFiles, ReadFilesWithFilename};
 use fluent::prelude::PCollectionExt;
 use prism::PrismRunner;
 use tests::TempDir;

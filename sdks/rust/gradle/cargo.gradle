@@ -39,10 +39,13 @@ ext.beamCargoEnv = [
     BEAM_VERSION        : beamVersion.toString(),
 ]
 
-ext.workspaceScope = ['--workspace']
+// The benchmark pipelines under scripts/benchmarks. The lifecycle tasks leave them out, so
+// every build does not compile them. `checkBenchmarks` and the benchmark tasks build them.
+ext.benchmarkPackages = ['bigtable_benchmark', 'kafka_benchmark']
+ext.workspaceScope = ['--workspace'] + benchmarkPackages.collectMany { ['--exclude', it] }
 
-// -Ppkg=<crate> narrows `build` and `test` to one crate; the default is the workspace. With
-// -Ppkg, -PonlyFeatures=<list> enables only these cargo features of the crate.
+// -Ppkg=<crate> narrows `build` and `test` to one crate; the default is the workspace but the
+// benchmarks. With -Ppkg, -PonlyFeatures=<list> enables only these cargo features of the crate.
 ext.selectedPkg = (project.findProperty('pkg') ?: project.findProperty('package'))?.toString()
 ext.onlyFeatures = project.findProperty('onlyFeatures')?.toString()
 ext.featureScope = selectedPkg && onlyFeatures != null ?

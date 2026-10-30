@@ -112,7 +112,8 @@ pub mod io {
     #[cfg(feature = "json")]
     pub use json_io as json;
 
-    /// Cross-language Kafka I/O: `beam::io::kafka::KafkaRead` and `KafkaWrite`.
+    /// Kafka I/O: the native connector in `beam::io::kafka::native` (feature `kafka-native`),
+    /// and the cross-language `beam::io::kafka::KafkaRead` and `KafkaWrite` (feature `kafka`).
     #[cfg(feature = "kafka")]
     pub use kafka_io as kafka;
 

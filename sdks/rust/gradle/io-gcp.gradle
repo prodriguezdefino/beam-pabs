@@ -1,0 +1,97 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Tasks of the native Google Cloud connectors (apache-beam-io-gcp): the expansion service
+// image, the Rust integration test, and the Python tests on Prism and Dataflow.
+
+registerExpansionImageTasks(
+    buildTask: 'buildGcpExpansionService',
+    imageTask: 'gcpExpansionServiceImage',
+    pkg: 'apache-beam-io-gcp-expansion-service',
+    bin: 'beam-gcp-expansion-service',
+    arch: workerArch,
+    image: rustImageName('gcp_expansion_service'),
+    buildDescription: 'Build the Linux expansion service binary of the native Google Cloud connectors (-PexampleArch=amd64)',
+    imageDescription: 'Build the expansion service image of the native Google Cloud connectors, beam_rust_gcp_expansion_service ([-PbaseImage=<image>] [-PexampleArch=amd64] [-Ppush-containers])',
+)
+
+tasks.register('bigQueryIntegrationTest', Exec) {
+  group = 'Verification'
+  description = 'Read public BigQuery tables with the native Storage Read connector on Prism ([-PgcpProject=<project>])'
+  dependsOn 'fetchPrism'
+  workingDir rustDir
+
+  doFirst {
+    environment launchEnvironment()
+    environment 'BEAM_TEST_PIPELINE_OPTIONS', "--runner=prism --project=${requireItGcpProject()}"
+  }
+  commandLine 'cargo', 'test', '-p', 'apache-beam-runner-tests', '--test', 'bigquery_storage_it', '--', '--ignored'
+}
+
+def gcpTestingImage = rustImageName('gcp_expansion_service_testing')
+def gcpDataflowImage = dataflowRoot ? rustImageName('gcp_expansion_service_testing', dataflowRoot) : null
+def gcpTestsDir = file("${rustDir}/beam/io/gcp/expansion-service/tests/python")
+
+registerExpansionImageTasks(
+    buildTask: 'buildGcpExpansionServiceTesting',
+    imageTask: 'gcpExpansionServiceTestingImage',
+    pkg: 'apache-beam-io-gcp-expansion-service',
+    bin: 'beam-gcp-expansion-service',
+    arch: xlangArch,
+    image: gcpTestingImage,
+    buildDescription: 'Build the Linux expansion service binary of the native Google Cloud connectors for its Python tests ([-PexampleArch=<arch>])',
+    imageDescription: 'Build the image of the native Google Cloud connectors for its Python tests, beam_rust_gcp_expansion_service_testing ([-PexampleArch=<arch>])',
+)
+
+registerDataflowExpansionImageTasks(
+    buildTask: 'buildGcpExpansionServiceTestingDataflow',
+    imageTask: 'gcpExpansionServiceTestingDataflowImage',
+    pkg: 'apache-beam-io-gcp-expansion-service',
+    bin: 'beam-gcp-expansion-service',
+    imageName: 'gcp_expansion_service_testing',
+    buildDescription: 'Build the linux/amd64 expansion service binary of the native Google Cloud connectors for Dataflow',
+    imageDescription: 'Build and push the linux/amd64 image of the native Google Cloud connectors for its Python tests on Dataflow ([-PdataflowRepositoryRoot=<registry>])',
+)
+
+tasks.register('gcpExpansionServicePythonTest') {
+  group = 'Verification'
+  description = 'Run the Python tests of the native Google Cloud providers on Prism; ' +
+      'gcpExpansionServicePythonTestDataflow runs them on Dataflow ' +
+      '([-Ptests=bigquery_storage] [-PtestFilter=<pytest -k>] [-PgcpProject=<project>] [-PpythonVersion=3.12])'
+  dependsOn 'gcpExpansionServiceTestingImage', 'fetchPrism', 'setupXlangPythonEnv'
+
+  doLast {
+    runProviderPythonTests(gcpTestingImage, gcpTestsDir, [GCP_PROJECT: requireItGcpProject()])
+  }
+}
+
+tasks.register('gcpExpansionServicePythonTestDataflow') {
+  group = 'Verification'
+  description = 'Run the Python tests of the native Google Cloud providers on Dataflow ' +
+      '([-Ptests=bigquery_storage] [-PtestFilter=<pytest -k>] [-PgcpProject=<project>] [-PpythonVersion=3.12] [-PpythonSdkImage=<image>])'
+  dependsOn 'gcpExpansionServiceTestingImage', 'gcpExpansionServiceTestingDataflowImage', 'setupXlangPythonEnv'
+  if (!pythonSdkImage) {
+    dependsOn ':sdks:python:sdist'
+  }
+
+  doLast {
+    runProviderPythonTests(gcpTestingImage, gcpTestsDir,
+        [GCP_PROJECT: requireItGcpProject(), PIPELINE_OPTIONS: pythonDataflowPipelineOptions().join(' ')],
+        gcpDataflowImage)
+  }
+}

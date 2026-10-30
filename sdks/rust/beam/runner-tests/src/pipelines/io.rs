@@ -22,8 +22,8 @@
 use std::fs;
 use std::path::Path;
 
+use beam::io::file::textio;
 use beam::testing::{TestPipeline, passert};
-use file::textio;
 
 /// Contents of the file [`build_textio_roundtrip`] reads, and so of the file it writes.
 pub const TEXTIO_ROUNDTRIP_CONTENTS: &str =

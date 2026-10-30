@@ -1,0 +1,78 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Go cross-language ValidatesRunner tasks (`validatesCrossLanguageRunnerGoPrism`,
+// `validatesCrossLanguageRunnerGoDataflow`, `goSdkDataflowImage`).
+
+if (gradle.startParameter.taskNames.any { it.contains('CrossLanguageRunnerGo') }) {
+  evaluationDependsOn(':sdks:go:test')
+}
+
+def goSdkImage = registerSdkDataflowImageTask(
+    sdk: 'Go',
+    imageSuffix: 'go_sdk',
+    gradleTask: ':sdks:go:container:docker',
+)
+
+def runGoSuite = { String workerImage, List<String> goArgs ->
+  def pattern = selectedTests { "TestXLang_${it}" }?.join('|')?.with { "^(${it})\$" } ?: '^TestXLang_'
+  execWithExpansionService(workerImage: workerImage) { service ->
+    workingDir "${rootDir}/sdks/go"
+    commandLine(['./run_with_go_version.sh', 'test', '-v', './test/integration/xlang',
+                 '-run', pattern,
+                 "--expansion_addr=test:localhost:${service.port}"] + goArgs*.toString())
+  }
+}
+
+registerXlangSuiteTasks(
+    sdk: 'Go',
+    testExamples: 'Prefix,GroupBy',
+    dependsOn: [':runners:prism:goPrepare'],
+    dataflowHint: '[-PgoSdkImage=<image>]',
+    configurePrism: { task ->
+      task.doLast {
+        withPrismJobServer { jobPort ->
+          runGoSuite(testingImage, [
+            '--runner=portable',
+            "--endpoint=localhost:${jobPort}",
+            '--environment_type=LOOPBACK',
+          ])
+        }
+      }
+    },
+    configureDataflow: { task ->
+      task.doLast {
+        if (!goSdkImage) {
+          throw new GradleException('Set goSdkImage in sdks/rust/.local/sdk.properties or with -P (run :sdks:rust:goSdkDataflowImage).')
+        }
+        runGoSuite(dataflowImage, xlangDataflowFlags(
+            runner: 'dataflow',
+            tempSuffix: '/temp',
+            machineTypeFlag: 'worker_machine_type',
+            extraFlags: { temp ->
+              [
+                '-timeout', '1h',
+                "--staging_location=${temp}/staging",
+                '--environment_type=DOCKER',
+                "--environment_config=${goSdkImage}",
+              ]
+            },
+        ))
+      }
+    },
+)

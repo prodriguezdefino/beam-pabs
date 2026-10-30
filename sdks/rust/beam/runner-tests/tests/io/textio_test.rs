@@ -21,6 +21,7 @@ use std::fs;
 use std::io::Read as _;
 use std::time::Duration;
 
+use beam::io::file::textio;
 use beam::io::file::{
     FileBasedSource, FileFormat, FileNamingContext, FileRecordReader, FileSystem, FormatSink,
     WriteFiles,
@@ -32,7 +33,6 @@ use beam::transforms::Create;
 use beam::transforms::sdf::{OffsetRangeTracker, RestrictionTracker};
 use beam::values::IsBounded;
 use beam::windowing::{GlobalWindows, Trigger};
-use file::textio;
 use fluent::prelude::{PCollectionExt, PCollectionKeyedExt};
 use prism::PrismRunner;
 
