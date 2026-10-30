@@ -22,8 +22,8 @@ use std::sync::Arc;
 
 use beam::coders::{
     URN_INTERVAL_WINDOW, URN_ITERABLE, URN_KV, URN_LENGTH_PREFIX, URN_NULLABLE,
-    URN_PARAM_WINDOWED_VALUE, URN_STATE_BACKED_ITERABLE, URN_WINDOWED_VALUE, coder_urn,
-    length_prefix_component, peel_length_prefixes,
+    URN_PARAM_WINDOWED_VALUE, URN_SHARDED_KEY, URN_STATE_BACKED_ITERABLE, URN_WINDOWED_VALUE,
+    coder_urn, length_prefix_component, peel_length_prefixes,
 };
 use beam::internals::{HandlerInstance, TransformFn};
 use model::fn_execution::{ProcessBundleDescriptor, RemoteGrpcPort};
@@ -264,7 +264,7 @@ fn unmeasured_prefixed_value<'a>(
             }
         }
         URN_KV => walk(component(0), true).or_else(|| walk(component(1), nested)),
-        URN_ITERABLE | URN_STATE_BACKED_ITERABLE => walk(component(0), true),
+        URN_ITERABLE | URN_STATE_BACKED_ITERABLE | URN_SHARDED_KEY => walk(component(0), true),
         URN_NULLABLE => walk(component(0), nested),
         _ => None,
     }

@@ -172,7 +172,7 @@ impl Clone for PairWithRandomKeyFn {
 /// Returns a random start key without a random number crate. The OS seeds `RandomState` per
 /// process and each instance changes the seed. This is enough: keys must be well spread, not
 /// unpredictable.
-fn random_seed() -> i64 {
+pub(super) fn random_seed() -> i64 {
     use std::hash::{BuildHasher, Hasher};
     std::collections::hash_map::RandomState::new()
         .build_hasher()
