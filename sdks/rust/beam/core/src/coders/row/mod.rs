@@ -39,13 +39,13 @@ pub(crate) mod walk;
 pub(crate) use decode::decode_field_value;
 pub use element::{RowElementCoder, RowStructCoder};
 pub(crate) use encode::encode_field_value;
-pub(crate) use skip::skip_field_value;
+pub(crate) use skip::{FieldWire, field_wire, skip_field_value};
 
 use std::io::{self, Error as IoError, ErrorKind};
 use std::sync::Arc;
 
-use crate::coders::URN_ROW;
 use crate::coders::traits::{Coder, CoderError, CoderRegistry, Context, DefaultCoder, FieldMap};
+use crate::coders::{SkipPlan, URN_ROW};
 use crate::schema::{Row, Schema};
 use header::{bit_is_null, read_row_header, write_row_header};
 
@@ -110,7 +110,8 @@ impl RowCoder {
     }
 
     /// Moves `cursor` past one row encoded with `schema`, with no [`Row`] and no copy of the
-    /// field values. Measures a row where the stream has no length prefix for it.
+    /// field values. Compiles `schema` on each call; a hot path builds a
+    /// [`SkipPlan::for_row`] once.
     ///
     /// # Errors
     ///
@@ -118,14 +119,7 @@ impl RowCoder {
     /// can wait for the next chunk. [`ErrorKind::InvalidData`] if the field count is not the
     /// field count of `schema`, or an element count is negative.
     pub fn skip_row(schema: &Schema, cursor: &mut &[u8]) -> io::Result<()> {
-        let null_bits = read_row_header(schema.num_fields(), cursor).map_err(into_io_error)?;
-        let order = encoding_order(schema);
-        let field_at = |position: usize| order.as_ref().map_or(position, |o| o[position]);
-        (0..schema.num_fields())
-            .filter(|&position| !bit_is_null(null_bits, position))
-            .try_for_each(|position| {
-                skip_field_value(&schema.fields[field_at(position)].field_type, cursor)
-            })
+        SkipPlan::for_row(schema).skip(cursor, true)
     }
 }
 

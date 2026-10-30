@@ -17,16 +17,18 @@
  * under the License.
  */
 
-//! Composite Beam coders: KV, tuples, length prefix, iterable and nullable.
+//! Composite Beam coders: KV, tuples, length prefix, iterable, nullable and sharded key.
 
 mod iterable;
 mod kv;
 mod length_prefix;
 mod nullable;
+mod sharded_key;
 mod tuple;
 
 pub use iterable::*;
 pub use kv::*;
 pub use length_prefix::*;
 pub use nullable::*;
+pub use sharded_key::*;
 pub use tuple::*;

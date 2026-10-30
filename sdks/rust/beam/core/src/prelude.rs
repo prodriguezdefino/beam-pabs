@@ -48,12 +48,12 @@ pub use crate::transforms::{
     BagState, BatchElements, BroadcastInnerJoin, BroadcastLeftJoin, CoGbkResult, CoGroupByKey,
     CombineFn, CombineGlobally, CombinePerKey, CombiningState, Compose, CountGlobally,
     CountPerElement, Create, Distinct, DistinctBy, DoFn, Failure, Filter, FinishBundleContext,
-    FlatMap, Flatten, FromRows, FullOuterJoin, GenerateSequence, GroupByKey, Impulse, InnerJoin,
-    Inspect, KeyedPCollectionTuple, LeftJoin, Map, MapState, Max, Mean, Min, MultimapState,
-    NoTimers, OrderedListState, Outputs, PTransform, ParDo, Partition, PeriodicImpulse,
-    ProcessContext, Reshuffle, RightJoin, Sample, SetState, Sets, StatefulContext, StatefulDoFn,
-    Sum, ToRows, Top, TryMap, TryPTransform, TupleTag, ValueState, Windowed, WithFailures,
-    WithKeys,
+    FlatMap, Flatten, FromRows, FullOuterJoin, GenerateSequence, GroupByKey, GroupIntoBatches,
+    Impulse, InnerJoin, Inspect, KeyedPCollectionTuple, LeftJoin, Map, MapState, Max, Mean, Min,
+    MultimapState, NoTimers, OrderedListState, Outputs, PTransform, ParDo, Partition,
+    PeriodicImpulse, ProcessContext, Reshuffle, RightJoin, Sample, SetState, Sets, StatefulContext,
+    StatefulDoFn, Sum, ToRows, Top, TryMap, TryPTransform, TupleTag, ValueState, Windowed,
+    WithFailures, WithKeys,
 };
 #[cfg(feature = "derive")]
 pub use crate::transforms::{Register, State, Timers};

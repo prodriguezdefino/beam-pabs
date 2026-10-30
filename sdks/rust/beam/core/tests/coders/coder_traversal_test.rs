@@ -29,12 +29,14 @@ use std::io::ErrorKind;
 use std::sync::Arc;
 
 use beam_core::coders::{
-    RowCoder, URN_BOOL, URN_BYTES, URN_DOUBLE, URN_GLOBAL_WINDOW, URN_INTERVAL_WINDOW,
+    RowCoder, SkipPlan, URN_BOOL, URN_BYTES, URN_DOUBLE, URN_GLOBAL_WINDOW, URN_INTERVAL_WINDOW,
     URN_ITERABLE, URN_KV, URN_LENGTH_PREFIX, URN_NULLABLE, URN_PARAM_WINDOWED_VALUE, URN_ROW,
     URN_STRING_UTF8, URN_TIMER, URN_VARINT, URN_WINDOWED_VALUE, VarIntCoder, extract_kv_key_bytes,
     extract_row_schema, skip_pane_info, skips_exactly,
 };
-use beam_core::schema::{Field, FieldType, FieldValue, Row, Schema, TypeInfo, URN_MILLIS_INSTANT};
+use beam_core::schema::{
+    Field, FieldType, FieldValue, Row, Schema, TypeInfo, URN_DECIMAL, URN_MILLIS_INSTANT,
+};
 use beam_model::pipeline::{Coder as ProtoCoder, FunctionSpec};
 
 /// Skips with [`skip_coder_value`] and with a compiled [`SkipPlan`], and checks that both end
@@ -46,7 +48,7 @@ fn skip_coder_value(
     nested: bool,
 ) -> Result<(), std::io::Error> {
     let mut planned = *cursor;
-    let plan_result = beam_core::coders::SkipPlan::new(coder_id, coders).skip(&mut planned, nested);
+    let plan_result = SkipPlan::new(coder_id, coders).skip(&mut planned, nested);
     let result = beam_core::coders::skip_coder_value(cursor, coder_id, coders, nested);
     match (&result, &plan_result) {
         (Ok(()), Ok(())) => assert_eq!(cursor.len(), planned.len(), "{coder_id}"),
@@ -391,14 +393,26 @@ fn every_kind_schema() -> Arc<Schema> {
         ),
         Field::new(
             "counts",
-            FieldType::map(FieldType::string(), FieldType::int64()),
+            FieldType::map(FieldType::string(), FieldType::int64().with_nullable(true)),
         ),
         Field::new("point", FieldType::row(point)),
         Field::new(
             "millis",
             FieldType::logical(URN_MILLIS_INSTANT, Vec::new(), FieldType::int64()),
         ),
+        Field::new(
+            "decimal",
+            FieldType::logical(URN_DECIMAL, Vec::new(), FieldType::bytes()),
+        ),
     ]))
+}
+
+fn decimal_wire(scale: i64, unscaled: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    VarIntCoder::encode_varint_to_vec(scale, &mut out);
+    VarIntCoder::encode_varint_to_vec(unscaled.len() as i64, &mut out);
+    out.extend_from_slice(unscaled);
+    out
 }
 
 fn every_kind_row(schema: &Arc<Schema>, maybe: Option<i64>) -> Vec<u8> {
@@ -418,19 +432,56 @@ fn every_kind_row(schema: &Arc<Schema>, maybe: Option<i64>) -> Vec<u8> {
             Some(FieldValue::String("a".to_string())),
             None,
         ])),
-        Some(FieldValue::Map(vec![(
-            FieldValue::String("k".to_string()),
-            Some(FieldValue::Int64(300)),
-        )])),
+        Some(FieldValue::Map(vec![
+            (
+                FieldValue::String("k".to_string()),
+                Some(FieldValue::Int64(300)),
+            ),
+            (FieldValue::String("absent".to_string()), None),
+        ])),
         Some(FieldValue::Row(
             Row::new(point, vec![Some(FieldValue::Int32(-7)), None]).expect("point"),
         )),
         Some(FieldValue::Int64(1_700_000_000_000)),
+        Some(FieldValue::Bytes(decimal_wire(-2, &[0x04, 0xD2]))),
     ];
     let row = Row::new(Arc::clone(schema), values).expect("the values match the schema");
     let mut buf = Vec::new();
     RowCoder::encode_row(&row, &mut buf).expect("row must encode");
     buf
+}
+
+fn assert_row_skip_stops_at_sentinel(
+    schema: &Arc<Schema>,
+    plan: &SkipPlan,
+    body: &[u8],
+    case: &str,
+) {
+    let encoded = [body, &[SENTINEL]].concat();
+
+    let mut row_cursor = &encoded[..];
+    RowCoder::skip_row(schema, &mut row_cursor).expect(case);
+    assert_eq!(row_cursor, &[SENTINEL], "{case}");
+
+    for nested in [true, false] {
+        let mut plan_cursor = &encoded[..];
+        plan.skip(&mut plan_cursor, nested).expect(case);
+        assert_eq!(plan_cursor, &[SENTINEL], "{case} (nested={nested})");
+    }
+}
+
+fn assert_row_skip_err(
+    schema: &Schema,
+    plan: &SkipPlan,
+    bytes: &[u8],
+    expected: ErrorKind,
+    case: &str,
+) {
+    let row_err = RowCoder::skip_row(schema, &mut &bytes[..]).expect_err(case);
+    let plan_err = plan.skip(&mut &bytes[..], true).expect_err(case);
+    assert_eq!(row_err.kind(), expected, "{case}: {row_err}");
+    assert_eq!(plan_err.kind(), expected, "{case}: {plan_err}");
+    assert_eq!(plan_err.to_string(), row_err.to_string(), "{case}");
 }
 
 #[test]
@@ -459,49 +510,258 @@ fn skip_row_stops_at_the_end_of_every_kind_of_row() {
         ("a null field", &schema, every_kind_row(&schema, None)),
         ("encoding positions", &positioned, positioned_bytes),
     ];
-    cases.iter().for_each(|(case, schema, body)| {
-        let encoded = [body.as_slice(), &[SENTINEL]].concat();
-        let mut cursor = &encoded[..];
-        RowCoder::skip_row(schema, &mut cursor).expect(case);
-        assert_eq!(encoded.len() - cursor.len(), body.len(), "{case}");
-    });
+    for (case, case_schema, body) in &cases {
+        let plan = SkipPlan::for_row(case_schema.as_ref());
+        assert_row_skip_stops_at_sentinel(case_schema, &plan, body, case);
+    }
+}
+
+#[test]
+fn skip_plan_for_row_handles_reordered_fields_nulls_and_nested_containers() {
+    let inner = Arc::new(Schema::new(vec![
+        Field::nullable("note", FieldType::string()).with_encoding_position(10),
+        Field::new("code", FieldType::int32()).with_encoding_position(2),
+        Field::nullable(
+            "amount",
+            FieldType::logical(URN_DECIMAL, Vec::new(), FieldType::bytes()),
+        )
+        .with_encoding_position(5),
+    ]));
+    let outer = Arc::new(Schema::new(vec![
+        Field::nullable("label", FieldType::string()).with_encoding_position(30),
+        Field::nullable("nested", FieldType::row(Arc::clone(&inner))).with_encoding_position(10),
+        Field::new(
+            "items",
+            FieldType::array(FieldType::row(Arc::clone(&inner)).with_nullable(true)),
+        )
+        .with_encoding_position(20),
+        Field::new(
+            "prices",
+            FieldType::map(
+                FieldType::string(),
+                FieldType::logical(URN_DECIMAL, Vec::new(), FieldType::bytes()).with_nullable(true),
+            ),
+        )
+        .with_encoding_position(0),
+    ]));
+    let plan = SkipPlan::for_row(Arc::clone(&outer));
+
+    let inner_full = Row::new(
+        Arc::clone(&inner),
+        vec![
+            Some(FieldValue::String("ok".to_string())),
+            Some(FieldValue::Int32(-42)),
+            Some(FieldValue::Bytes(decimal_wire(4, &[0x01, 0x00]))),
+        ],
+    )
+    .expect("inner full");
+    let inner_nulls = Row::new(
+        Arc::clone(&inner),
+        vec![None, Some(FieldValue::Int32(7)), None],
+    )
+    .expect("inner nulls");
+
+    let populated = Row::new(
+        Arc::clone(&outer),
+        vec![
+            Some(FieldValue::String("tail".to_string())),
+            Some(FieldValue::Row(inner_full.clone())),
+            Some(FieldValue::Array(vec![
+                Some(FieldValue::Row(inner_nulls)),
+                None,
+                Some(FieldValue::Row(inner_full)),
+            ])),
+            Some(FieldValue::Map(vec![
+                (
+                    FieldValue::String("a".to_string()),
+                    Some(FieldValue::Bytes(decimal_wire(2, &[0x2A]))),
+                ),
+                (FieldValue::String("b".to_string()), None),
+            ])),
+        ],
+    )
+    .expect("populated outer");
+    let sparse = Row::new(
+        Arc::clone(&outer),
+        vec![
+            None,
+            None,
+            Some(FieldValue::Array(Vec::new())),
+            Some(FieldValue::Map(Vec::new())),
+        ],
+    )
+    .expect("sparse outer");
+
+    for (case, row) in [("populated", populated), ("sparse", sparse)] {
+        let mut bytes = Vec::new();
+        RowCoder::encode_row(&row, &mut bytes).expect("row encodes");
+        assert_row_skip_stops_at_sentinel(&outer, &plan, &bytes, case);
+    }
+
+    // Short null bitmask on a 9-field schema: missing bitmask bytes mean non-null.
+    let nine_fields = Arc::new(Schema::new(
+        (0..9)
+            .map(|i| Field::nullable(format!("f{i}"), FieldType::int32()))
+            .collect(),
+    ));
+    let nine_plan = SkipPlan::for_row(&*nine_fields);
+    let mut short_mask = vec![0x09, 0x01, 0x05]; // fields 0 and 2 are null; 1 and 3..=8 follow
+    short_mask.extend(1..=7u8);
+    assert_row_skip_stops_at_sentinel(&nine_fields, &nine_plan, &short_mask, "short bitmask");
 }
 
 #[test]
 fn skip_row_reports_a_cut_off_row_as_unexpected_eof() {
     let schema = every_kind_schema();
+    let plan = SkipPlan::for_row(&*schema);
     let body = every_kind_row(&schema, Some(9));
     // Every cut must say "wait for more bytes", or the harness drops a partial element.
-    (0..body.len()).for_each(|cut| {
-        let err = RowCoder::skip_row(&schema, &mut &body[..cut])
-            .expect_err("a cut-off row does not skip");
-        assert_eq!(err.kind(), ErrorKind::UnexpectedEof, "cut at {cut}");
-    });
+    for cut in 0..body.len() {
+        assert_row_skip_err(
+            &schema,
+            &plan,
+            &body[..cut],
+            ErrorKind::UnexpectedEof,
+            "cut-off row",
+        );
+    }
 }
 
 #[test]
-fn skip_row_rejects_a_wrong_field_count_and_a_negative_element_count() {
+fn skip_row_rejects_corrupt_headers_containers_and_lengths() {
     let schema = row_schema();
-    let three_fields = [0x03, 0x00];
-    let err = RowCoder::skip_row(&schema, &mut &three_fields[..])
-        .expect_err("the field count must match the schema");
-    assert_eq!(err.kind(), ErrorKind::InvalidData);
+    let plan = SkipPlan::for_row(&*schema);
+    assert_row_skip_err(
+        &schema,
+        &plan,
+        &[0x03, 0x00],
+        ErrorKind::InvalidData,
+        "wrong field count",
+    );
+
+    let mut neg_fields = Vec::new();
+    VarIntCoder::encode_varint_to_vec(-1, &mut neg_fields);
+    assert_row_skip_err(
+        &schema,
+        &plan,
+        &neg_fields,
+        ErrorKind::InvalidData,
+        "negative field count",
+    );
+
+    let mut neg_mask = vec![0x02];
+    VarIntCoder::encode_varint_to_vec(-1, &mut neg_mask);
+    assert_row_skip_err(
+        &schema,
+        &plan,
+        &neg_mask,
+        ErrorKind::InvalidData,
+        "negative bitmask length",
+    );
+
+    let mut overlong_hdr = vec![0x80u8; 10];
+    overlong_hdr.push(0x01);
+    assert_row_skip_err(
+        &schema,
+        &plan,
+        &overlong_hdr,
+        ErrorKind::InvalidData,
+        "overlong header varint",
+    );
+
+    let mut neg_str = vec![0x02, 0x00, 0x01];
+    VarIntCoder::encode_varint_to_vec(-2, &mut neg_str);
+    assert_row_skip_err(
+        &schema,
+        &plan,
+        &neg_str,
+        ErrorKind::InvalidData,
+        "negative string length",
+    );
+
+    let dec_schema = Schema::new(vec![Field::new(
+        "d",
+        FieldType::logical(URN_DECIMAL, Vec::new(), FieldType::bytes()),
+    )]);
+    let dec_plan = SkipPlan::for_row(&dec_schema);
+    let mut neg_dec = vec![0x01, 0x00, 0x02];
+    VarIntCoder::encode_varint_to_vec(-3, &mut neg_dec);
+    assert_row_skip_err(
+        &dec_schema,
+        &dec_plan,
+        &neg_dec,
+        ErrorKind::InvalidData,
+        "negative decimal length",
+    );
+
+    let mut huge_dec = vec![0x01, 0x00, 0x02];
+    VarIntCoder::encode_varint_to_vec(1 << 60, &mut huge_dec);
+    huge_dec.extend_from_slice(b"abc");
+    assert_row_skip_err(
+        &dec_schema,
+        &dec_plan,
+        &huge_dec,
+        ErrorKind::UnexpectedEof,
+        "huge decimal length",
+    );
 
     let tags = Schema::new(vec![Field::new(
         "tags",
-        FieldType::array(FieldType::string()),
+        FieldType::array(FieldType::string().with_nullable(true)),
     )]);
+    let tags_plan = SkipPlan::for_row(&tags);
     // `-1` starts a chunked iterable, so `-2` is an invalid negative count while a bare `-1`
     // truncates before the first chunk header.
     let negative = [&[0x01, 0x00][..], &(-2i32).to_be_bytes()].concat();
-    let err = RowCoder::skip_row(&tags, &mut &negative.as_slice()[..])
-        .expect_err("an element count below -1 is invalid");
-    assert_eq!(err.kind(), ErrorKind::InvalidData);
+    assert_row_skip_err(
+        &tags,
+        &tags_plan,
+        &negative,
+        ErrorKind::InvalidData,
+        "negative iterable count",
+    );
 
     let truncated_chunked = [&[0x01, 0x00][..], &(-1i32).to_be_bytes()].concat();
-    let err = RowCoder::skip_row(&tags, &mut &truncated_chunked.as_slice()[..])
-        .expect_err("a chunked iterable needs a terminating chunk header");
-    assert_eq!(err.kind(), ErrorKind::UnexpectedEof);
+    assert_row_skip_err(
+        &tags,
+        &tags_plan,
+        &truncated_chunked,
+        ErrorKind::UnexpectedEof,
+        "truncated chunked iterable",
+    );
+
+    let bad_presence = [&[0x01, 0x00][..], &1i32.to_be_bytes(), &[0x02]].concat();
+    assert_row_skip_err(
+        &tags,
+        &tags_plan,
+        &bad_presence,
+        ErrorKind::InvalidData,
+        "bad array presence byte",
+    );
+
+    let map_schema = Schema::new(vec![Field::new(
+        "m",
+        FieldType::map(FieldType::string(), FieldType::int64().with_nullable(true)),
+    )]);
+    let map_plan = SkipPlan::for_row(&map_schema);
+    let neg_map = [&[0x01, 0x00][..], &(-1i32).to_be_bytes()].concat();
+    assert_row_skip_err(
+        &map_schema,
+        &map_plan,
+        &neg_map,
+        ErrorKind::InvalidData,
+        "negative map count",
+    );
+
+    let nested_schema = Schema::new(vec![Field::new("inner", FieldType::row(row_schema()))]);
+    let nested_plan = SkipPlan::for_row(&nested_schema);
+    assert_row_skip_err(
+        &nested_schema,
+        &nested_plan,
+        &[0x01, 0x00, 0x05, 0x00],
+        ErrorKind::InvalidData,
+        "wrong nested row field count",
+    );
 }
 
 #[test]

@@ -32,4 +32,5 @@ mod param_windowed_value_test;
 mod row_coder_test;
 mod row_walk_test;
 mod runner_framing_test;
+mod skip_cursor_test;
 mod tuple_coder_test;
