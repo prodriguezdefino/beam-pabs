@@ -59,7 +59,7 @@ The test pipelines in [`sdks/rust/beam/runner-tests/src/pipelines/`](../beam/run
 
 - `build_map_and_filter`, `build_flat_map`, `build_dofn_lifecycle`, `build_diamond_dag`, `build_multi_output_pardo`
 - `build_group_by_key`, `build_combine_per_key`, `build_combine_max_min`, `build_combine_flushes_accumulators_at_capacity`, `build_count_per_element`, `build_combine_globally`, `build_count_globally`, `build_folds`, `build_combine_composed_accumulators`
-- `build_flatten_many`, `build_flatten_singleton_list`, `build_flatten_then_pardo`, `build_flatten_multiple_copies`, `build_create_empty`, `build_kv_swap`, `build_reshuffle`, `build_partition`, `build_partition_many`
+- `build_flatten_many`, `build_flatten_singleton_list`, `build_flatten_then_pardo`, `build_flatten_multiple_copies`, `build_create_empty`, `build_kv_swap`, `build_reshuffle`, `build_partition`, `build_partition_many`, `build_group_into_batches_sharded_key`
 - `build_generate_sequence`, `build_periodic_impulse`
 - `build_cogroup_by_key`, `build_joins`, `build_join_cross_product`, `build_row_schema_coder`
 - `build_side_input_views`, `build_empty_iterable_side_input`, `build_windowed_side_input`
@@ -81,7 +81,7 @@ Each test pairs a builder with an `Expectation`:
 
 ### Central Test Registry and Worker Reconstruction
 
-[`sdks/rust/beam/runner-tests/src/registry.rs`](../beam/runner-tests/src/registry.rs) defines the 48 conformance tests once in the `validates_runner_suite!` macro across 8 suites (`core_transforms`, `joins`, `schemas`, `registered_functions`, `side_inputs`, `state_and_timers`, `windowing`, `assertions`). Each entry is a `ValidatesRunnerTest { suite, id, build, expect }`:
+[`sdks/rust/beam/runner-tests/src/registry.rs`](../beam/runner-tests/src/registry.rs) defines the 55 conformance tests once in the `validates_runner_suite!` macro across 8 suites (`core_transforms`, `joins`, `schemas`, `registered_functions`, `side_inputs`, `state_and_timers`, `windowing`, `assertions`). Each entry is a `ValidatesRunnerTest { suite, id, build, expect }`:
 
 - [`tests/validates_runner_prism.rs`](../beam/runner-tests/tests/validates_runner_prism.rs) and [`tests/validates_runner_dataflow.rs`](../beam/runner-tests/tests/validates_runner_dataflow.rs) expand the macro into `#[tokio::test]` functions named `<suite>::<id>`.
 - `VALIDATES_RUNNER_TESTS` collects all entries into a static slice used by the worker binary (`beam-runner-tests-worker`).
@@ -111,7 +111,7 @@ Because Rust closures cannot be serialized into the pipeline proto, a containeri
 | `validatesRunnerDataflowStreaming` | Google Cloud Dataflow | Streaming |
 | `validatesRunner` / `validatesRunnerStreaming` | Aggregate alias for the Prism task | Batch / Streaming |
 
-All four tasks accept `-Pfilter=<substring>` (passed to `cargo test`) and `-PtestThreads=<n>` (`--test-threads` or `RUST_TEST_THREADS`). The Dataflow tasks default to `4` threads to stay within regional worker quota. The Prism tasks use the cargo default.
+All four tasks accept `-Pfilter=<substring>` (passed to `cargo test`) and `-PtestThreads=<n>` (`--test-threads` or `RUST_TEST_THREADS`). The Dataflow tasks default to `4` threads to stay within regional worker quota. The Prism tasks use the cargo default. The Dataflow tasks also accept `-PextraArgs="<pipeline flags>"`, which every job of the suite gets, for example `-PextraArgs="--sdk_harness_log_level_overrides=harness::state=debug"` to log the State API paging of the workers.
 
 Dataflow tests carry `#[ignore]`, so `cargo test` and `:sdks:rust:test` do not submit cloud jobs. The Dataflow Gradle tasks pass `--ignored` and depend on `buildRunnerTestsWorker`, which builds the linux worker binary `beam-runner-tests-worker` (in the builder container unless the host is Linux on the same architecture). They read `gcpProject`, `gcpTempLocation`, and `sdkContainerImage` (required), and `gcpRegion` (default `us-central1`), `network`, `subnetwork` and `workerBinary` (optional) from `sdks/rust/.local/sdk.properties` or `-P` flags, and pass them to the tests as `BEAM_DATAFLOW_*` variables:
 
@@ -173,7 +173,7 @@ Without `pythonSdkImage`, each worker builds the staged SDK into a wheel before 
 
 | Suite | Capabilities Verified |
 |---|---|
-| `core_transforms` | `Map`, `FlatMap`, `Filter`, `DoFn` lifecycle order, diamond DAGs, multi-output `ParDo`, `GroupByKey`, `CombinePerKey` (with combiner lifting and accumulator flushes), `Max` / `Min`, `Count` per element and globally, `CombineGlobally`, folds, a `Compose` whose accumulators and elements use the tuple and `Decimal` coders, `Flatten` (many inputs, one input, the same input twice), empty `Create`, KV swap, `Reshuffle` (keyed, unkeyed, timestamps kept), `Partition`, `GenerateSequence` and `PeriodicImpulse` (splittable DoFns) |
+| `core_transforms` | `Map`, `FlatMap`, `Filter`, `DoFn` lifecycle order, diamond DAGs, multi-output `ParDo`, `GroupByKey`, `CombinePerKey` (with combiner lifting and accumulator flushes), `Max` / `Min`, `Count` per element and globally, `CombineGlobally`, folds, a `Compose` whose accumulators and elements use the tuple and `Decimal` coders, `Flatten` (many inputs, one input, the same input twice), empty `Create`, KV swap, `Reshuffle` (keyed, unkeyed, timestamps kept), `Partition`, `GroupIntoBatches` on a sharded key (the `sharded_key` coder), `GenerateSequence` and `PeriodicImpulse` (splittable DoFns) |
 | `joins` | `CoGroupByKey`, `inner_join`, `left_join`, `right_join`, `full_outer_join`, join cross product |
 | `schemas` | `#[derive(BeamRow)]` elements (string, integer, list and boolean fields) through `GroupByKey` and `Reshuffle` with the row coder |
 | `registered_functions` | `#[derive(Register)]` types that the worker builds from the graph: a `DoFn` with a field that `setup` builds, a splittable `DoFn`, and a `CombineFn` per key and globally (lifted on Prism, as `ParDo`s on Dataflow) |

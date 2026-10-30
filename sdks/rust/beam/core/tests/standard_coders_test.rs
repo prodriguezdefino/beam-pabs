@@ -33,8 +33,8 @@ use std::sync::Arc;
 use beam::coders::{
     BoolCoder, BytesCoder, Coder, CoderError, Context, DoubleCoder, IntervalWindow,
     IntervalWindowCoder, IterableCoder, KvCoder, NullableCoder, PageStream, PaneInfo,
-    ParamWindowedValueCoder, RowCoder, StateStreamReader, StringUtf8Coder, Timing, VarIntCoder,
-    WindowedValue, WindowedValueCoder, decode_beam_iterable,
+    ParamWindowedValueCoder, RowCoder, ShardedKey, ShardedKeyCoder, StateStreamReader,
+    StringUtf8Coder, Timing, VarIntCoder, WindowedValue, WindowedValueCoder, decode_beam_iterable,
 };
 use beam::schema::{BeamField, FieldType, FieldValue, Row, Schema, TypeInfo, URN_DECIMAL};
 use model::pipeline as proto;
@@ -82,16 +82,10 @@ struct UnsupportedCoderSpec {
 
 /// Standard coders from `standard_coders.yaml` that the Rust SDK does not
 /// support, along with their specification document counts.
-const UNSUPPORTED_CODERS: &[UnsupportedCoderSpec] = &[
-    UnsupportedCoderSpec {
-        urn: "beam:coder:sharded_key:v1",
-        doc_count: 1,
-    },
-    UnsupportedCoderSpec {
-        urn: "beam:coder:custom_window:v1",
-        doc_count: 1,
-    },
-];
+const UNSUPPORTED_CODERS: &[UnsupportedCoderSpec] = &[UnsupportedCoderSpec {
+    urn: "beam:coder:custom_window:v1",
+    doc_count: 1,
+}];
 
 fn key_to_bytes(key: &str) -> Vec<u8> {
     key.chars().map(|c| c as u8).collect()
@@ -431,6 +425,24 @@ fn run_single_spec(spec: &StandardCoderDoc) {
                     };
                     assert_coder_roundtrip(
                         &NullableCoder::new(BytesCoder),
+                        &expected,
+                        &expected_bytes,
+                        context,
+                        non_deterministic,
+                    );
+                }
+                "beam:coder:sharded_key:v1" => {
+                    assert_eq!(
+                        spec.coder.components.first().map(|c| c.urn.as_str()),
+                        Some("beam:coder:string_utf8:v1"),
+                        "unhandled sharded key component"
+                    );
+                    let expected = ShardedKey::new(
+                        val["key"].as_str().expect("key").to_string(),
+                        key_to_bytes(val["shardId"].as_str().expect("shardId")),
+                    );
+                    assert_coder_roundtrip(
+                        &ShardedKeyCoder::new(StringUtf8Coder),
                         &expected,
                         &expected_bytes,
                         context,
@@ -944,12 +956,12 @@ fn test_standard_coders_yaml_suite() {
         "Expected 45 YAML documents in standard_coders.yaml"
     );
     assert_eq!(
-        tested_docs, 43,
-        "Expected 43 supported standard coder documents"
+        tested_docs, 44,
+        "Expected 44 supported standard coder documents"
     );
     assert_eq!(
-        skipped_docs, 2,
-        "Expected 2 unsupported standard coder documents"
+        skipped_docs, 1,
+        "Expected 1 unsupported standard coder document"
     );
 
     // Verify exact breakdown of all missing coders

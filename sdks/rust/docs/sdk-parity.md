@@ -42,6 +42,7 @@ This page compares the Rust SDK with the other Beam SDKs.
 | Combine (global + per-key) | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Flatten / Partition | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Distinct | ✅ | ✅ | ✅ | ❌ | ✅ |
+| GroupIntoBatches (size, byte size, buffering time, sharded keys) | ✅ | ✅ | ✅ | ❌ | ✅ |
 | Set operations (union / intersect / except, distinct and all) | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Composite transforms | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Hierarchical transform names (composite scopes, duplicate sibling names rejected) | ✅ | ✅ | ✅ (Scope) | ✅ | ✅ |

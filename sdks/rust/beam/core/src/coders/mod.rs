@@ -60,6 +60,7 @@ pub const URN_LENGTH_PREFIX: &str = "beam:coder:length_prefix:v1";
 pub const URN_GLOBAL_WINDOW: &str = "beam:coder:global_window:v1";
 pub const URN_INTERVAL_WINDOW: &str = "beam:coder:interval_window:v1";
 pub const URN_NULLABLE: &str = "beam:coder:nullable:v1";
+pub const URN_SHARDED_KEY: &str = "beam:coder:sharded_key:v1";
 pub const URN_WINDOWED_VALUE: &str = "beam:coder:windowed_value:v1";
 pub const URN_PARAM_WINDOWED_VALUE: &str = "beam:coder:param_windowed_value:v1";
 pub const URN_TIMER: &str = "beam:coder:timer:v1";
@@ -84,6 +85,7 @@ pub const SUPPORTED_CODER_URNS: &[&str] = &[
     URN_GLOBAL_WINDOW,
     URN_INTERVAL_WINDOW,
     URN_NULLABLE,
+    URN_SHARDED_KEY,
     URN_WINDOWED_VALUE,
     URN_PARAM_WINDOWED_VALUE,
     URN_TIMER,

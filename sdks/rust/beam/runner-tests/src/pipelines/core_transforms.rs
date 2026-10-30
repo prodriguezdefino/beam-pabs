@@ -610,3 +610,30 @@ where
         ctx.emit((k, values))
     })
 }
+
+/// Validates the `beam:coder:sharded_key:v1` coder across the Fn API: `GroupIntoBatches`
+/// with a sharded key keys its state and its output on a `ShardedKey`.
+pub fn build_group_into_batches_sharded_key(p: &TestPipeline) {
+    let values: Vec<(String, i64)> = (0..10)
+        .flat_map(|v| [("a".to_string(), v), ("b".to_string(), 100 + v)])
+        .collect();
+    let batches = p
+        .apply("Create", Create::new(values.clone()))
+        .apply("Batch", GroupIntoBatches::new(3).with_sharded_key());
+    passert::that("AssertShardedBatches", &batches).all(
+        "batches with an 8-byte shard id and at most 3 values",
+        |(key, batch): &(beam::coders::ShardedKey<String>, Vec<i64>)| {
+            key.shard_id.len() == 8 && (1..=3).contains(&batch.len())
+        },
+    );
+    let unbatched = batches.flat_map(
+        "Explode",
+        |(key, batch): (beam::coders::ShardedKey<String>, Vec<i64>)| {
+            batch
+                .into_iter()
+                .map(|v| (key.key.clone(), v))
+                .collect::<Vec<_>>()
+        },
+    );
+    passert::that("AssertEachValueOnce", &unbatched).contains_in_any_order(values);
+}

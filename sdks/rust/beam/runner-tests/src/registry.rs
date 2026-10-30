@@ -78,6 +78,8 @@ macro_rules! validates_runner_suite {
                 reshuffle => build_reshuffle,
                 partition => build_partition,
                 partition_many => build_partition_many,
+                // Keyed batching on a sharded key (`beam:coder:sharded_key:v1`).
+                group_into_batches_sharded_key => build_group_into_batches_sharded_key,
                 // Sequence generation (splittable DoFn).
                 generate_sequence => build_generate_sequence,
                 periodic_impulse => build_periodic_impulse,

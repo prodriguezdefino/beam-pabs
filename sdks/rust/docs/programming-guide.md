@@ -175,6 +175,7 @@ let upper = p
 | `apply(name, BatchElements::new(min, max))` | `.batch_elements(name, max)` (min 1) |
 | `BatchElements` + a [`BatchedDoFn`](accelerated-workloads.md#batcheddofn) | `.par_do_batch(name, max, do_fn)` / `.par_do_batch_elementwise(name, max, do_fn)` |
 | `apply(name, GroupByKey::new())` | `.group_by_key(name)` |
+| `apply(name, GroupIntoBatches::new(n))` | `.group_into_batches(name, n)` |
 | `apply(name, CombinePerKey::new(fn))` | `.combine_per_key(name, fn)` |
 | `apply(name, CoGroupByKey::new())` | `.co_group_by_key(name, &other)` |
 | `InnerJoin` / `LeftJoin` / `RightJoin` / `FullOuterJoin` | `.inner_join` / `.left_join` / `.right_join` / `.full_outer_join` |
@@ -489,6 +490,37 @@ The fluent `fold_per_key` / `fold_globally` build a `CombineFn` from a zero, a
 fold closure and a merge closure. `fold_values(name, zero, fold)` has no merge
 closure: it groups with `GroupByKey` and folds each group in sequence, so all
 elements cross the shuffle.
+
+### Batches per key
+
+`GroupIntoBatches` batches the values of each key and window into `Vec<V>`, across
+bundles. It keeps the open batch in user state, so the input must be `(K, V)`. It
+emits a batch when the batch holds `batch_size` values, and also at the end of the
+window, so a partial batch is not lost. Use `BatchElements` to batch inside one bundle
+without a key.
+
+```rust
+let batches = events.group_into_batches("Batch", 100); // (String, Vec<Event>)
+
+let sharded = events.apply(
+    "BatchSharded",
+    GroupIntoBatches::new(100)
+        .with_byte_size(1 << 20)
+        .with_max_buffering_duration(Duration::from_secs(10))
+        .with_sharded_key(),
+); // (ShardedKey<String>, Vec<Event>)
+```
+
+- `.with_byte_size(bytes)` also emits a batch when its encoded values hold `bytes` bytes.
+- `.with_max_buffering_duration(d)` also emits a batch `d` of processing time after its
+  first value.
+- `.with_sharded_key()` adds a shard id for each worker thread to the key
+  ([`ShardedKey<K>`](../beam/core/src/coders/composite/sharded_key.rs),
+  `beam:coder:sharded_key:v1`), so the batches of one hot key are made in parallel.
+
+A batch that the end of the window emits has the minimum timestamp of its values: a
+timer holds the output watermark there. A batch that a size limit emits has the
+timestamp of the value that filled it.
 
 ### CoGroupByKey and joins
 

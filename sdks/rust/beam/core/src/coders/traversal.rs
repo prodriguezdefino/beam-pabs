@@ -32,7 +32,8 @@ use super::standard::{VarIntCoder, consumed, read_array, read_be_i32, take_bytes
 use super::{
     RowCoder, URN_BOOL, URN_BYTES, URN_DOUBLE, URN_GLOBAL_WINDOW, URN_INTERVAL_WINDOW,
     URN_ITERABLE, URN_KV, URN_LENGTH_PREFIX, URN_NULLABLE, URN_PARAM_WINDOWED_VALUE, URN_ROW,
-    URN_STATE_BACKED_ITERABLE, URN_STRING_UTF8, URN_TIMER, URN_VARINT, URN_WINDOWED_VALUE,
+    URN_SHARDED_KEY, URN_STATE_BACKED_ITERABLE, URN_STRING_UTF8, URN_TIMER, URN_VARINT,
+    URN_WINDOWED_VALUE,
 };
 
 /// Returns the URN of a coder, or `""` (an unknown URN) if it has no spec.
@@ -197,7 +198,9 @@ fn skips_exactly_at(coder_id: &str, coders: &HashMap<String, ProtoCoder>, depth:
     match coder_urn(coder) {
         URN_VARINT | URN_DOUBLE | URN_BOOL | URN_STRING_UTF8 | URN_BYTES | URN_LENGTH_PREFIX
         | URN_GLOBAL_WINDOW | URN_INTERVAL_WINDOW => true,
-        URN_KV | URN_ITERABLE | URN_STATE_BACKED_ITERABLE | URN_NULLABLE => components(),
+        URN_KV | URN_ITERABLE | URN_STATE_BACKED_ITERABLE | URN_NULLABLE | URN_SHARDED_KEY => {
+            components()
+        }
         URN_ROW => coder.spec.as_ref().is_some_and(|s| !s.payload.is_empty()),
         _ => false,
     }
@@ -267,6 +270,16 @@ fn skip_value(
                 Some(inner_id) => skip_value(cursor, inner_id, coders, nested, depth + 1),
                 None => Ok(()),
             }
+        }
+        URN_SHARDED_KEY => {
+            let [key_id, ..] = coder.component_coder_ids.as_slice() else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("sharded key coder '{coder_id}' has no key component"),
+                ));
+            };
+            skip_length_prefixed(cursor)?;
+            skip_value(cursor, key_id, coders, true, depth + 1)
         }
         URN_GLOBAL_WINDOW => Ok(()),
         URN_INTERVAL_WINDOW => {
@@ -437,6 +450,7 @@ fn collect_row_payloads<'a>(
         | URN_PARAM_WINDOWED_VALUE
         | URN_LENGTH_PREFIX
         | URN_NULLABLE
+        | URN_SHARDED_KEY
         | URN_ITERABLE
         | URN_STATE_BACKED_ITERABLE
         | URN_KV => coder
@@ -469,6 +483,8 @@ enum SkipNode {
     Iterable(Arc<SkipNode>),
     /// A nullable value. `None` when the coder has no component: a present value is empty.
     Nullable(Option<Arc<SkipNode>>),
+    /// A nested shard id, then the key.
+    ShardedKey(Arc<SkipNode>),
     WindowedValue {
         window: Arc<SkipNode>,
         value: Arc<SkipNode>,
@@ -552,6 +568,10 @@ fn compile<'a>(
         URN_NULLABLE => {
             SkipNode::Nullable((!coder.component_coder_ids.is_empty()).then(|| component(0, built)))
         }
+        URN_SHARDED_KEY if coder.component_coder_ids.is_empty() => SkipNode::Invalid(Arc::from(
+            format!("sharded key coder '{coder_id}' has no key component"),
+        )),
+        URN_SHARDED_KEY => SkipNode::ShardedKey(component(0, built)),
         URN_GLOBAL_WINDOW => SkipNode::GlobalWindow,
         URN_INTERVAL_WINDOW => SkipNode::IntervalWindow,
         URN_WINDOWED_VALUE => SkipNode::WindowedValue {
@@ -613,6 +633,10 @@ fn skip_node(node: &SkipNode, cursor: &mut &[u8], nested: bool) -> Result<(), st
                 Some(inner) => skip_node(inner, cursor, nested),
                 None => Ok(()),
             }
+        }
+        SkipNode::ShardedKey(key) => {
+            skip_length_prefixed(cursor)?;
+            skip_node(key, cursor, true)
         }
         SkipNode::GlobalWindow => Ok(()),
         SkipNode::IntervalWindow => {

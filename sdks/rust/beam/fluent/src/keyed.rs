@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! Fluent method syntax for keyed `(K, V)` [`PCollection`]s: grouping and joins.
+//! Fluent method syntax for keyed `(K, V)` [`PCollection`]s: grouping, batching and joins.
 
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -25,7 +25,7 @@ use std::hash::Hash;
 use beam::coders::{BeamIterable, DefaultCoder};
 use beam::transforms::{
     BroadcastInnerJoin, BroadcastLeftJoin, CoGbkResult, CoGroupByKey, FullOuterJoin, GroupByKey,
-    InnerJoin, KeyedPCollectionTuple, LeftJoin, RightJoin,
+    GroupIntoBatches, InnerJoin, KeyedPCollectionTuple, LeftJoin, RightJoin,
 };
 use beam::values::PCollection;
 
@@ -38,6 +38,16 @@ pub trait PCollectionKeyedExt<K: DefaultCoder, V: DefaultCoder> {
     fn group_by_key(&self, name: impl Into<String>) -> PCollection<(K, BeamIterable<V>)>
     where
         K: Eq + Hash;
+
+    /// Batches the values of each key and window, `batch_size` values at most per batch.
+    /// See [`GroupIntoBatches`] for the byte size, buffering duration and sharded keys.
+    fn group_into_batches(
+        &self,
+        name: impl Into<String>,
+        batch_size: usize,
+    ) -> PCollection<(K, Vec<V>)>
+    where
+        K: Clone;
 
     /// Groups this collection with another keyed collection sharing the same key.
     #[expect(
@@ -131,6 +141,17 @@ impl<K: DefaultCoder, V: DefaultCoder> PCollectionKeyedExt<K, V> for PCollection
         K: Eq + Hash,
     {
         self.apply(name, GroupByKey::new())
+    }
+
+    fn group_into_batches(
+        &self,
+        name: impl Into<String>,
+        batch_size: usize,
+    ) -> PCollection<(K, Vec<V>)>
+    where
+        K: Clone,
+    {
+        self.apply(name, GroupIntoBatches::new(batch_size))
     }
 
     fn co_group_by_key<V2>(
