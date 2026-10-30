@@ -20,6 +20,7 @@ mod combine_test;
 mod combine_windowing_test;
 mod dofn_test;
 mod flatten_windowing_test;
+mod group_into_batches_test;
 mod label_scope_test;
 mod library_combine_test;
 mod nested_row_coder_test;

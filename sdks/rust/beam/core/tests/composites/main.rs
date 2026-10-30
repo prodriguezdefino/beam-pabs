@@ -24,6 +24,7 @@ mod support;
 
 mod batch_elements_test;
 mod co_group_by_key_test;
+mod group_into_batches_test;
 mod periodic_impulse_test;
 mod reshuffle_test;
 mod to_rows_test;

@@ -87,6 +87,8 @@ validates_runner_tests! {
                 reshuffle => build_reshuffle,
                 partition => build_partition,
                 partition_many => build_partition_many,
+                // Keyed batching on a sharded key (`beam:coder:sharded_key:v1`).
+                group_into_batches_sharded_key => build_group_into_batches_sharded_key,
                 // Sequence generation and splittable DoFns.
                 generate_sequence => build_generate_sequence,
                 generate_sequence_with_rate_in_fixed_windows =>
@@ -157,6 +159,7 @@ validates_runner_tests! {
                 window_sums_lifted => build_window_sums_lifted,
                 rewindow_preserves_multiplicity => build_rewindow_preserves_multiplicity,
                 timestamps_and_window_reify => build_timestamps_and_window_reify,
+                distinct_per_window => build_distinct_per_window,
             }
             /// In-pipeline assertions (`passert`) and user metrics.
             assertions {
@@ -208,6 +211,8 @@ validates_runner_tests! {
                 group_by_key_large_keys_100mb => build_group_by_key_large_keys_100mb,
                 reshuffle_keeps_element_metadata => build_reshuffle_keeps_element_metadata,
                 flatten_empty_inputs_then_pardo => build_flatten_empty_inputs_then_pardo,
+                group_into_batches_count_and_byte_limits =>
+                    build_group_into_batches_count_and_byte_limits,
                 combine_globally_empty_without_defaults =>
                     build_combine_globally_empty_without_defaults,
                 schema_dofn_reads_and_writes_rows => build_schema_dofn_reads_and_writes_rows,
