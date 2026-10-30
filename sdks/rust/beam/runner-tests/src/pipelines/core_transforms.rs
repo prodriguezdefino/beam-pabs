@@ -611,6 +611,33 @@ where
     })
 }
 
+/// Validates the `beam:coder:sharded_key:v1` coder across the Fn API: `GroupIntoBatches`
+/// with a sharded key keys its state and its output on a `ShardedKey`.
+pub fn build_group_into_batches_sharded_key(p: &TestPipeline) {
+    let values: Vec<(String, i64)> = (0..10)
+        .flat_map(|v| [("a".to_string(), v), ("b".to_string(), 100 + v)])
+        .collect();
+    let batches = p
+        .apply("Create", Create::new(values.clone()))
+        .apply("Batch", GroupIntoBatches::new(3).with_sharded_key());
+    passert::that("AssertShardedBatches", &batches).all(
+        "batches with an 8-byte shard id and at most 3 values",
+        |(key, batch): &(beam::coders::ShardedKey<String>, Vec<i64>)| {
+            key.shard_id.len() == 8 && (1..=3).contains(&batch.len())
+        },
+    );
+    let unbatched = batches.flat_map(
+        "Explode",
+        |(key, batch): (beam::coders::ShardedKey<String>, Vec<i64>)| {
+            batch
+                .into_iter()
+                .map(|v| (key.key.clone(), v))
+                .collect::<Vec<_>>()
+        },
+    );
+    passert::that("AssertEachValueOnce", &unbatched).contains_in_any_order(values);
+}
+
 /// Validates `GroupByKey` on an empty input: it emits no group.
 ///
 /// Covers `GroupByKeyTest$BasicTests.testGroupByKeyEmpty`.
@@ -790,6 +817,40 @@ pub fn build_flatten_empty_inputs_then_pardo(p: &TestPipeline) {
     passert::that("AssertFlattened", &flattened).empty();
     let suffixed = flattened.map("Suffix", |s: String| s + "x");
     passert::that("AssertSuffixed", &suffixed).empty();
+}
+
+/// Validates `GroupIntoBatches` with a count limit and a byte limit in one transform.
+///
+/// Each `big` value encodes to 10 bytes, so the byte limit of 25 closes a batch at 3 values.
+/// Each `small` value encodes to 3 bytes, so the count limit of 5 closes a batch first. The
+/// batch sizes per key do not depend on the element order.
+///
+/// Covers `GroupIntoBatchesTest.testMultipleLimitsAtOnceInGlobalWindowBatchSizeCountAndBatchSizeByteSize`.
+pub fn build_group_into_batches_count_and_byte_limits(p: &TestPipeline) {
+    let values: Vec<(String, String)> = (0..7)
+        .map(|i| ("big".to_string(), format!("big-{i:05}")))
+        .chain((0..10).map(|i| ("small".to_string(), format!("s{i}"))))
+        .collect();
+    let batches = p
+        .apply("Create", Create::new(values.clone()))
+        .apply("Batch", GroupIntoBatches::new(5).with_byte_size(25));
+    let sizes = batches.map("BatchSize", |(key, batch): (String, Vec<String>)| {
+        (key, batch.len() as i64)
+    });
+    passert::that("AssertBatchSizes", &sizes).contains_in_any_order([
+        ("big".to_string(), 3),
+        ("big".to_string(), 3),
+        ("big".to_string(), 1),
+        ("small".to_string(), 5),
+        ("small".to_string(), 5),
+    ]);
+    let unbatched = batches.flat_map("Explode", |(key, batch): (String, Vec<String>)| {
+        batch
+            .into_iter()
+            .map(|v| (key.clone(), v))
+            .collect::<Vec<_>>()
+    });
+    passert::that("AssertEachValueOnce", &unbatched).contains_in_any_order(values);
 }
 
 /// Validates `combine_globally_without_defaults` on an empty input: no element comes out.

@@ -246,6 +246,59 @@ pub fn build_timestamps_and_window_reify(p: &TestPipeline) {
     ]);
 }
 
+/// Validates `Distinct` and `DistinctBy` in global and fixed windows.
+pub fn build_distinct_per_window(p: &TestPipeline) {
+    let global_unique = p
+        .apply(
+            "GlobalInput",
+            Create::new(["a", "b", "a", "c", "b", "a"].map(String::from).to_vec()),
+        )
+        .apply("GlobalDistinct", Distinct::new());
+    passert::that("AssertGlobalDistinct", &global_unique)
+        .contains_in_any_order(["a", "b", "c"].map(String::from));
+
+    let windowed_pairs = p
+        .apply(
+            "WindowedInput",
+            Create::new(vec![
+                ("a".to_string(), (1i64, 1_000i64)),
+                ("a".to_string(), (2i64, 3_000i64)),
+                ("b".to_string(), (3i64, 5_000i64)),
+                ("a".to_string(), (4i64, 11_000i64)),
+                ("a".to_string(), (5i64, 15_000i64)),
+            ]),
+        )
+        .par_do("AssignTimestamps", AssignTimestampDoFn)
+        .apply(
+            "WindowInto",
+            WindowInto::new(FixedWindows::of(Duration::from_secs(10))),
+        );
+
+    let w0 = IntervalWindow::new(Instant::EPOCH, Instant::from_millis(10_000));
+    let w1 = IntervalWindow::new(Instant::from_millis(10_000), Instant::from_millis(20_000));
+
+    let windowed_keys = windowed_pairs
+        .map("ExtractKey", |(k, _): (String, i64)| k)
+        .apply("WindowedDistinct", Distinct::new());
+    passert::that_windowed("AssertWindowedDistinct", &windowed_keys).contains_in_any_order([
+        ("a".to_string(), w0),
+        ("b".to_string(), w0),
+        ("a".to_string(), w1),
+    ]);
+
+    let distinct_by_key = windowed_pairs
+        .apply(
+            "DistinctByKey",
+            DistinctBy::new(|(k, _): &(String, i64)| k.clone()),
+        )
+        .map("RepresentativeKey", |(k, _): (String, i64)| k);
+    passert::that_windowed("AssertDistinctByKey", &distinct_by_key).contains_in_any_order([
+        ("a".to_string(), w0),
+        ("b".to_string(), w0),
+        ("a".to_string(), w1),
+    ]);
+}
+
 /// The interval window `[start, end)`, in milliseconds.
 fn interval(start: i64, end: i64) -> IntervalWindow {
     IntervalWindow::new(Instant::from_millis(start), Instant::from_millis(end))

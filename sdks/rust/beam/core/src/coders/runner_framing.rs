@@ -21,7 +21,8 @@
 //!
 //! Runners that do not decode `beam:coder:row:v1` wrap nested Row values in
 //! `beam:coder:length_prefix:v1` on the data plane. These functions add or strip those
-//! nested prefixes under `KV`, `iterable`, `state_backed_iterable`, and `nullable`.
+//! nested prefixes under `KV`, `iterable`, `state_backed_iterable`, `nullable` and
+//! `sharded_key`.
 
 use std::collections::HashMap;
 use std::io::{Error, ErrorKind};
@@ -31,9 +32,11 @@ use model::pipeline::Coder as ProtoCoder;
 use super::standard::{VarIntCoder, consumed, read_array, read_be_i32};
 use super::traversal::{
     coder_urn, length_prefix_component, read_length_prefixed_slice, skip_coder_value,
+    skip_length_prefixed,
 };
 use super::{
-    URN_ITERABLE, URN_KV, URN_LENGTH_PREFIX, URN_NULLABLE, URN_ROW, URN_STATE_BACKED_ITERABLE,
+    URN_ITERABLE, URN_KV, URN_LENGTH_PREFIX, URN_NULLABLE, URN_ROW, URN_SHARDED_KEY,
+    URN_STATE_BACKED_ITERABLE,
 };
 
 /// Direction of the element byte rewrite.
@@ -77,7 +80,7 @@ fn components_have_row_prefix(
 fn is_traversed_composite(coder: &ProtoCoder) -> bool {
     matches!(
         coder_urn(coder),
-        URN_KV | URN_ITERABLE | URN_STATE_BACKED_ITERABLE | URN_NULLABLE
+        URN_KV | URN_ITERABLE | URN_STATE_BACKED_ITERABLE | URN_NULLABLE | URN_SHARDED_KEY
     )
 }
 
@@ -220,6 +223,15 @@ impl<'a> Rewriter<'a, '_> {
                     Some(inner_id) => self.value(inner_id, nested, depth + 1),
                     None => Ok(()),
                 }
+            }
+            URN_SHARDED_KEY => {
+                let [key_id, ..] = coder.component_coder_ids.as_slice() else {
+                    return self.copy(coder_id, nested);
+                };
+                let start = self.cursor;
+                skip_length_prefixed(&mut self.cursor)?;
+                self.out.extend_from_slice(consumed(start, self.cursor));
+                self.value(key_id, true, depth + 1)
             }
             _ => self.copy(coder_id, nested),
         }
