@@ -35,7 +35,7 @@ use super::traversal::{coder_urn, read_length_prefixed_slice, skip_length_prefix
 use super::{
     RowCoder, URN_BOOL, URN_BYTES, URN_DOUBLE, URN_GLOBAL_WINDOW, URN_INTERVAL_WINDOW,
     URN_ITERABLE, URN_KV, URN_LENGTH_PREFIX, URN_NULLABLE, URN_PARAM_WINDOWED_VALUE, URN_ROW,
-    URN_STATE_BACKED_ITERABLE, URN_STRING_UTF8, URN_VARINT, URN_WINDOWED_VALUE,
+    URN_SHARDED_KEY, URN_STATE_BACKED_ITERABLE, URN_STRING_UTF8, URN_VARINT, URN_WINDOWED_VALUE,
 };
 use crate::schema::Schema;
 
@@ -60,6 +60,8 @@ enum Node {
     Kv(Box<Node>, Box<Node>),
     Iterable(Box<Node>),
     Nullable(Box<Node>),
+    /// A nested shard id, then the key.
+    ShardedKey(Box<Node>),
     GlobalWindow,
     IntervalWindow,
     WindowedValue {
@@ -162,6 +164,7 @@ impl Compiler<'_> {
                 Node::Iterable(Box::new(component(0, true)))
             }
             URN_NULLABLE => Node::Nullable(Box::new(component(0, nested))),
+            URN_SHARDED_KEY => Node::ShardedKey(Box::new(component(0, true))),
             URN_GLOBAL_WINDOW => Node::GlobalWindow,
             URN_INTERVAL_WINDOW => Node::IntervalWindow,
             URN_WINDOWED_VALUE => {
@@ -239,6 +242,11 @@ fn render<W: fmt::Write + ?Sized>(
                 "invalid nullable presence byte: expected 0 or 1",
             )),
         },
+        Node::ShardedKey(key) => {
+            write!(out, "ShardedKey({}, ", ByteStr(take(cursor, true)?)).map_err(fmt_err)?;
+            render(key, cursor, out, true)?;
+            out.write_char(')').map_err(fmt_err)
+        }
         Node::GlobalWindow => out.write_str("GlobalWindow").map_err(fmt_err),
         Node::IntervalWindow => {
             let end = read_timestamp(cursor)?;

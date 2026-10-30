@@ -195,6 +195,7 @@ let upper = p
 | `apply(name, BatchElements::new(min, max))` | `.batch_elements(name, max)` (min 1) |
 | `BatchElements` + a [`BatchedDoFn`](accelerated-workloads.md#batcheddofn) | `.par_do_batch(name, max, do_fn)` / `.par_do_batch_elementwise(name, max, do_fn)` |
 | `apply(name, GroupByKey::new())` | `.group_by_key(name)` |
+| `apply(name, GroupIntoBatches::new(n))` | `.group_into_batches(name, n)` |
 | `apply(name, CombinePerKey::new(fn))` | `.combine_per_key(name, fn)` |
 | `apply(name, CoGroupByKey::new())` | `.co_group_by_key(name, &other)` |
 | `InnerJoin` / `LeftJoin` / `RightJoin` / `FullOuterJoin` | `.inner_join` / `.left_join` / `.right_join` / `.full_outer_join` |
@@ -369,6 +370,10 @@ Per-element facts: `ctx.timestamp()`, `ctx.pane()`, `ctx.metadata()`, `ctx.is_dr
 Event time is a [`beam::Instant`](../beam/core/src/time.rs) (milliseconds since
 the epoch); add a `std::time::Duration` to move it, and
 `window.max_timestamp()` is the last instant of a window.
+`Instant::MIN` and `Instant::MAX` are the bounds of the Runner API. The runner gives
+`Instant::MIN` to the output of `Impulse`. A watermark at `Instant::MAX` closes all
+windows. The global window ends at `Instant::END_OF_GLOBAL_WINDOW`, one day before
+`Instant::MAX`. Arithmetic saturates at the bounds.
 
 ### Several outputs
 
@@ -403,7 +408,7 @@ Field names are the variant names in snake case, and so are the output tags;
 ## Side inputs
 
 A view says how the function reads a side `PCollection`, and so what it
-receives ([view.rs](../beam/core/src/values/view.rs)):
+receives ([view/mod.rs](../beam/core/src/values/view/mod.rs)):
 
 | View | Made with | Value |
 |---|---|---|
@@ -537,6 +542,39 @@ The fluent `fold_per_key` / `fold_globally` build a `CombineFn` from a zero, a
 fold closure and a merge closure. `fold_values(name, zero, fold)` has no merge
 closure: it groups with `GroupByKey` and folds each group in sequence, so all
 elements cross the shuffle.
+
+### Batches per key
+
+`GroupIntoBatches` batches the values of each key and window into `Vec<V>`, across
+bundles. It keeps the open batch in user state, so the input must be `(K, V)`. It
+emits a batch when the batch holds `batch_size` values, and also at the end of the
+window, so a partial batch is not lost. Use `BatchElements` to batch inside one bundle
+without a key.
+
+```rust
+let batches = events.group_into_batches("Batch", 100); // (String, Vec<Event>)
+
+let sharded = events.apply(
+    "BatchSharded",
+    GroupIntoBatches::new(100)
+        .with_byte_size(1 << 20)
+        .with_max_buffering_duration(Duration::from_secs(10))
+        .with_sharded_key(),
+); // (ShardedKey<String>, Vec<Event>)
+```
+
+- `.with_byte_size(bytes)` also emits a batch when its encoded values hold `bytes` bytes.
+- `.with_byte_size_fn(bytes, size_fn)` measures each value with `size_fn` instead of the
+  value coder.
+- `.with_max_buffering_duration(d)` also emits a batch `d` of processing time after its
+  first value.
+- `.with_sharded_key()` adds a shard id for each worker thread to the key
+  ([`ShardedKey<K>`](../beam/core/src/coders/composite/sharded_key.rs),
+  `beam:coder:sharded_key:v1`). Then several threads make the batches of one hot key.
+
+A batch that the end of the window emits has the minimum timestamp of its values: a
+timer holds the output watermark there. A batch that a size limit emits has the
+timestamp of the value that filled it.
 
 ### CoGroupByKey and joins
 
@@ -693,6 +731,7 @@ declarations live on structs and enums derived with `#[derive(State)]` and
 | `ValueState<V>` | `field: ValueState<V>` | `read`, `write`, `clear` |
 | `BagState<V>` | `field: BagState<V>` | `read`, `append`, `clear` |
 | `MapState<K, V>` | `field: MapState<K, V>` | `get`, `put`, `remove`, `keys`, `entries`, `clear` |
+| `MultimapState<K, V>` | `field: MultimapState<K, V>` | `get` (all values), `put` (adds a value), `remove`, `contains_key`, `keys`, `entries`, `clear` |
 | `SetState<T>` | `field: SetState<T>` | `contains`, `insert`, `remove`, `read`, `clear` |
 | `OrderedListState<V>` | `field: OrderedListState<V>` | `read`, `read_range`, `add`, `clear`, `clear_range` |
 | `CombiningState<CF>` | `field: CombiningState<Sum<i64>>` | `add`, `read`, `add_accumulator`, `read_accumulator`, `is_empty`, `clear` |
@@ -771,6 +810,51 @@ impl StatefulDoFn for IdleCounter {
 }
 
 let idle = events.apply("IdleCounter", ParDo::new(IdleCounter));
+```
+
+To flush the state of each key and window when the window ends, set
+`const ON_WINDOW_EXPIRATION: bool = true` and implement `on_window_expiration`. The runner
+calls it once for each key and window that had input. It calls it after the input watermark
+passes the end of the window plus the allowed lateness. `ctx.window()` is the expired window, and
+outputs carry a timestamp in it. The runner then deletes the state of the window. The
+pipeline carries `beam:requirement:pardo:on_window_expiration:v1`.
+
+```rust
+#[derive(State)]
+struct Buffer {
+    values: BagState<i64>,
+}
+
+#[derive(Clone)]
+struct SumPerWindow;
+
+impl StatefulDoFn for SumPerWindow {
+    type Key = String;
+    type Value = i64;
+    type Out = (String, i64);
+    type State = Buffer;
+    type Timer = NoTimers;
+    const ON_WINDOW_EXPIRATION: bool = true;
+
+    fn process_element(
+        &mut self,
+        _key: &Self::Key,
+        value: Self::Value,
+        state: &mut Self::State,
+        _ctx: &mut StatefulContext<'_, Self>,
+    ) -> beam::Result {
+        state.values.append(&value)
+    }
+
+    fn on_window_expiration(
+        &mut self,
+        key: &Self::Key,
+        state: &mut Self::State,
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> beam::Result {
+        ctx.emit((key.clone(), state.values.read()?.into_iter().sum()))
+    }
+}
 ```
 
 ### Schema rows in state

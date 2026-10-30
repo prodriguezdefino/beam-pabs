@@ -44,6 +44,8 @@ This page compares the Rust SDK with the other Beam SDKs.
 | WithTimestamps (standalone transform) | ✅ | ❌ | ❌ | ✅ | 🔜 |
 | Flatten / Partition | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Distinct | ✅ | ✅ | ✅ | ❌ | ✅ |
+| Deduplicate (in a time interval) | ✅ | ✅ | ❌ | ❌ | 🔜 |
+| GroupIntoBatches (size, byte size, buffering time, sharded keys) | ✅ | ✅ | ✅ | ❌ | ✅ |
 | Set operations (union / intersect / except, distinct and all) | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Composite transforms | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Hierarchical transform names (composite scopes, duplicate sibling names rejected) | ✅ | ✅ | ✅ (Scope) | ✅ | ✅ |
@@ -126,6 +128,8 @@ Notes:
   - `BoundedWindow` is an enum of Global/Interval.
   - The Fn API harness decodes only the standard window coder URNs.
   - Portable runners have no general callback protocol to merge non-standard windows.
+- **Rust** `Instant::MIN`, `Instant::MAX` and `Instant::END_OF_GLOBAL_WINDOW` have the
+  values of `BeamConstants` in the Runner API, the same values as the other SDKs.
 
 ## State and timers
 
@@ -133,17 +137,31 @@ Notes:
 |---|:--:|:--:|:--:|:--:|:--:|
 | ValueState / BagState | ✅ | ✅ | ✅ | ❌ | ✅ |
 | MapState | ✅ | ❌ | ✅ | ❌ | ✅ |
+| MultimapState | ✅ | ❌ | ❌ | ❌ | ✅ |
 | SetState | ✅ | ✅ | ✅ | ❌ | ✅ |
 | CombiningState | ✅ | ✅ | ✅ | ❌ | ✅ |
 | OrderedListState | ✅ | ✅ | ✅ | ❌ | ✅ |
 | Event-time timers | ✅ | ✅ | ✅ | ❌ | ✅ |
 | Processing-time timers | ✅ | ✅ | ✅ | ❌ | ✅ |
 | Timer families (dynamic tags) | ✅ | ✅ | ✅ | ❌ | ✅ |
+| Timer `align` / `offset` | ✅ | ❌ | ❌ | ❌ | 🔜 |
+| OnWindowExpiration | ✅ | ❌ | ❌ | ❌ | ✅ |
 
 Notes:
 - **Python** has `BagStateSpec`, `SetStateSpec`, `ReadModifyWriteStateSpec`,
   `CombiningValueStateSpec` and `OrderedListStateSpec`, but no `MapState`.
 - **TypeScript** has no state or timer support.
+- **Timer `align` / `offset`**: Java `Timer.align(period)` and `Timer.offset(duration)` move
+  the target time of `setRelative` to a period boundary. In Rust, compute the instant and
+  call `at`.
+- **OnWindowExpiration**: Java and Rust declare an event-time timer family and name it in
+  `ParDoPayload.on_window_expiration_timer_family_spec`. The runner fires it once per key
+  and window. Java marks the method with `@OnWindowExpiration`; Rust sets
+  `const ON_WINDOW_EXPIRATION: bool = true` and implements `on_window_expiration`.
+- **MultimapState**: Java and Rust use `MultimapStateSpec` and the multimap state keys of
+  the Fn API. In Rust, `entries` skips keys with no values, because Prism keeps a removed
+  key as an empty entry. On Dataflow streaming, Streaming Engine returns no values for a key
+  that earlier bundles only appended to, for Java and Rust alike (see [validates-runner.md](validates-runner.md)).
 - **`CombiningState`**: every SDK declares a `CombiningStateSpec` with the
   accumulator coder and the bag protocol, and combines in the SDK harness.
   Java and Rust keep one accumulator: an add reads it, adds the input and writes
@@ -192,6 +210,7 @@ Notes:
 | Beam SQL | ✅ native | ✅ xlang | ✅ xlang | ✅ xlang | 🔜 |
 | DataFrame / relational API | ✅ xlang | ✅ | ✅ xlang | ❌ | ❌ |
 | Tuple coders (3+ values) | ❌ | ✅ | ❌ | ❌ | ✅ |
+| Nullable elements across stages (`beam:coder:nullable:v1`) | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 Rust infers schemas through `#[derive(BeamRow)]`, including generic structs whose type
 parameters satisfy `BeamField` and `DefaultCoder`. `ToRows` and `FromRows` convert between
@@ -199,6 +218,10 @@ parameters satisfy `BeamField` and `DefaultCoder`. `ToRows` and `FromRows` conve
 User state cells (`ValueState<Row>`, `BagState<Row>`, `MapState`, `MultimapState`,
 `OrderedListState`, `CombiningState`) support dynamic `Row` values without extra state
 attributes. Beam SQL is native only in Java. All other SDKs use it through cross-language.
+
+Rust encodes `Option<T>` as `beam:coder:nullable:v1`. Inside it, a runner can wrap a
+component that it does not know (for example a `Row`) in `beam:coder:length_prefix:v1`. The
+harness removes that length on input and writes it on output.
 
 Tuples:
 - **Java, Go and TypeScript** have only `KV`. They use `Row` for records.
@@ -249,6 +272,11 @@ Notes:
   other SDKs can call its transforms. Go and TypeScript have only the generated
   gRPC stubs, not a server implementation. Rust ships `apache-beam-expansion`
   and the `beam-expansion-service` binary.
+- **Consuming** cross-language transforms: the `beam:transforms:xlang:test:*` cases of
+  `ValidateRunnerXlangTest.java` run as Rust pipelines on Prism against the Java test
+  expansion service (`validatesCrossLanguageRunnerJavaServicePrism`, see
+  [validates-runner.md](validates-runner.md#cross-language-suites)). The Python test
+  expansion service is not in that task.
 - Java does not download its *own* expansion service, because the downloaded
   service is the Java expansion service.
 - For all SDKs, Flex Template support is mostly tooling outside this
