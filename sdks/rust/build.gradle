@@ -24,6 +24,12 @@ plugins { id 'org.apache.beam.module' }
 
 description = "Apache Beam :: SDKs :: Rust"
 
+// The order of these scripts is important. A script can only use the `ext` helpers of the
+// scripts above it. For example, xlang.gradle defines the shared helpers
+// (registerXlangSuiteTasks, registerSdkDataflowImageTask, registerDataflowExpansionImageTasks)
+// that xlang-python/java/go.gradle, integration.gradle, io-*.gradle and io-benchmarks.gradle use,
+// and it uses registerExpansionImageTasks from containers.gradle. io-<crate>.gradle registers
+// the image and test tasks of one connector crate.
 apply from: 'gradle/versions.gradle'
 apply from: 'gradle/cargo.gradle'
 apply from: 'gradle/config.gradle'
@@ -33,6 +39,13 @@ apply from: 'gradle/dataflow.gradle'
 apply from: 'gradle/containers.gradle'
 apply from: 'gradle/validates-runner.gradle'
 apply from: 'gradle/xlang.gradle'
+apply from: 'gradle/xlang-python.gradle'
+apply from: 'gradle/xlang-java.gradle'
+apply from: 'gradle/xlang-go.gradle'
+apply from: 'gradle/integration.gradle'
+apply from: 'gradle/io-gcp.gradle'
+apply from: 'gradle/io-kafka.gradle'
+apply from: 'gradle/io-benchmarks.gradle'
 apply from: 'gradle/quality.gradle'
 apply from: 'gradle/benchmarks.gradle'
 

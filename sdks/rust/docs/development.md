@@ -31,12 +31,14 @@ Run builds and tests through Gradle. The rest of the Beam repository uses it too
 ```bash
 # Core Lifecycle Tasks
 ./gradlew :sdks:rust:build             # Compile all crates in workspace (cargo build --workspace)
+./gradlew :sdks:rust:build -Ppkg=apache-beam-io-gcp -PonlyFeatures=bigtable  # One crate with only these features (also for test)
 ./gradlew :sdks:rust:check             # Run formatting checks and clippy (fmtCheck + clippy)
 ./gradlew :sdks:rust:test              # Run all tests on a host Prism (or one crate: -Ppkg=apache-beam-core)
 ./gradlew :sdks:rust:test --continue   # Run every test binary and report all failures (cargo --no-fail-fast)
 ./gradlew :sdks:rust:fmt               # Apply code formatting (cargo fmt)
 ./gradlew :sdks:rust:clean             # Remove the cargo target directory (cleanSdk) and build/
 ./gradlew :sdks:rust:coverage          # Line coverage report (or one crate: -Ppkg=apache-beam-core)
+./gradlew :sdks:rust:checkBenchmarks   # Clippy and tests of the benchmark pipelines, which build, check and test leave out
 
 # Pipeline Launchers
 ./gradlew :sdks:rust:prism             # Launch on PrismRunner (-Pexample=wordcount|gaming [-Pdocker])
@@ -48,11 +50,46 @@ Run builds and tests through Gradle. The rest of the Beam repository uses it too
 ./gradlew :sdks:rust:prebakedImage             # Example image with its binary pre-baked (-Pexample=wordcount [-Pdocker-repository-root=...])
 ./gradlew :sdks:rust:buildWorker               # Linux worker binary for an example (-Pexample=wordcount)
 ./gradlew :sdks:rust:expansionServiceImage     # Expansion service image; the binary is also the worker
-./gradlew :sdks:rust:validatesRunnerPrism      # ValidatesRunner conformance suite on Prism
-./gradlew :sdks:rust:validatesRunnerDataflow   # ValidatesRunner conformance suite on Dataflow
+./gradlew :sdks:rust:validatesRunnerPrism      # ValidatesRunner conformance suite on Prism (also ...Streaming)
+./gradlew :sdks:rust:validatesRunnerDataflow   # ValidatesRunner conformance suite on Dataflow (also ...Streaming)
 ./gradlew :sdks:rust:validatesCrossLanguageRunnerPythonPrism     # Python xlang suite on Prism against the Rust test expansion service
 ./gradlew :sdks:rust:validatesCrossLanguageRunnerPythonDataflow  # Python xlang suite on Dataflow against the Rust test expansion service
+./gradlew :sdks:rust:validatesCrossLanguageRunnerJavaPrism       # Java xlang suite on Prism against the Rust test expansion service
+./gradlew :sdks:rust:validatesCrossLanguageRunnerJavaDataflow    # Java xlang suite on Dataflow against the Rust test expansion service
+./gradlew :sdks:rust:validatesCrossLanguageRunnerGoPrism         # Go xlang suite on Prism against the Rust test expansion service
+./gradlew :sdks:rust:validatesCrossLanguageRunnerGoDataflow      # Go xlang suite on Dataflow against the Rust test expansion service
+./gradlew :sdks:rust:testingExpansionServiceImage          # Test expansion service image of the xlang suites
+./gradlew :sdks:rust:testingExpansionServiceDataflowImage  # The same image for linux/amd64, pushed for Dataflow
+./gradlew :sdks:rust:pythonSdkDataflowImage      # Python SDK container of this tree for Dataflow (-PpythonVersion=3.12)
+./gradlew :sdks:rust:javaSdkDataflowImage        # Java SDK container of this tree for Dataflow
+./gradlew :sdks:rust:goSdkDataflowImage          # Go SDK container of this tree for Dataflow
+./gradlew :sdks:rust:gcpExpansionServiceImage    # Expansion service image of the native Google Cloud connectors
+./gradlew :sdks:rust:gcpExpansionServiceDataflowImage  # The same image for linux/amd64, pushed for Dataflow (used by bigQueryBenchmark)
+./gradlew :sdks:rust:gcpExpansionServiceTestingImage   # GCP expansion service image for its Python tests on Prism
+./gradlew :sdks:rust:gcpExpansionServiceTestingDataflowImage  # The same image for linux/amd64, pushed for Dataflow
+./gradlew :sdks:rust:bigQueryIntegrationTest     # Native BigQuery reads against public tables on Prism
+./gradlew :sdks:rust:gcpExpansionServicePythonTest  # Python pipelines on Prism against the GCP expansion service
+./gradlew :sdks:rust:gcpExpansionServicePythonTestDataflow  # The same Python pipelines on Dataflow ([-Ptests=bigquery_storage] [-PtestFilter=unbounded])
+./gradlew :sdks:rust:kafkaExpansionServiceImage  # Expansion service image of the native Kafka connector
+./gradlew :sdks:rust:kafkaExpansionServicePythonTest  # Python pipelines on Prism against the Kafka expansion service and a local broker in Docker
+./gradlew :sdks:rust:bigQueryBenchmark           # BigQuery benchmark on Dataflow ([-Ppipeline=python|java] [-Pshape=count|per_key|copy] -Preader=...|-Preaders=a,b [-Pwriter=...] [-PnumWorkers=4] [-PmaxNumWorkers=10] [-Pruns=1] [-PdryRun])
 ```
+
+`bigQueryBenchmark` has three shapes. `count` and `per_key` only read.
+`copy` reads, passes each row through a step in the pipeline language, and
+writes the rows to a new table in `-Pdataset` (or `example.benchmark.dataset`).
+After each `copy` job, the task checks the rows and drops the table.
+
+The readers depend on the pipeline: `python`, `java` or `rust` for
+`-Ppipeline=python` (the default), and `java-native`, `java-managed` or `rust`
+for `-Ppipeline=java`. The default reader is `rust`. `-Preaders=java,rust` runs
+one job for each reader in each round. `copy` also needs
+`-Pwriter` (or `-Pwriters`): `java` or `rust` for `-Ppipeline=python`, and `java-native`,
+`java-managed` or `rust` for `-Ppipeline=java`. `-ProwRestriction` limits the
+rows for a smoke run. Every shape runs on fixed workers (`-PnumWorkers=4`) or
+with autoscaling (`-PnumWorkers=1 -PmaxNumWorkers=10`). See
+[`benchmark.gradle`](../scripts/benchmarks/bigquery/benchmark.gradle) for the
+other properties, and [Benchmarks](#benchmarks) for the report.
 
 ## Profiling
 
@@ -73,6 +110,8 @@ the `time` output and a summary to `build/reports/profile/<binary>-<timestamp>/`
   example `-Ppkg=apache-beam-harness -PcargoBench=chain_throughput`. A criterion bench gets
   `--bench --profile-time 10` and `-PextraArgs`, not the pipeline flags. It runs for a fixed
   time, so compare its hot frames, not its CPU seconds.
+  For the Kafka copy bench, use `-Ppkg=apache-beam-io-kafka -PcargoBench=copy_throughput
+  -PexampleFeatures=native`, and `-PextraArgs="--runs=1 --formats=bytes"` for one copy.
 - `-Pmode=cpu` records with samply, `memory` runs `/usr/bin/time` (`-l` on macOS, `-v` on
   Linux), and `both` (the default) does both. With `both`, the pipeline runs two times.
 - `-PextraArgs="<pipeline flags>"` passes flags to the pipeline.
@@ -153,6 +192,14 @@ gsutil cp gs://apache-beam-samples/wikipedia_edits/wiki_data-000000000000.json b
   platform with `-PminCpuPlatform` unless necessary: a pinned platform can stock out.
 - To add a Dataflow benchmark of a Rust example, call `registerRustBenchmark` (see
   `wordcountBenchmark`). For other launchers, give launch commands to `runDataflowBenchmark`.
+- The I/O benchmarks (`bigQueryBenchmark`, `bigtableBenchmark`, `kafkaBenchmark`, see
+  [gradle/io-benchmarks.gradle](../gradle/io-benchmarks.gradle)) give one variant for each
+  reader of `-Preaders=a,b` (or `-Preader`) and each writer of `-Pwriters` (or `-Pwriter`) in
+  the pipeline of `-Ppipeline`. They run 1 round by default. The report compares the last
+  variant with the others, and also gives the processing time, the rows per vCPU·s, the
+  latency and the backlog of a streaming job (`io_report.py`). For a Rust pipeline, the script
+  polls the job and drains a streaming job at `-PexpectedRows` or `-PdrainAfterSeconds`
+  (`job_wait.py`). See [rust-native-io-providers.md](rust-native-io-providers.md#9-benchmarks).
 - `profileCompare` takes `-Pexample` (`wordcount`) or the target properties of `profilePrism`.
   It alternates the order of the variants in each round. `profilePrism` builds before it
   records, so the profile does not include the build. The report gives the Rust and Prism
@@ -234,6 +281,9 @@ Write functional, data-oriented, idiomatic Rust that follows current practice.
 - **Current Rust.** Use the workspace edition and its idioms: `let`-`else`,
   `async fn` in traits where it fits, `std::sync::LazyLock` instead of
   `lazy_static`. Code must pass `cargo fmt` and `cargo clippy` with no warnings.
+- **Tests in `tests/`.** Put tests in the `tests` directory of the crate, not in
+  a `#[cfg(test)]` module in `src`. To test an internal module, make it
+  `#[doc(hidden)] pub` and keep the user API unchanged.
 - **No `unsafe`** without a `// SAFETY:` comment that states why the code is
   sound.
 - **Test placement.** Test a transform or combine function that is built from

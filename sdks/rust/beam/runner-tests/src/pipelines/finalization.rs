@@ -33,6 +33,7 @@ use std::collections::BTreeSet;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use beam::io::file::get_filesystem;
 use beam::prelude::*;
 use beam::runners::PipelineResult;
 use beam::testing::{TestPipeline, TestPipelineError};
@@ -41,7 +42,6 @@ use beam::transforms::sdf::{
     OffsetRange, OffsetRangeTracker, ProcessContinuation, RestrictionTracker, SplittableDoFn,
     SplittableParDo,
 };
-use file::get_filesystem;
 
 use crate::env::scratch_root;
 

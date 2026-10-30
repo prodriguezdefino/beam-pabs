@@ -22,13 +22,15 @@ comparison tables in Markdown, and the results.json and report.md files.
 A variant is a JSON object {"label", "cwd", "argv", "env", "describe", "prepare"}: the
 command that runs it, in its working directory, with more environment variables. Each value
 in "argv" can hold placeholders, such as {job_name} or {run_dir}, that the script sets for
-each run. The optional "prepare" command runs once before the rounds, for example a build.
+each run. An argument that is only a placeholder with a list value becomes the items of the
+list. The optional "prepare" command runs once before the rounds, for example a build.
 The variants come from a JSON file, so any launcher can be a variant: the Gradle task of a
-git ref, or a pipeline of another SDK.
+git ref, or a pipeline of another SDK. dataflow_job.py reads more optional fields.
 
 A run is a dict with "round", "variant" and one dict of numbers for each section, for
-example "metrics" and "steps". The variant "current" is the checkout under test. The other
-variants ("baseline", or "saved <variant>" from an earlier results.json) are references.
+example "metrics" and "steps". The variant "current" (or the variant that the benchmark
+names) is under test. The other variants ("baseline", another reader, or "saved <variant>"
+from an earlier results.json) are references.
 """
 
 import json
@@ -59,12 +61,19 @@ def load_variants(path: str) -> List[Variant]:
 
 
 def expand(variant: Variant, values: Mapping[str, Any]) -> List[str]:
-  """The argv of a variant with each {placeholder} replaced by its value."""
-  def one(arg: str) -> str:
+  """The argv of a variant with each {placeholder} replaced by its value.
+
+  A list value replaces an argument that is only its placeholder with the items of the list.
+  """
+  def one(arg: str) -> List[str]:
+    whole = values.get(arg[1:-1]) if arg.startswith("{") and arg.endswith("}") else None
+    if isinstance(whole, list):
+      return [str(item) for item in whole]
     for name, value in values.items():
-      arg = arg.replace("{" + name + "}", str(value))
-    return arg
-  return [one(arg) for arg in variant["argv"]]
+      if not isinstance(value, list):
+        arg = arg.replace("{" + name + "}", str(value))
+    return [arg]
+  return [part for arg in variant["argv"] for part in one(arg)]
 
 
 def environment(variant: Variant) -> Dict[str, str]:
@@ -132,16 +141,16 @@ def runs_table(runs: Sequence[Run], section: str, columns: Sequence[Column],
 
 
 def compare_table(all_medians: Medians, section: str, columns: Sequence[Column],
-                  relative: bool = True) -> List[str]:
-  """One row for each value: the median of each variant, then the change of the current
-  variant against each reference variant."""
+                  relative: bool = True, current: str = CURRENT) -> List[str]:
+  """One row for each value: the median of each variant, then the change of the variant
+  `current` against each reference variant."""
   variants = list(all_medians)
-  references = [v for v in variants if v != CURRENT] if CURRENT in variants else []
+  references = [v for v in variants if v != current] if current in variants else []
   value = lambda variant, key: all_medians[variant].get(section, {}).get(key)
-  header = ["", *variants, *(f"current vs {r}" for r in references)]
+  header = ["", *variants, *(f"{current} vs {r}" for r in references)]
   rows = ([
       title, *(fmt(value(v, key), spec) for v in variants),
-      *(change(value(CURRENT, key), value(r, key), relative) for r in references)
+      *(change(value(current, key), value(r, key), relative) for r in references)
   ] for key, title, spec in columns)
   return table(header, rows)
 

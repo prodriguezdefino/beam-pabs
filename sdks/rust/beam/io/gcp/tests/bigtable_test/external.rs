@@ -17,6 +17,8 @@
  * under the License.
  */
 
+//! Cross-language SchemaTransform builders and element schemas for Cloud Bigtable.
+
 use std::sync::Arc;
 
 use beam::pipeline::URN_EXPANSION_SCHEMA_TRANSFORM;
@@ -26,18 +28,13 @@ use external::ExpansionError;
 use gcp::DEFAULT_EXPANSION_SERVICE;
 use gcp::bigtable::{
     BigtableCell, BigtableColumn, BigtableMutation, BigtableRead, BigtableReadShape, BigtableWrite,
-    URN_BIGTABLE_READ, URN_BIGTABLE_WRITE, cell_schema, flattened_row_schema, mutation_schema,
-    nested_row_schema,
+    URN_BIGTABLE_READ, URN_BIGTABLE_WRITE, batched_mutation_schema, cell_schema,
+    flattened_row_schema, mutation_schema, nested_row_schema,
 };
 use testutils::xlang::{
     Route, assert_spliced, decode_payload, describe, fixture, start_mock, string_value, values,
 };
 
-// Configuration schema that Java derives for `BigtableReadSchemaTransformConfiguration`
-// in `BigtableReadSchemaTransformProvider.java`.
-//
-// Java derives the names with `AutoValueSchema(getters).sorted().toSnakeCase()`
-// (`getInstanceId` becomes `instance_id`). Only `getFlatten()` is `@Nullable`.
 const BIGTABLE_READ_CONFIG: &[(&str, &str)] = &[
     ("flatten", "BOOLEAN?"),
     ("instance_id", "STRING"),
@@ -45,8 +42,6 @@ const BIGTABLE_READ_CONFIG: &[(&str, &str)] = &[
     ("table_id", "STRING"),
 ];
 
-// Configuration schema that Java derives for `BigtableWriteSchemaTransformConfiguration`
-// in `BigtableWriteSchemaTransformProvider.java`.
 const BIGTABLE_WRITE_CONFIG: &[(&str, &str)] = &[
     ("instance_id", "STRING"),
     ("project_id", "STRING"),
@@ -67,12 +62,6 @@ fn config_values(flatten: Option<bool>) -> Vec<(String, Option<FieldValue>)> {
         .collect()
 }
 
-// Element schemas must equal the Java constants
-// `BigtableReadSchemaTransformProvider.{CELL_SCHEMA, FLATTENED_ROW_SCHEMA, ROW_SCHEMA}`.
-// The mutation schema must pass the field checks in
-// `BigtableWriteSchemaTransformProvider.BigtableWriteSchemaTransform.expand`: key BYTES,
-// type STRING, value BYTES, column_qualifier BYTES, family_name STRING and
-// *_timestamp_micros INT64.
 #[test]
 fn test_bigtable_element_schemas_match_java() {
     assert_eq!(
@@ -111,11 +100,14 @@ fn test_bigtable_element_schemas_match_java() {
             ("end_timestamp_micros", "INT64?"),
         ])
     );
+    assert_eq!(
+        describe(&batched_mutation_schema()),
+        fixture(&[("key", "BYTES"), ("mutations", "ARRAY<MAP<STRING, BYTES>>")])
+    );
 }
 
 #[test]
 fn test_bigtable_read_default_config_row() {
-    // `flatten` defaults to true. The transform always sends it explicitly.
     let read = BigtableRead::new("p", "i", "t");
     assert_eq!(read.shape(), BigtableReadShape::Flattened);
     assert_eq!(read.output_schema(), flattened_row_schema());
@@ -284,7 +276,6 @@ fn test_mutation_rows() {
         ])
     );
 
-    // Every mutation row must round-trip through the portable row coder.
     for r in [set, set_ts, del_col, del_fam, del_row] {
         assert_eq!(r.schema(), &mutation_schema());
         let bytes = r.to_row_bytes().unwrap();
@@ -317,7 +308,6 @@ fn test_column_from_flattened_row() {
     )
     .unwrap();
 
-    // Round-trip through the row coder, as the Java harness delivers the row.
     let row = Row::from_row_bytes(&flattened_row_schema(), &row.to_row_bytes().unwrap()).unwrap();
 
     let column = BigtableColumn::try_from(&row).expect("decodes");
@@ -344,7 +334,6 @@ fn test_column_from_flattened_row() {
 fn test_column_try_from_errors() {
     use beam::schema::{Field, FieldType, SchemaError};
 
-    // Missing required field "key"
     let bad_row = Row::new(
         Arc::new(Schema::new(vec![Field::new(
             "family_name",
@@ -358,7 +347,6 @@ fn test_column_try_from_errors() {
         Err(SchemaError::FieldNotFound(name)) if name == "key"
     ));
 
-    // Null required field "key"
     let null_key_row = Row::new(
         Arc::new(Schema::new(vec![
             Field::new("key", FieldType::bytes()),

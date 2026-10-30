@@ -54,6 +54,10 @@ gcp-gcs = ["dep:gcp", "gcp/gcs", "io-file"]
 gcp-bigquery = ["dep:gcp", "gcp/bigquery", "external"]
 gcp-bigtable = ["dep:gcp", "gcp/bigtable", "external"]
 gcp-pubsub = ["dep:gcp", "gcp/pubsub", "external"]
+# Native BigQuery Storage Read API reads and Storage Write API writes, in
+# `beam::io::gcp::bigquery::storage`. Off by default: they pull in arrow-rs and the BigQuery
+# clients.
+gcp-bigquery-storage = ["gcp-bigquery", "gcp/bigquery-storage"]
 # Columnar formats with arrow-rs. Off by default: they pull in arrow and codec crates.
 arrow = ["dep:arrow_io"]
 parquet = ["dep:parquet_io", "arrow", "io-file"]
@@ -64,6 +68,9 @@ tfrecord = ["dep:tfrecord_io", "io-file"]
 json = ["dep:json_io"]
 # Cross-language Kafka through the Java expansion service. Off by default.
 kafka = ["dep:kafka_io", "external"]
+# The native Kafka connector on librdkafka, in `beam::io::kafka::native`. Off by default: it
+# builds librdkafka and OpenSSL from source.
+kafka-native = ["kafka", "kafka_io/native"]
 # Managed I/O (Iceberg, Kafka, BigQuery, JDBC, Delta Lake) through the Java expansion
 # service.
 managed = ["dep:managed_io", "external"]

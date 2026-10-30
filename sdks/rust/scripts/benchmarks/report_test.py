@@ -82,6 +82,20 @@ class TestReport(unittest.TestCase):
     lines = report.compare_table(medians, "metrics", [("cpu", "CPU", ".1f")])
     self.assertEqual(lines[0], "|  | baseline |")
 
+  def test_compare_table_with_a_named_variant_under_test(self):
+    medians = {"java": {"metrics": {"cpu": 10.0}}, "rust": {"metrics": {"cpu": 8.0}}}
+    lines = report.compare_table(medians, "metrics", [("cpu", "CPU", ".1f")], current="rust")
+    self.assertEqual(lines[0], "|  | java | rust | rust vs java |")
+    self.assertEqual(lines[2], "| CPU | 10.0 | 8.0 | -20.0% |")
+
+  def test_expand_splices_a_list_that_is_a_whole_argument(self):
+    variant = {"argv": ["run", "{labels_args}", "--x={labels_args}", "--n={job_name}"]}
+    values = {"labels_args": ["--labels=a=1", "--labels=b=2"], "job_name": "j"}
+    self.assertEqual(report.expand(variant, values),
+                     ["run", "--labels=a=1", "--labels=b=2", "--x={labels_args}", "--n=j"])
+    self.assertEqual(report.expand(variant, {"labels_args": [], "job_name": "j"}),
+                     ["run", "--x={labels_args}", "--n=j"])
+
   def test_table_escapes_pipes(self):
     self.assertEqual(report.table(["a"], [["x|y"]])[2], "| x\\|y |")
 

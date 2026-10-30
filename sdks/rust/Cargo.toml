@@ -29,6 +29,33 @@ members = [
     "beam/ml",
     "beam/runners/*",
     "beam/io/*",
+    "beam/io/gcp/expansion-service",
+    "beam/io/gcp/googleapis",
+    "beam/io/kafka/expansion-service",
+    "beam/runner-tests",
+    "beam/test-utils",
+    "beam/testing",
+    "examples/*",
+    "scripts/benchmarks/bigtable/rust",
+    "scripts/benchmarks/kafka/rust",
+]
+# Every member except the benchmark pipelines, so a bare `cargo build`, `cargo clippy` or
+# `cargo test` does not compile them. The benchmark tasks select them with `-p`.
+default-members = [
+    "beam",
+    "beam/model",
+    "beam/core",
+    "beam/derive",
+    "beam/fluent",
+    "beam/harness",
+    "beam/external",
+    "beam/expansion",
+    "beam/ml",
+    "beam/runners/*",
+    "beam/io/*",
+    "beam/io/gcp/expansion-service",
+    "beam/io/gcp/googleapis",
+    "beam/io/kafka/expansion-service",
     "beam/runner-tests",
     "beam/test-utils",
     "beam/testing",
@@ -113,6 +140,10 @@ google-cloud-storage = "1.18.0"
 google-cloud-gax = "1.14.0"
 google-cloud-auth = "1.16.0"
 google-cloud-secretmanager-v1 = "1.14.0"
+google-cloud-bigquery = "0.18.0"
+google-cloud-bigquery-v2 = "1.0.0"
+google-cloud-wkt = "1.9.0"
+uuid = { version = "1", features = ["v4"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 proc-macro2 = "1.0"
 quote = "1.0"
@@ -131,6 +162,9 @@ arrow-schema = { version = "60.0.0", default-features = false }
 arrow-ipc = { version = "60.0.0", default-features = false, features = ["lz4", "zstd"] }
 parquet = { version = "60.0.0", default-features = false, features = ["arrow", "flate2-zlib-rs", "lz4", "snap", "zstd"] }
 arrow-avro = { version = "60.0.0", default-features = false, features = ["deflate", "snappy", "zstd"] }
+# Static librdkafka, OpenSSL, zlib and zstd: the worker binary links only libc, libm and libgcc_s,
+# which the distroless runtime image has. See docs/rust-native-io-providers.md, Kafka dependencies.
+rdkafka = { version = "0.39", default-features = false, features = ["tokio", "libz-static", "zstd", "ssl-vendored"] }
 
 # Internal workspace crates
 beam = { package = "apache-beam", path = "beam", version = "2.78.0-SNAPSHOT" }
@@ -143,6 +177,7 @@ external = { package = "apache-beam-external", path = "beam/external", version =
 expansion = { package = "apache-beam-expansion", path = "beam/expansion", version = "2.78.0-SNAPSHOT" }
 file = { package = "apache-beam-io-file", path = "beam/io/file", version = "2.78.0-SNAPSHOT" }
 gcp = { package = "apache-beam-io-gcp", path = "beam/io/gcp", version = "2.78.0-SNAPSHOT", default-features = false }
+googleapis = { package = "apache-beam-io-gcp-googleapis", path = "beam/io/gcp/googleapis", version = "2.78.0-SNAPSHOT" }
 kafka_io = { package = "apache-beam-io-kafka", path = "beam/io/kafka", version = "2.78.0-SNAPSHOT" }
 managed_io = { package = "apache-beam-io-managed", path = "beam/io/managed", version = "2.78.0-SNAPSHOT" }
 arrow_io = { package = "apache-beam-io-arrow", path = "beam/io/arrow", version = "2.78.0-SNAPSHOT" }

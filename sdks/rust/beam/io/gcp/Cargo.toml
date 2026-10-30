@@ -33,11 +33,37 @@ name = "gcp"
 default = ["gcs", "bigquery", "bigtable", "pubsub"]
 gcs = ["dep:file", "dep:google-cloud-storage", "dep:google-cloud-gax", "dep:futures", "dep:bytes"]
 bigquery = ["dep:external", "dep:managed_io"]
-bigtable = ["dep:external"]
+bigtable = [
+    "dep:external",
+    "dep:bytes",
+    "dep:prost",
+    "dep:tonic",
+    "dep:googleapis",
+    "googleapis/bigtable",
+]
 pubsub = ["dep:external"]
+# Native BigQuery Storage Read API reads and Storage Write API writes. Off by default: they
+# pull in arrow-rs and the BigQuery clients.
+bigquery-storage = [
+    "bigquery",
+    "dep:google-cloud-gax",
+    "dep:bytes",
+    "dep:google-cloud-bigquery",
+    "dep:google-cloud-bigquery-v2",
+    "dep:google-cloud-wkt",
+    "dep:uuid",
+    "dep:arrow_io",
+    "dep:arrow-ipc",
+    "dep:chrono",
+    "dep:prost",
+    "dep:tonic",
+    "dep:googleapis",
+    "googleapis/bigquery-storage",
+]
 
 [dependencies]
-beam = { package = "apache-beam-core", path = "../../core", version = "2.78.0-SNAPSHOT" }
+beam = { package = "apache-beam-core", path = "../../core", version = "2.78.0-SNAPSHOT", features = ["derive"] }
+model = { workspace = true }
 file = { workspace = true, optional = true }
 external = { workspace = true, optional = true }
 managed_io = { workspace = true, optional = true }
@@ -54,11 +80,33 @@ rustls = { workspace = true }
 serde = { workspace = true }
 # The Application Default Credentials of the calls that no client library makes (auth).
 google-cloud-auth = { workspace = true }
+google-cloud-bigquery = { workspace = true, optional = true }
+google-cloud-bigquery-v2 = { workspace = true, optional = true }
+# The snapshot time of a read session.
+google-cloud-wkt = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
+arrow_io = { workspace = true, optional = true }
+# The Arrow IPC codecs of compressed Storage Read responses.
+arrow-ipc = { workspace = true, optional = true, features = ["lz4", "zstd"] }
+chrono = { workspace = true, optional = true }
+# The generated clients of the vendored googleapis protos: the Bigtable data API and the
+# BatchCommitWriteStreams call of exactly-once writes, which the Write client of
+# google-cloud-bigquery has for one stream only.
+googleapis = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
+tonic = { workspace = true, optional = true, features = ["tls-native-roots"] }
 
 [dev-dependencies]
-gcp = { package = "apache-beam-io-gcp", path = "." }
+gcp = { package = "apache-beam-io-gcp", path = ".", features = ["bigquery-storage"] }
 model = { workspace = true }
 testutils = { workspace = true }
+arrow_io = { workspace = true }
+google-cloud-bigquery = { workspace = true }
+google-cloud-bigquery-v2 = { workspace = true }
+prost = { workspace = true }
+tonic = { workspace = true }
+tonic-prost = { workspace = true }
+tokio-stream = { workspace = true }
 
 [[test]]
 name = "gcs"
@@ -72,6 +120,7 @@ required-features = ["bigquery"]
 
 [[test]]
 name = "bigtable_test"
+path = "tests/bigtable_test/main.rs"
 required-features = ["bigtable"]
 
 [[test]]

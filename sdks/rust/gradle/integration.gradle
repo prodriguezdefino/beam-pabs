@@ -1,0 +1,62 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Shared helpers of the integration tests of the I/O connectors. io-<crate>.gradle registers the
+// tasks of each connector crate.
+//
+// Rust integration tests carry #[ignore], so `cargo test` and `:sdks:rust:test` never call external
+// services. Each task runs one test binary with --ignored. BEAM_TEST_PIPELINE_OPTIONS holds the
+// runner and the project to bill, from sdks/rust/.local/sdk.properties (gcpProject) or -P.
+
+ext.requireItGcpProject = { ->
+  def gcpProject = gcpProjectFrom(propsFor('it'))
+  if (!gcpProject) {
+    throw new GradleException('Set gcpProject in sdks/rust/.local/sdk.properties or with -P.')
+  }
+  gcpProject
+}
+
+// Python tests of the expansion services of the native connectors. Each expansion service
+// keeps its tests in tests/python of its crate, with one module for each connector that it
+// serves: <connector>_test.py, for example bigquery_storage_test.py for the BigQuery Storage
+// read and write. -Ptests selects modules by connector, and -PtestFilter selects test methods
+// with a pytest -k expression. The task starts the service with the credentials of this machine,
+// and Prism mounts the same credentials in the Rust worker. Python runs its own transforms in a
+// loopback worker. The service names `workerImage` (by default `image`) as the Rust worker.
+// The tests read the pipeline options from PIPELINE_OPTIONS in `testEnv`, and use Prism when it
+// is not set. With `needsCredentials` false, the task runs with no Google credentials.
+ext.runProviderPythonTests = { String image, File testsDir, Map testEnv, String workerImage = null,
+                               boolean needsCredentials = true ->
+  def credentials = needsCredentials ? googleCredentials() : null
+  if (needsCredentials && !credentials) {
+    throw new GradleException('No Application Default Credentials. Run gcloud auth application-default login.')
+  }
+  def modules = selectedTests { "${testsDir}/${it}_test.py" } ?: [testsDir.absolutePath]
+  def filter = project.findProperty('testFilter')?.toString()
+  def selection = filter ? ['-k', filter] + modules : modules
+  execWithExpansionService(image: image, workerImage: workerImage, credentials: credentials) { service ->
+    workingDir testsDir
+    environment testEnv
+    environment 'EXPANSION_SERVICE', "localhost:${service.port}"
+    environment 'PRISM_LOCATION', prismHostBinary.absolutePath
+    if (credentials) {
+      environment 'GOOGLE_APPLICATION_CREDENTIALS', credentials
+    }
+    commandLine(["${xlangVenv}/bin/python", '-m', 'pytest', '-v', '-p', 'no:cacheprovider'] + selection)
+  }
+}

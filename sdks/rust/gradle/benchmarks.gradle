@@ -22,8 +22,9 @@
 //
 // A benchmark runs variants. A variant is a launch command: see scripts/benchmarks/report.py.
 // gitRefVariants gives the current checkout and, with -Pbaseline=<git ref>, that ref from a
-// temporary git worktree under build/benchmarks/. Other sources of variants, for example
-// pipelines of other SDKs, give their own launch commands to runDataflowBenchmark. The scripts
+// temporary git worktree under build/benchmarks/. Other sources of variants, for example the
+// readers and writers of the I/O benchmarks (gradle/io-benchmarks.gradle), give their own
+// launch commands to runDataflowBenchmark. The scripts
 // in scripts/benchmarks/ run the rounds and write results.json and report.md to
 // build/reports/benchmarks/<task>-<timestamp>/. See docs/development.md.
 
@@ -65,9 +66,9 @@ def userPath = { String path ->
   new File(path).absolute ? path : new File(gradle.startParameter.currentDir, path).absolutePath
 }
 
-def commonArgs = { ->
+def commonArgs = { Object defaultRuns = 3 ->
   def compareTo = project.findProperty('compareTo')?.toString()
-  ["--runs=${project.findProperty('runs') ?: 3}"] +
+  ["--runs=${project.findProperty('runs') ?: defaultRuns}"] +
       (compareTo ? ["--compare-to=${userPath(compareTo)}"] : []) +
       (isSet('dryRun') ? ['--dry-run'] : [])
 }
@@ -127,17 +128,20 @@ ext.gitRefVariants = { Closure body ->
 
 // Runs Dataflow jobs of `variants` (launch commands, see scripts/benchmarks/report.py) for
 // -Pruns rounds and writes the report. `cfg` holds task:, describe:, and optionally
-// countOutput:, countName: and counter: (see scripts/benchmarks/dataflow_job.py).
+// countOutput:, countName:, counter:, namePrefix: (the start of the job names), current: (the
+// variant that the report compares with the others), workers: (the workers of a job), io: (see
+// scripts/benchmarks/io_report.py), runs: (the default of -Pruns), and gcpProject: and region:
+// (by default from the `dataflow` properties). See scripts/benchmarks/dataflow_job.py.
 ext.runDataflowBenchmark = { Map cfg, List<Map> variants ->
   def resolve = propsFor('dataflow')
-  def gcpProject = gcpProjectFrom(resolve) ?: (isSet('dryRun') ? '<gcpProject>' : null)
+  def gcpProject = cfg.gcpProject ?: gcpProjectFrom(resolve) ?: (isSet('dryRun') ? '<gcpProject>' : null)
   if (!gcpProject) {
     throw new GradleException("${cfg.task} needs gcpProject in sdks/rust/.local/sdk.properties or -PgcpProject.")
   }
   def cmd = ['python3', "${benchScripts}/dataflow_job.py", 'run',
              "--task=${cfg.task}",
              "--project=${gcpProject}",
-             "--region=${resolve('gcpRegion', 'GCP_REGION', 'us-central1')}",
+             "--region=${cfg.region ?: resolve('gcpRegion', 'GCP_REGION', 'us-central1')}",
              "--out-dir=${reportDir(cfg.task)}",
              "--variants=${writeVariants(cfg.task, variants)}",
              "--describe=${cfg.describe}",
@@ -145,7 +149,11 @@ ext.runDataflowBenchmark = { Map cfg, List<Map> variants ->
              "--count-name=${cfg.countName ?: 'elements'}",
              "--monitoring-wait=${project.findProperty('monitoringWait') ?: 360}"] +
       (cfg.counter ? ["--counter=${cfg.counter}"] : []) +
-      (isSet('prepareOnly') ? ['--prepare-only'] : []) + commonArgs()
+      (cfg.namePrefix ? ["--name-prefix=${cfg.namePrefix}"] : []) +
+      (cfg.current ? ["--current=${cfg.current}"] : []) +
+      (cfg.workers ? ["--workers=${cfg.workers}"] : []) +
+      (cfg.io ? ["--io=${groovy.json.JsonOutput.toJson(cfg.io)}"] : []) +
+      (isSet('prepareOnly') ? ['--prepare-only'] : []) + commonArgs(cfg.runs ?: 3)
   project.exec { commandLine cmd*.toString() }
 }
 

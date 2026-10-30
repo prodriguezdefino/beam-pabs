@@ -25,8 +25,10 @@
 
 ext.rustDir = file("${rootDir}/sdks/rust")
 
-ext.benchmarkPackages = []
-def workspaceScope = ['--workspace']
+// The benchmark pipelines under scripts/benchmarks. The lifecycle tasks leave them out, so
+// every build does not compile them. `checkBenchmarks` and the benchmark tasks build them.
+ext.benchmarkPackages = ['bigtable_benchmark', 'kafka_benchmark']
+def workspaceScope = ['--workspace'] + benchmarkPackages.collectMany { ['--exclude', it] }
 
 // -Ppkg=<crate> narrows `build` and `test` to one crate; the default is the workspace but the
 // benchmarks. With -Ppkg, -PonlyFeatures=<list> enables only these cargo features of the crate.
@@ -380,6 +382,16 @@ cargoTask('clippy', 'Verification', 'Run clippy on all targets but the benchmark
   }
 }
 
+def benchmarkScope = benchmarkPackages.collectMany { ['-p', it] }
+cargoTask('clippyBenchmarks', 'Verification', 'Run clippy on the benchmark pipelines (-D warnings)',
+    ['clippy'] + benchmarkScope + ['--all-targets', '--', '-D', 'warnings'])
+cargoTask('testBenchmarks', 'Verification', 'Run the tests of the benchmark pipelines',
+    ['test'] + benchmarkScope)
+tasks.register('checkBenchmarks') {
+  group = 'Verification'
+  description = 'Run clippy and the tests of the benchmark pipelines'
+  dependsOn 'clippyBenchmarks', 'testBenchmarks'
+}
 
 // Per-crate cacheable test tasks (`test_<pkg>`).
 def cargoTestTasks = [:]

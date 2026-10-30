@@ -194,6 +194,7 @@ class TestDataflowJob(unittest.TestCase):
 
   def test_flags_of_clean_runs_are_empty(self):
     self.assertEqual(dataflow_job.flags([run(1, "baseline", ["A"]), run(1, "current", ["A"])]), [])
+    self.assertEqual(dataflow_job.flags([run(1, "current", ["A"], state="DRAINED")]), [])
 
   def test_run_values(self):
     values = dataflow_job.run_values("wordcountBenchmark", "Base_Line", 2, 17)
@@ -209,6 +210,46 @@ class TestDataflowJob(unittest.TestCase):
     self.assertEqual(report.expand(variant, values)[1],
                      "-PextraArgs=--job_name=t-current-r1-5 "
                      "--labels=benchmark=t,variant=current,round=1,run_id=5")
+
+  def test_run_values_with_variant_labels_and_a_prefix(self):
+    values = dataflow_job.run_values("bigQueryBenchmark", "java-native", 1, 9,
+                                     {"shape": "per_key", "benchmark": "x"}, "bq-java-count")
+    self.assertEqual(values["job_name"], "bq-java-count-java-native-r1-9")
+    self.assertEqual(values["job_name_underscore"], "bq_java_count_java_native_r1_9")
+    self.assertEqual(values["labels"], "shape=per-key,benchmark=big-query-benchmark,"
+                                       "variant=java-native,round=1,run_id=9")
+    self.assertEqual(values["labels_args"][0], "--labels=shape=per-key")
+    self.assertEqual(json.loads(values["labels_json"])["shape"], "per-key")
+    variant = {"argv": ["python", "{labels_args}", "--labels={labels_json}"]}
+    self.assertEqual(len(report.expand(variant, values)), 1 + 5 + 1)
+
+  def test_job_name_fits_63_characters_and_keeps_the_round(self):
+    name = dataflow_job.run_values("t", "x" * 80, 2, 1761700000, prefix="bq-java-copy")["job_name"]
+    self.assertEqual(len(name), 63)
+    self.assertTrue(name.endswith("x-r2-1761700000"))
+
+  def test_flags_take_the_workers_of_the_job(self):
+    runs = [run(1, "rust", ["A"], peak=4.0), run(1, "java", ["A"], peak=5.0)]
+    self.assertEqual(dataflow_job.flags(runs, 4), ["Round 1 java: autoscaled to 5 workers"])
+
+  def test_render_with_io_metrics_and_a_named_variant(self):
+    runs = [{**run(1, "java", ["A"]), "metrics": {"processing_s": 100.0}},
+            {**run(1, "rust", ["A"]), "metrics": {"processing_s": 80.0}}]
+    results = {"task": "bigQueryBenchmark", "created": "now",
+               "config": {"description": "d", "current": "rust", "io": {"rows": "rows"},
+                          "variants": {"java": "reader java", "rust": "reader rust"}},
+               "runs": runs, "medians": report.medians(runs, dataflow_job.SECTIONS), "flags": []}
+    text = "\n".join(dataflow_job.render(results, None))
+    self.assertIn("| Processing time (s) | 100 | 80 | -20.0% |", text)
+    self.assertIn("rust vs java", text)
+
+  def test_summarize_with_io(self):
+    job = {"id": "j1", "currentState": "JOB_STATE_DONE", "createTime": "2026-10-27T23:20:31Z",
+           "currentStateTime": "2026-10-27T23:30:31Z"}
+    io = {"pipeline": "python", "namespace": "wordcount", "rows": "line_count"}
+    record = dataflow_job.summarize({"job": job, "metrics": METRICS, "messages": MESSAGES},
+                                    "", None, io)
+    self.assertAlmostEqual(record["metrics"]["rows_per_vcpu_s"], 40 / 1500)
 
   def test_render(self):
     runs = [{**run(1, "current", ["A"]), **dataflow_job.parse_metrics(METRICS, "ExtractWords"),

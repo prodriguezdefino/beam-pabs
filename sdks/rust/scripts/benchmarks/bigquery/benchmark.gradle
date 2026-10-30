@@ -1,0 +1,167 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// BigQuery benchmark on Dataflow (`bigQueryBenchmark`).
+//
+// Shapes (-Pshape):
+// - count, per_key: read the table and count. Only the reader changes.
+// - copy: read the table, pass each row through a step in the language of the pipeline (the
+//   e2e/rows counter), and write the rows to a new table in -Pdataset. After the job,
+//   tools/check_table.py compares the rows and distinct -PdistinctColumn values with the source
+//   table and drops the new table (-PkeepTable keeps it). The table has the name of the job.
+//
+// Readers (-Preader, or -Preaders=a,b for one variant each): python, java, rust in a Python pipeline (-Ppipeline=python); java-native
+// (BigQueryIO, with -PnativeOutput=tablerow|row and -PnativeFormat=avro|arrow), java-managed and
+// rust in a Java pipeline (-Ppipeline=java).
+//
+// Writers (-Pwriter or -Pwriters=a,b, copy only): java (WriteToBigQuery with STORAGE_WRITE_API) and rust in a
+// Python pipeline; java-native (BigQueryIO with the Storage Write API), java-managed (file loads
+// for a bounded input) and rust in a Java pipeline.
+//
+// A Java copy with -Preader=rust and -Pwriter=rust needs
+// -PextraArgs="--experiments=data_buffer_size_limit=10000000", on fixed workers and with
+// autoscaling. Without it, the job can stop (docs/rust-native-io-providers.md, section 4.1).
+
+registerDataflowBenchmark(
+    task: 'bigQueryBenchmark',
+    compileTask: 'compileJavaBenchmark',
+    dir: 'bigquery',
+    label: 'bigquery',
+    jobPrefix: 'bq',
+    pythonScript: 'bigquery_benchmark.py',
+    mainClass: 'BigQueryBenchmark',
+    counter: 'rows',
+    counterShapes: ['copy'],
+    io: { shape -> [namespace: 'e2e', rows: 'rows'] },
+    shapes: ['count', 'per_key', 'copy'],
+    writeShapes: ['copy'],
+    readers: [
+      python: ['python', 'java', 'rust'],
+      java: ['java-native', 'java-managed', 'rust'],
+    ],
+    writers: [
+      python: ['java', 'rust'],
+      java: ['java-native', 'java-managed', 'rust'],
+    ],
+    description: 'Read a BigQuery table on Dataflow, and for -Pshape=copy write it to a new table ' +
+        '([-Ppipeline=python|java] [-Pshape=count|per_key|copy] ' +
+        '-Preader=python|java|rust (Python) or java-native|java-managed|rust (Java) ' +
+        '[-Pwriter=java|rust (Python) or java-native|java-managed|rust (Java), copy only] ' +
+        '[-Ptable=<spec>] [-ProwRestriction=<filter>] [-Pquery=<sql>] [-PselectedFields=a,b] ' +
+        '[-Pkey=language] [-PexpectedRows=<n>] [-PnativeOutput=tablerow|row] [-PnativeFormat=avro|arrow] ' +
+        '[-Pcompression=NONE|LZ4_FRAME|ZSTD] [-Pdataset=<project.dataset>] ' +
+        '[-Psemantics=exactly_once|at_least_once] [-PdistinctColumn=revision_id] [-PkeepTable] ' +
+        '[-PnumWorkers=4] [-PmaxNumWorkers=<n>] [-PworkerMachineType=n2-standard-4] ' +
+        '[-PextraArgs="<pipeline flags>"])',
+    configure: { Map run ->
+      def query = project.findProperty('query')?.toString()
+      def selectedFields = project.findProperty('selectedFields')?.toString()
+      def rowRestriction = project.findProperty('rowRestriction')?.toString()
+      // Only the Rust reader takes a compression; the label keeps the jobs apart.
+      def compression = (run.reader == 'rust' ? project.findProperty('compression') : null)?.toString()
+      def compressionLabel = (compression ?: 'none').toLowerCase().replace('_', '-')
+      // The BigQueryIO reader has variants; the reader label names the variant. copy reads
+      // Beam rows, because every writer takes Beam rows.
+      def nativeOutput = (project.findProperty('nativeOutput') ?: (run.writes ? 'row' : 'tablerow')).toString()
+      def nativeFormat = (project.findProperty('nativeFormat') ?: 'avro').toString()
+      def readerLabel = run.reader == 'java-native' ?
+          "java-native-${nativeOutput}-${nativeFormat}" : run.reader
+      def args = []
+      if (run.reader == 'java-native') {
+        args << "--nativeOutput=${nativeOutput}"
+        args << "--nativeFormat=${nativeFormat}"
+      }
+      if (compression) {
+        args << "--compression=${compression}"
+      }
+      def labels = ['compression': compressionLabel, 'source': query ? 'query' : 'table']
+      def spec = [:]
+
+      if (run.writes) {
+        if (query || selectedFields) {
+          throw new GradleException('-Pshape=copy reads whole rows of -Ptable: remove -Pquery and -PselectedFields.')
+        }
+        if (run.reader == 'java-native' && nativeOutput != 'row') {
+          throw new GradleException('-Pshape=copy reads Beam rows: remove -PnativeOutput or set it to row.')
+        }
+        if (run.reader == 'python' && run.writer == 'rust') {
+          throw new GradleException('The Python reader gives dicts, and the Rust writer takes Beam rows. ' +
+              'Use -Pwriter=java with -Preader=python.')
+        }
+        def source = (project.findProperty('table') ?: benchProps('table'))?.toString()
+        def dataset = (project.findProperty('dataset') ?: benchProps('dataset'))?.toString()
+        if (!source || !dataset) {
+          throw new GradleException('Set -Ptable and -Pdataset, or example.benchmark.table and ' +
+              'example.benchmark.dataset in sdks/rust/.local/sdk.properties.')
+        }
+        def semantics = (project.findProperty('semantics') ?: 'exactly_once').toString()
+        if (!['exactly_once', 'at_least_once'].contains(semantics)) {
+          throw new GradleException("Unknown semantics '${semantics}': use exactly_once or at_least_once.")
+        }
+        def semanticsLabel = semantics.replace('_', '-')
+        // The table has the name of the job, so jobs never append to each other's rows.
+        def destination = "${dataset}.{job_name_underscore}"
+        args << "${run.flag('table')}=${source}"
+        args << "${run.flag('destination')}=${destination}"
+        args << "--semantics=${semantics}"
+        if (rowRestriction) {
+          args << "${run.flag('row_restriction')}=${rowRestriction}"
+        }
+        labels['semantics'] = semanticsLabel
+        spec = [source: source, destination: destination, semantics: semantics, rowRestriction: rowRestriction]
+      } else {
+        if (project.findProperty('semantics') || project.findProperty('dataset')) {
+          throw new GradleException("-Psemantics and -Pdataset apply to -Pshape=copy only, not to ${run.shape}.")
+        }
+        // A query replaces the table, so the default table applies only without a query.
+        ['table': 'table', 'query': 'query', 'selectedFields': 'selected_fields',
+         'rowRestriction': 'row_restriction', 'key': 'key', 'expectedRows': 'expected_rows'].each { prop, flag ->
+          def value = project.findProperty(prop) ?: (prop == 'table' && !query ? benchProps('table') : null)
+          if (value) {
+            args << "${run.flag(flag)}=${value}"
+          }
+        }
+      }
+      if (rowRestriction) {
+        labels['restricted'] = 'true'
+      }
+      spec + [
+        readerLabel: readerLabel,
+        labels: labels,
+        args: args,
+      ]
+    },
+    after: { spec ->
+      def args = [
+        "${benchVenv}/bin/python", "${rustDir}/scripts/benchmarks/tools/check_table.py",
+        "--table=${spec.destination}", "--expected_table=${spec.source}",
+        "--distinct_column=${project.findProperty('distinctColumn') ?: 'revision_id'}",
+        "--project=${gcpProjectFrom(benchProps)}",
+      ]
+      if (spec.rowRestriction) {
+        args << "--expected_filter=${spec.rowRestriction}"
+      }
+      if (spec.semantics == 'at_least_once') {
+        args << '--at_least'
+      }
+      if (!project.hasProperty('keepTable')) {
+        args << '--drop'
+      }
+      args
+    },
+)

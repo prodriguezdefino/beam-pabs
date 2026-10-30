@@ -1,0 +1,124 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Cloud Bigtable benchmark on Dataflow (`bigtableBenchmark`).
+//
+// Shapes (-Pshape):
+// - bt_to_gcs: read a Bigtable table with -Preader, pass each row through a step in the
+//   pipeline language (the e2e/rows counter and text formatter), and write the formatted lines
+//   to Cloud Storage (-Poutput).
+//
+// Readers (-Preader, or -Preaders=a,b for one variant each):
+// - Python pipeline (-Ppipeline=python): java (Java BigtableReadSchemaTransformProvider) and
+//   rust (Rust BigtableReadProvider).
+// - Java pipeline (-Ppipeline=java): java-native (BigtableIO.read()), java-schema
+//   (BigtableReadSchemaTransformProvider in-process) and rust (Rust BigtableReadProvider).
+// - Rust pipeline (-Ppipeline=rust): rust (native ReadRows in a single Rust worker container).
+
+registerDataflowBenchmark(
+    task: 'bigtableBenchmark',
+    compileTask: 'compileBigtableJavaBenchmark',
+    dir: 'bigtable',
+    label: 'bigtable',
+    jobPrefix: 'bt',
+    pythonScript: 'bigtable_benchmark.py',
+    mainClass: 'BigtableBenchmark',
+    counter: 'rows',
+    counterShapes: ['bt_to_gcs'],
+    io: { shape -> [namespace: 'e2e', rows: 'rows'] },
+    rustPackage: 'bigtable_benchmark',
+    rustWorkerTask: 'buildBigtableRustBenchmarkWorker',
+    rustShapes: ['bt_to_gcs'],
+    defaultShape: 'bt_to_gcs',
+    shapes: ['bt_to_gcs'],
+    readShapes: ['bt_to_gcs'],
+    writeShapes: [],
+    readers: [
+      python: ['java', 'rust'],
+      java: ['java-native', 'java-schema', 'rust'],
+      rust: ['rust'],
+    ],
+    description: 'Read a Cloud Bigtable table and write formatted rows to Cloud Storage on Dataflow ' +
+        '([-Ppipeline=python|java|rust] [-Pshape=bt_to_gcs] ' +
+        '[-Preader=java|rust (Python) or java-native|java-schema|rust (Java) or rust (Rust)] ' +
+        '[-PbigtableProject=<project>] -PbigtableInstance=<instance> -PbigtableTable=<table> ' +
+        '[-PbigtableMaterializedView=<view> (Rust pipeline)] ' +
+        '[-PappProfile=<profile>] [-Pflatten=true|false] [-Poutput=<gs://...>] ' +
+        '[-PexpectedRows=<n>] [-PnumWorkers=4] [-PmaxNumWorkers=<n>] ' +
+        '[-PworkerMachineType=n2-standard-4] [-PextraArgs="<pipeline flags>"])',
+    configure: { Map run ->
+      def bigtableProject = (project.findProperty('bigtableProject') ?:
+          benchProps('bigtableProject') ?: gcpProjectFrom(benchProps))?.toString()
+      def bigtableInstance = (project.findProperty('bigtableInstance') ?:
+          benchProps('bigtableInstance'))?.toString()
+      def bigtableTable = (project.findProperty('bigtableTable') ?:
+          benchProps('bigtableTable'))?.toString()
+      def materializedView = project.findProperty('bigtableMaterializedView')?.toString()
+      if (!bigtableProject || !bigtableInstance || !(bigtableTable || materializedView)) {
+        throw new GradleException('Set -PbigtableInstance and -PbigtableTable (or ' +
+            'example.benchmark.bigtableInstance and example.benchmark.bigtableTable in ' +
+            'sdks/rust/.local/sdk.properties), or -PbigtableMaterializedView.')
+      }
+      if (materializedView && run.pipeline != 'rust') {
+        throw new GradleException('-PbigtableMaterializedView needs -Ppipeline=rust.')
+      }
+      def flatten = (project.findProperty('flatten') ?: 'false').toString().toLowerCase()
+      if (!['true', 'false'].contains(flatten)) {
+        throw new GradleException("Unknown flatten '${flatten}': use true or false.")
+      }
+      def rawAppProfile = (project.findProperty('appProfile') ?:
+          benchProps('bigtableAppProfile'))?.toString()
+      def appProfile = (rawAppProfile && rawAppProfile != 'none') ? rawAppProfile : null
+      if (appProfile && !['rust', 'java-native'].contains(run.reader)) {
+        throw new GradleException("Reader '${run.reader}' does not support -PappProfile: " +
+            'use -Preader=rust or -Preader=java-native, or pass -PappProfile=none.')
+      }
+      def gcpTempLocation = benchProps('gcpTempLocation', 'GCP_TEMP_LOCATION')
+      def output = (project.findProperty('output') ?:
+          "${gcpTempLocation}/bigtable_benchmark/{job_name}/out").toString()
+
+      def target = materializedView ?
+          "${run.flag('bigtable_materialized_view')}=${materializedView}" :
+          "${run.flag('bigtable_table')}=${bigtableTable}"
+      def args = [
+        "${run.flag('bigtable_project')}=${bigtableProject}",
+        "${run.flag('bigtable_instance')}=${bigtableInstance}",
+        target,
+        "${run.flag('flatten')}=${flatten}",
+        "--output=${output}",
+      ]
+      if (appProfile) {
+        args << "${run.flag('app_profile')}=${appProfile}"
+      }
+      def expectedRows = project.findProperty('expectedRows')?.toString()
+      if (expectedRows) {
+        args << "${run.flag('expected_rows')}=${expectedRows}"
+      }
+      def profileLabel = appProfile ? appProfile.toLowerCase().replace('_', '-') : 'default'
+      def labels = [
+        'flatten': flatten,
+        'app_profile': profileLabel,
+        'target': materializedView ? 'materialized-view' : 'table',
+      ]
+      [
+        readerLabel: run.reader,
+        labels: labels,
+        args: args,
+      ]
+    },
+)

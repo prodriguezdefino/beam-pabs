@@ -1,0 +1,121 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Java cross-language ValidatesRunner tasks (`validatesCrossLanguageRunnerJavaPrism`,
+// `validatesCrossLanguageRunnerJavaDataflow`, `javaSdkDataflowImage`).
+
+if (gradle.startParameter.taskNames.any { it.contains('CrossLanguageRunnerJava') }) {
+  evaluationDependsOn(':sdks:java:core')
+  evaluationDependsOn(':sdks:java:extensions:python')
+  evaluationDependsOn(':runners:prism:java')
+  evaluationDependsOn(':runners:google-cloud-dataflow-java')
+}
+
+def javaXlangClass = 'org.apache.beam.sdk.util.construction.ValidateRunnerXlangTest'
+def imageJavaVersion = (project.findProperty('testJavaVersion')?.with {
+  org.apache.beam.gradle.BeamModulePlugin.getSupportedJavaVersion(it.toString())
+} ?: project.ext.currentJavaVersion).toString()
+
+def javaSdkImage = registerSdkDataflowImageTask(
+    sdk: 'Java',
+    imageSuffix: "${imageJavaVersion}_sdk",
+    gradleTask: ":sdks:java:container:${imageJavaVersion}:docker",
+)
+
+def configureJavaXlangTest = { Test task, String runnerProject, String workerImage, Closure<List<String>> pipelineOpts ->
+  def service = null
+  String testJavaVersion = project.findProperty('testJavaVersion')
+  String testJavaHome = testJavaVersion ? project.findProperty("java${testJavaVersion}Home") : null
+
+  task.outputs.upToDateWhen { false }
+  task.binaryResultsDirectory = file("${buildDir}/test-results/${task.name}/binary")
+  task.reports.html.outputLocation = file("${buildDir}/reports/tests/${task.name}")
+  task.reports.junitXml.outputLocation = file("${buildDir}/test-results/${task.name}")
+  task.classpath = project.files({
+    project.project(runnerProject).configurations.validatesRunner + project.files(
+        project.project(':sdks:java:core').sourceSets.test.runtimeClasspath,
+        project.project(':sdks:java:extensions:python').sourceSets.test.runtimeClasspath,
+    )
+  })
+  task.testClassesDirs = project.files({
+    [
+        project.project(':sdks:java:core').sourceSets.test.output.classesDirs,
+        project.project(':sdks:java:extensions:python').sourceSets.test.output.classesDirs,
+    ]
+  })
+  task.useJUnit {
+    includeCategories 'org.apache.beam.sdk.testing.UsesJavaExpansionService'
+  }
+  task.filter {
+    (selectedTests { "${javaXlangClass}\$${it}" } ?: ["${javaXlangClass}\$*"]).each {
+      includeTestsMatching it
+    }
+  }
+  if (testJavaHome) {
+    task.executable = "${testJavaHome}/bin/java"
+  }
+  task.maxHeapSize = '4g'
+
+  task.doFirst {
+    def host = dockerHost()
+    if (host) {
+      task.environment 'DOCKER_HOST', host
+    }
+    service = startExpansionService(workerImage: workerImage)
+    task.systemProperty 'expansionPort', service.port
+    task.systemProperty 'expansionJar', ''
+    task.systemProperty 'beamTestPipelineOptions', groovy.json.JsonOutput.toJson(pipelineOpts())
+  }
+  task.doLast {
+    if (service) {
+      stopExpansionService(service)
+    }
+  }
+}
+
+registerXlangSuiteTasks(
+    sdk: 'Java',
+    taskType: Test,
+    testExamples: 'SingleInputOutputTest,GroupByKeyTest',
+    dataflowDependsOn: [':runners:google-cloud-dataflow-java:worker:shadowJar'],
+    dataflowHint: '[-PxlangParallelism=8] [-PjavaSdkImage=<image>]',
+    configurePrism: { Test task ->
+      task.maxParallelForks = 1
+      configureJavaXlangTest(task, ':runners:prism:java', testingImage) {
+        [
+          '--runner=TestPrismRunner',
+          '--experiments=beam_fn_api',
+          '--defaultEnvironmentType=LOOPBACK',
+          '--prismLogLevel=warn',
+          "--prismLocation=${prismHostBinary.absolutePath}",
+          '--enableWebUI=false',
+        ]*.toString()
+      }
+    },
+    configureDataflow: { Test task ->
+      task.maxParallelForks = (project.findProperty('xlangParallelism') ?: '8').toInteger()
+      configureJavaXlangTest(task, ':runners:google-cloud-dataflow-java', dataflowImage) {
+        xlangDataflowFlags(
+            tempFlag: 'tempRoot',
+            numWorkersFlag: 'numWorkers',
+            machineTypeFlag: 'workerMachineType',
+            extraFlags: javaSdkImage ? ["--sdkContainerImage=${javaSdkImage}"] : [],
+        )
+      }
+    },
+)

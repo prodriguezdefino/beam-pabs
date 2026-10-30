@@ -319,23 +319,55 @@ version = "2.78.0-SNAPSHOT"
 dependencies = [
  "apache-beam-core",
  "apache-beam-external",
+ "apache-beam-io-arrow",
  "apache-beam-io-file",
  "apache-beam-io-gcp",
+ "apache-beam-io-gcp-googleapis",
  "apache-beam-io-managed",
  "apache-beam-model",
  "apache-beam-test-utils",
+ "arrow-ipc",
  "bytes",
+ "chrono",
  "clap",
  "futures",
  "google-cloud-auth",
+ "google-cloud-bigquery",
+ "google-cloud-bigquery-v2",
  "google-cloud-gax",
  "google-cloud-secretmanager-v1",
  "google-cloud-storage",
+ "google-cloud-wkt",
  "inventory",
+ "prost",
  "rustls",
  "serde",
  "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-prost",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "apache-beam-io-gcp-expansion-service"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "apache-beam-expansion",
+ "bytes",
+ "tokio",
+]
+
+[[package]]
+name = "apache-beam-io-gcp-googleapis"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "prost",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
 ]
 
 [[package]]
@@ -352,12 +384,33 @@ dependencies = [
 name = "apache-beam-io-kafka"
 version = "2.78.0-SNAPSHOT"
 dependencies = [
+ "apache-beam",
  "apache-beam-core",
  "apache-beam-external",
+ "apache-beam-io-gcp",
+ "apache-beam-io-json",
+ "apache-beam-io-kafka",
  "apache-beam-io-managed",
  "apache-beam-model",
  "apache-beam-test-utils",
+ "base64 0.22.1",
+ "clap",
+ "libc",
+ "prost",
+ "rdkafka",
+ "serde",
  "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+]
+
+[[package]]
+name = "apache-beam-io-kafka-expansion-service"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "apache-beam-expansion",
  "tokio",
 ]
 
@@ -499,11 +552,12 @@ dependencies = [
  "apache-beam-external",
  "apache-beam-fluent",
  "apache-beam-harness",
- "apache-beam-io-file",
- "apache-beam-io-gcp",
  "apache-beam-model",
  "apache-beam-runner-prism",
  "clap",
+ "google-cloud-bigquery",
+ "google-cloud-bigquery-v2",
+ "google-cloud-gax",
  "inventory",
  "prost",
  "rust_decimal",
@@ -795,6 +849,16 @@ checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "bigquery_tornadoes"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "clap",
+ "serde",
+ "tokio",
+]
+
+[[package]]
+name = "bigtable_benchmark"
 version = "2.78.0-SNAPSHOT"
 dependencies = [
  "apache-beam",
@@ -2374,10 +2438,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "google-cloud-auth"
-version = "1.17.0"
+name = "google-cloud-api"
+version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac9870b8ea484519aa8601e14886f2efc148ea490034e43d04bef1d246170cc9"
+checksum = "4212525a72252d4d5359dfc0b19dd8039cb898f54458fb6357f56162c5b35a33"
+dependencies = [
+ "bytes",
+ "google-cloud-wkt",
+ "serde",
+ "serde_json",
+ "serde_with",
+]
+
+[[package]]
+name = "google-cloud-auth"
+version = "1.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d563c7b987f40249c274a4e6a671661df6be2d084f08476dda2f0f931576cfcf"
 dependencies = [
  "async-trait",
  "aws-lc-rs",
@@ -2403,6 +2480,72 @@ dependencies = [
 ]
 
 [[package]]
+name = "google-cloud-bigquery"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e78c988c66c8cb41a3492452eb616cfeb1344f5234045c89ff63eae1af07f1c5"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "base64 0.23.1",
+ "bytes",
+ "google-cloud-auth",
+ "google-cloud-bigquery-derive",
+ "google-cloud-bigquery-v2",
+ "google-cloud-gax",
+ "google-cloud-gax-internal",
+ "google-cloud-rpc",
+ "google-cloud-type",
+ "google-cloud-wkt",
+ "http",
+ "prost",
+ "prost-types",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "google-cloud-bigquery-derive"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "103dea01e5f9ef39edc65f76d82619cdb2ffcd4a9e2535e39155a48367b8725f"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
+]
+
+[[package]]
+name = "google-cloud-bigquery-v2"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f18fee7e5c3802602ab71c10da5e9ffdedc1f4fcc49b4f9bdaac99c807769442"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "google-cloud-gax",
+ "google-cloud-gax-internal",
+ "google-cloud-lro",
+ "google-cloud-type",
+ "google-cloud-wkt",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "google-cloud-gax"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2424,12 +2567,13 @@ dependencies = [
 
 [[package]]
 name = "google-cloud-gax-internal"
-version = "0.7.20"
+version = "0.7.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e873f7e6e39030c07b6d9697bf3b999a269175c8b433e058f56ae10d129f12f7"
+checksum = "6ad2379de0de5562c27eb79acd9c36143719a9271191df5d0ac6eb162a1b9d7e"
 dependencies = [
  "bytes",
  "futures",
+ "google-cloud-api",
  "google-cloud-auth",
  "google-cloud-gax",
  "google-cloud-rpc",
@@ -2618,9 +2762,9 @@ dependencies = [
 
 [[package]]
 name = "google-cloud-wkt"
-version = "1.9.0"
+version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f3037907e542cf8b8580aa4cf8ad68568d7ac8e7274519a7d0a121867d434da"
+checksum = "75baa147c141fa2b11047827e7ff4eea3a84ab00c3d2cf44fccd132b2ed326cf"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -3250,6 +3394,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "kafka_benchmark"
+version = "2.78.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "clap",
+ "serde",
+ "tokio",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3305,6 +3459,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a45a52f43e1c16f667ccfe4dd8c85b7f7c204fd5e3bf46c5b0db9a5c3c0b8e9"
 dependencies = [
  "cc",
+]
+
+[[package]]
+name = "libz-sys"
+version = "1.1.30"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f710a23e6dbf193214fd46ca56a9d6864e550abe86202184532ae7275e46de19"
+dependencies = [
+ "cc",
+ "libc",
+ "pkg-config",
+ "vcpkg",
 ]
 
 [[package]]
@@ -3709,6 +3875,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "num_enum"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d0bca838442ec211fa11de3a8b0e0e8f3a4522575b5c4c06ed722e005036f26"
+dependencies = [
+ "num_enum_derive",
+ "rustversion",
+]
+
+[[package]]
+name = "num_enum_derive"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "680998035259dcfcafe653688bf2aa6d3e2dc05e98be6ab46afb089dc84f1df8"
+dependencies = [
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "nyc_taxi"
 version = "2.78.0-SNAPSHOT"
 dependencies = [
@@ -3827,6 +4015,28 @@ name = "openssl-probe"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
+
+[[package]]
+name = "openssl-src"
+version = "300.6.1+3.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46eb8fb9fb3b61ce1c0f8a026c4c1a0714d3a9e138e7fbde78753ce2babc3846"
+dependencies = [
+ "cc",
+]
+
+[[package]]
+name = "openssl-sys"
+version = "0.9.117"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b47e7e6bb2c38cd930d25a23b40fa52e068c10e85f3e03a7f5ba5aaca5713695"
+dependencies = [
+ "cc",
+ "libc",
+ "openssl-src",
+ "pkg-config",
+ "vcpkg",
+]
 
 [[package]]
 name = "opentelemetry"
@@ -4481,6 +4691,38 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
+]
+
+[[package]]
+name = "rdkafka"
+version = "0.39.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7956f9ac12b5712e50372d9749a3102f4810a8d42481c5eae3748d36d585bcf"
+dependencies = [
+ "futures-channel",
+ "futures-util",
+ "libc",
+ "log",
+ "rdkafka-sys",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "slab",
+ "tokio",
+]
+
+[[package]]
+name = "rdkafka-sys"
+version = "4.10.0+2.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e234cf318915c1059d4921ef7f75616b5219b10b46e9f3a511a15eb4b56a3f77"
+dependencies = [
+ "libc",
+ "libz-sys",
+ "num_enum",
+ "openssl-sys",
+ "pkg-config",
+ "zstd-sys",
 ]
 
 [[package]]
@@ -5951,6 +6193,12 @@ name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
+
+[[package]]
+name = "vcpkg"
+version = "0.2.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "version_check"

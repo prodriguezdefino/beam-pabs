@@ -22,7 +22,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Cross-language Apache Kafka I/O connector for the Apache Beam Rust SDK"
+description = "Apache Kafka I/O connectors for the Apache Beam Rust SDK: native (librdkafka) and cross-language"
 
 [lib]
 name = "kafka_io"
@@ -31,12 +31,47 @@ name = "kafka_io"
 beam = { package = "apache-beam-core", path = "../../core", version = "2.78.0-SNAPSHOT" }
 external = { workspace = true }
 managed_io = { workspace = true }
+rdkafka = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+# The JSON format: JSON Schemas to Beam schemas, and rows to and from JSON objects.
+json_io = { workspace = true, optional = true }
+# The Application Default Credentials of Google Cloud Managed Service for Apache Kafka.
+gcp = { workspace = true, optional = true }
+
+[features]
+# The native connector on librdkafka. Off by default: it builds librdkafka and OpenSSL from
+# source.
+native = [
+    "dep:rdkafka",
+    "dep:serde_json",
+    "dep:base64",
+    "dep:tracing",
+    "dep:json_io",
+    "dep:gcp",
+]
 
 [dev-dependencies]
+kafka_io = { package = "apache-beam-io-kafka", path = ".", features = ["native"] }
 model = { workspace = true }
+prost = { workspace = true }
 serde_json = { workspace = true }
 testutils = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { workspace = true }
+# For benches/copy_throughput.rs: the Prism runner, worker logging and pipeline options. The
+# facade does not enable its `kafka` feature, so it does not build a second copy of this crate.
+beam_sdk = { package = "apache-beam", path = "../..", default-features = false, features = ["prism", "fluent"] }
+clap = { workspace = true }
+serde = { workspace = true }
+# The CPU time of the bench process (`getrusage`).
+libc = { workspace = true }
+
+[[bench]]
+name = "copy_throughput"
+harness = false
+required-features = ["native"]
 
 [lints]
 workspace = true
