@@ -156,15 +156,22 @@ tempfile = "3"
 libc = "0.2"
 mimalloc = { version = "0.1", default-features = false }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
-arrow-array = { version = "60.0.0", default-features = false }
-arrow-buffer = { version = "60.0.0", default-features = false }
-arrow-schema = { version = "60.0.0", default-features = false }
-arrow-ipc = { version = "60.0.0", default-features = false, features = ["lz4", "zstd"] }
-parquet = { version = "60.0.0", default-features = false, features = ["arrow", "flate2-zlib-rs", "lz4", "snap", "zstd"] }
-arrow-avro = { version = "60.0.0", default-features = false, features = ["deflate", "snappy", "zstd"] }
+arrow-array = { version = "58.4.1", default-features = false }
+arrow-buffer = { version = "58.4.1", default-features = false }
+arrow-schema = { version = "58.4.1", default-features = false }
+arrow-ipc = { version = "58.4.1", default-features = false, features = ["lz4", "zstd"] }
+parquet = { version = "58.4.1", default-features = false, features = ["arrow", "flate2-zlib-rs", "lz4", "snap", "zstd"] }
+arrow-avro = { version = "58.4.1", default-features = false, features = ["deflate", "snappy", "zstd"] }
 # Static librdkafka, OpenSSL, zlib and zstd: the worker binary links only libc, libm and libgcc_s,
 # which the distroless runtime image has. See docs/rust-native-io-providers.md, Kafka dependencies.
 rdkafka = { version = "0.39", default-features = false, features = ["tokio", "libz-static", "zstd", "ssl-vendored"] }
+iceberg = "0.10.1"
+iceberg-catalog-rest = "0.10.1"
+# The trait objects of the `iceberg` storage API need `typetag`, and its credentials need `http`.
+typetag = "0.2"
+http = "1"
+# The hash of the object storage layout of Iceberg tables.
+murmur3 = "0.5"
 
 # Internal workspace crates
 beam = { package = "apache-beam", path = "beam", version = "2.79.0-SNAPSHOT" }
@@ -179,6 +186,7 @@ file = { package = "apache-beam-io-file", path = "beam/io/file", version = "2.79
 gcp = { package = "apache-beam-io-gcp", path = "beam/io/gcp", version = "2.79.0-SNAPSHOT", default-features = false }
 googleapis = { package = "apache-beam-io-gcp-googleapis", path = "beam/io/gcp/googleapis", version = "2.79.0-SNAPSHOT" }
 kafka_io = { package = "apache-beam-io-kafka", path = "beam/io/kafka", version = "2.79.0-SNAPSHOT" }
+iceberg_io = { package = "apache-beam-io-iceberg", path = "beam/io/iceberg", version = "2.79.0-SNAPSHOT" }
 managed_io = { package = "apache-beam-io-managed", path = "beam/io/managed", version = "2.79.0-SNAPSHOT" }
 arrow_io = { package = "apache-beam-io-arrow", path = "beam/io/arrow", version = "2.79.0-SNAPSHOT" }
 parquet_io = { package = "apache-beam-io-parquet", path = "beam/io/parquet", version = "2.79.0-SNAPSHOT" }

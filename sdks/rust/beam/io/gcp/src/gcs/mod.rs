@@ -149,13 +149,20 @@ struct GcsClientPair {
 #[derive(Clone, Debug, Default)]
 pub struct GcsFileSystem {
     clients: Arc<OnceLock<GcsClientPair>>,
+    credentials: Option<google_cloud_auth::credentials::Credentials>,
 }
 
 impl GcsFileSystem {
     /// Uses Application Default Credentials, or `STORAGE_EMULATOR_HOST` if set.
     pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Uses `credentials` instead of Application Default Credentials.
+    pub fn with_credentials(credentials: google_cloud_auth::credentials::Credentials) -> Self {
         Self {
             clients: Arc::new(OnceLock::new()),
+            credentials: Some(credentials),
         }
     }
 
@@ -165,6 +172,7 @@ impl GcsFileSystem {
         }
 
         let endpoint = emulator_endpoint(std::env::var("STORAGE_EMULATOR_HOST").ok());
+        let credentials = self.credentials.clone();
 
         let clients = block_on_async(async move {
             let mut storage_builder = google_cloud_storage::client::Storage::builder();
@@ -173,6 +181,10 @@ impl GcsFileSystem {
             if let Some(ref ep) = endpoint {
                 storage_builder = storage_builder.with_endpoint(ep);
                 control_builder = control_builder.with_endpoint(ep);
+            }
+            if let Some(credentials) = credentials {
+                storage_builder = storage_builder.with_credentials(credentials.clone());
+                control_builder = control_builder.with_credentials(credentials);
             }
 
             let storage = Arc::new(storage_builder.build().await.map_err(io::Error::other)?);

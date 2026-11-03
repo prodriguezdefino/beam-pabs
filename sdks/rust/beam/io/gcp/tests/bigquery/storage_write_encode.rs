@@ -22,11 +22,10 @@
 
 use std::sync::Arc;
 
+use arrow_io::EncodedBatch;
 use arrow_io::arrow_array::{RecordBatch, StringArray};
 use arrow_io::arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
-use gcp::bigquery::storage::write::encode::{
-    APPEND_BYTES, EncodedBatch, MAX_REQUEST_BYTES, accepted, split,
-};
+use gcp::bigquery::storage::write::encode::{APPEND_BYTES, MAX_REQUEST_BYTES, accepted, split};
 
 /// A batch of `rows` strings of `bytes` bytes each.
 fn strings(rows: usize, bytes: usize) -> RecordBatch {

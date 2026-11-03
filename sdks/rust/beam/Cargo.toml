@@ -72,6 +72,9 @@ kafka = ["dep:kafka_io", "external"]
 # The native Kafka connector on librdkafka, in `beam::io::kafka::native`. Off by default: it
 # builds librdkafka and OpenSSL from source.
 kafka-native = ["kafka", "kafka_io/native"]
+# The native Iceberg write, in `beam::io::iceberg`. Off by default: it pulls in the `iceberg`
+# crates.
+iceberg = ["dep:iceberg_io"]
 # Managed I/O (Iceberg, Kafka, BigQuery, JDBC, Delta Lake) through the Java expansion
 # service.
 managed = ["dep:managed_io", "external"]
@@ -112,6 +115,7 @@ tfrecord_io = { workspace = true, optional = true }
 json_io = { workspace = true, optional = true }
 kafka_io = { workspace = true, optional = true }
 managed_io = { workspace = true, optional = true }
+iceberg_io = { workspace = true, optional = true }
 external = { workspace = true, optional = true }
 expansion = { workspace = true, optional = true }
 prism = { workspace = true, optional = true }
