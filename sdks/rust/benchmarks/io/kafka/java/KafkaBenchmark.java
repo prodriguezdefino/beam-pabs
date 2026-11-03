@@ -752,12 +752,16 @@ public class KafkaBenchmark {
   /**
    * Maps each sequence index of {@code produce} to a record of the sample file, in a cycle. The
    * record has no key and no timestamp, so the Kafka producer sets {@code CreateTime} when it
-   * sends the record.
+   * sends the record. In a record, {@code {index}} becomes the sequence index and {@code
+   * {now_ms}} the wall time in milliseconds, so each record can have a unique id and a current
+   * time.
    */
   static class SampleRecordFn extends DoFn<Long, KV<byte[], byte[]>> {
     private final String samplePath;
     private final Counter rows = Metrics.counter("produce", "rows");
     private transient List<byte[]> records;
+    /** The text of each record with a placeholder, or null for a record with none. */
+    private transient List<String> templates;
 
     SampleRecordFn(String samplePath) {
       this.samplePath = samplePath;
@@ -782,12 +786,26 @@ public class KafkaBenchmark {
         throw new IOException("No records in " + samplePath);
       }
       records = lines;
+      templates = new ArrayList<>();
+      for (byte[] line : lines) {
+        String text = new String(line, StandardCharsets.UTF_8);
+        templates.add(text.contains("{index}") || text.contains("{now_ms}") ? text : null);
+      }
     }
 
     @ProcessElement
     public void process(@Element Long index, OutputReceiver<KV<byte[], byte[]>> out) {
       rows.inc();
-      out.output(KV.of(null, records.get((int) (index % records.size()))));
+      int i = (int) (index % records.size());
+      String template = templates.get(i);
+      byte[] record =
+          template == null
+              ? records.get(i)
+              : template
+                  .replace("{index}", Long.toString(index))
+                  .replace("{now_ms}", Long.toString(System.currentTimeMillis()))
+                  .getBytes(StandardCharsets.UTF_8);
+      out.output(KV.of(null, record));
     }
   }
 

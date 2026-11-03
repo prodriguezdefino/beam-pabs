@@ -25,6 +25,9 @@ The "wait" field of a variant (see report.py) tells dataflow_job.py what its lau
 - "counter", "expected_rows", "drain_after_seconds": the script drains a streaming job when
   the user counter "counter" reaches "expected_rows", or after "drain_after_seconds" from
   the end of the launcher. A job that ends with fewer rows than "expected_rows" fails.
+- "kill_worker_after_seconds": the script deletes one worker VM of a running streaming job
+  this time after the end of the launcher, for a fault test. The after command then checks
+  the output.
 - "detach": the job keeps running after the round. The script records the job and reads no
   metrics, so a load job can run at the same time for a latency run.
 
@@ -66,14 +69,16 @@ def outcome(spec: Spec, job: Job, rows: Optional[float]) -> Optional[str]:
 def wait(spec: Spec, get_job: Callable[[], Optional[Job]],
          rows: Callable[[Job], Optional[float]], drain: Callable[[Job], None],
          on_poll: Callable[[], None] = lambda: None,
+         kill: Callable[[Job], None] = lambda job: None,
          sleep: Callable[[float], None] = time.sleep,
          clock: Callable[[], float] = time.monotonic) -> Dict[str, Any]:
   """Polls the job until it ends and drains it at the condition of `spec`.
 
   Returns {"job": the last job or None, "error": None or a reason}. `get_job` gives the job
-  or None while it is not in the job list, and `rows` the value of the counter.
+  or None while it is not in the job list, and `rows` the value of the counter. `kill`
+  deletes one worker VM of the job.
   """
-  start, drained, job = clock(), False, None
+  start, drained, killed, job = clock(), False, False, None
   while True:
     on_poll()
     job = get_job() or job
@@ -89,6 +94,12 @@ def wait(spec: Spec, get_job: Callable[[], Optional[Job]],
       return {"job": job, "error": outcome(spec, job, counted)}
     # A batch job ends on its own, so "expected_rows" only checks it.
     streaming = job is not None and job.get("type") != "JOB_TYPE_BATCH"
+    kill_after = spec.get("kill_worker_after_seconds")
+    if (streaming and not killed and not drained and state == "JOB_STATE_RUNNING"
+        and kill_after is not None and elapsed >= float(kill_after)):
+      print(f"Kill one worker of {job.get('name')} at {elapsed:.0f} s", flush=True)
+      kill(job)
+      killed = True
     if streaming and not drained and drain_due(spec, state, counted, elapsed):
       at = f"{counted:.0f} rows" if counted is not None else f"{elapsed:.0f} s"
       print(f"Drain {job.get('name')} at {at}", flush=True)
