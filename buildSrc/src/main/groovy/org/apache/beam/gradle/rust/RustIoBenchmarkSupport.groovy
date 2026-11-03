@@ -111,6 +111,7 @@ class RustIoBenchmarkSupport {
     'apache-beam-benchmark-bigquery',
     'apache-beam-benchmark-bigtable',
     'apache-beam-benchmark-kafka',
+    'apache-beam-benchmark-iceberg',
   ]
 
   final RustBenchmarkTasks benchmarks
@@ -159,6 +160,7 @@ class RustIoBenchmarkSupport {
     RustBigQueryBenchmark.register(support)
     RustBigtableBenchmark.register(support)
     RustKafkaBenchmark.register(support)
+    RustIcebergBenchmark.register(support)
     return support
   }
 
@@ -504,7 +506,7 @@ class RustIoBenchmarkSupport {
     project.tasks.register('buildIoBenchmarkWorkers') { Task task ->
       task.group = 'Build'
       task.description =
-          'Build all three Linux I/O benchmark worker binaries in one Cargo invocation (-PexampleArch=amd64)'
+          'Build all four Linux I/O benchmark worker binaries in one Cargo invocation (-PexampleArch=amd64)'
       task.inputs.files(config.rustWorkspaceTree)
       task.inputs.property('packages', IO_BENCHMARK_PACKAGES)
       task.inputs.property('arch', config.workerArch)

@@ -256,6 +256,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "apache-beam-benchmark-iceberg"
+version = "2.79.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "apache-beam-benchmark-io",
+ "chrono",
+ "clap",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "apache-beam-benchmark-io"
 version = "2.79.0-SNAPSHOT"
 dependencies = [
