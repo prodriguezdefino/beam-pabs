@@ -90,10 +90,10 @@ use google_cloud_bigquery_v2::client::TableService;
 
 use crate::bigquery::table::TableRef;
 use crate::options::GcpOptions;
+use beam_io_arrow::EncodedBatch;
 use buffered::WriteBufferedFn;
 use default_stream::WriteDefaultFn;
 use encode::{EncodeFn, Sharding};
-use encoded_batch::EncodedBatch;
 use pending::{CommitFn, WritePendingFn};
 use projection::Selection;
 use table::{Destination, PrepareTableFn};

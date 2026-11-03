@@ -28,7 +28,7 @@ use beam_io_arrow::arrow_buffer::Buffer;
 use beam_io_arrow::arrow_ipc::convert::try_schema_from_ipc_buffer;
 use beam_io_arrow::arrow_ipc::reader::StreamDecoder;
 use beam_io_arrow::arrow_ipc::writer::{
-    DictionaryTracker, EncodedData, IpcDataGenerator, IpcWriteContext, IpcWriteOptions,
+    CompressionContext, DictionaryTracker, EncodedData, IpcDataGenerator, IpcWriteOptions,
     write_message,
 };
 use beam_io_arrow::arrow_schema::Schema as ArrowSchema;
@@ -47,7 +47,7 @@ use super::{GLOBAL, emit_global, finish_timestamp};
 use crate::bigquery::storage::schema::{find_field, write_array, write_batch_to_rows, write_field};
 
 pub use super::buffer::{APPEND_BYTES, MAX_REQUEST_BYTES};
-pub use super::encoded_batch::{EncodedBatch, EncodedBatchCoder};
+use beam_io_arrow::EncodedBatch;
 
 /// The batches of some rows, and an error row for each row that does not convert.
 #[derive(Default)]
@@ -357,7 +357,7 @@ fn encode_batch(batch: &RecordBatch) -> beam::Result<EncodedBatch> {
             batch,
             &mut DictionaryTracker::new(false),
             &options,
-            &mut IpcWriteContext::default(),
+            &mut CompressionContext::default(),
         )
         .map_err(beam::Error::msg)?;
     Ok(EncodedBatch {

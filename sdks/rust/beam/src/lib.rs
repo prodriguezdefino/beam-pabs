@@ -117,6 +117,10 @@ pub mod io {
     #[cfg(feature = "kafka")]
     pub use beam_io_kafka as kafka;
 
+    /// The native Iceberg write: `beam::io::iceberg::Write` and `WriteRows`.
+    #[cfg(feature = "iceberg")]
+    pub use beam_io_iceberg as iceberg;
+
     /// Managed I/O: `beam::io::managed::ManagedRead::new(managed::ICEBERG)`.
     #[cfg(feature = "managed")]
     pub use beam_io_managed as managed;

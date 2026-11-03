@@ -32,6 +32,7 @@ pub(crate) mod schema;
 
 pub use batch::{
     ArrowBeamRowBatchConverter, ArrowRecordBatch, ArrowRecordBatchCoder, ArrowRowBatchConverter,
+    EncodedBatch, EncodedBatchCoder,
 };
 pub use codec::{BeamRowCodec, RowCodec, RowOutput, SchemaRowCodec};
 pub use convert::{

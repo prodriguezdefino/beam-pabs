@@ -21,7 +21,7 @@
 //! Beam rows into them.
 
 use std::fmt;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
@@ -29,7 +29,10 @@ use std::sync::Arc;
 use arrow_array::RecordBatch;
 use arrow_ipc::reader::StreamReader;
 use arrow_ipc::writer::StreamWriter;
-use beam::coders::{Coder, CoderError, CoderRegistry, Context, DefaultCoder, VarIntCoder};
+use beam::coders::{
+    Coder, CoderError, CoderRegistry, Context, DefaultCoder, URN_KV, VarIntCoder,
+    read_length_prefixed_slice,
+};
 use beam::schema::{BeamRow, Row, Schema};
 use beam::transforms::BatchConverter;
 
@@ -37,6 +40,63 @@ use crate::convert::{
     beam_rows_to_record_batch, record_batch_to_beam_rows, record_batch_to_rows,
     rows_to_record_batch,
 };
+
+/// Rows in Arrow IPC format, with their row count. A shuffle moves these, so
+/// [`EncodedBatchCoder`] writes the bytes with no copy into a row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EncodedBatch {
+    pub bytes: Vec<u8>,
+    pub rows: i64,
+}
+
+/// Encodes an [`EncodedBatch`] as `KV<varint, bytes>`. Both parts take the nested context,
+/// as [`DefaultCoder::encode_element`] writes them.
+#[derive(Clone, Debug, Default)]
+pub struct EncodedBatchCoder;
+
+impl Coder<EncodedBatch> for EncodedBatchCoder {
+    fn urn(&self) -> &'static str {
+        URN_KV
+    }
+
+    fn encode(
+        &self,
+        value: &EncodedBatch,
+        writer: &mut Vec<u8>,
+        _context: Context,
+    ) -> Result<(), CoderError> {
+        value.encode_element(writer)
+    }
+
+    fn decode(&self, reader: &mut &[u8], _context: Context) -> Result<EncodedBatch, CoderError> {
+        EncodedBatch::decode_element(reader)
+    }
+}
+
+impl DefaultCoder for EncodedBatch {
+    type Coder = EncodedBatchCoder;
+
+    fn coder() -> Self::Coder {
+        EncodedBatchCoder
+    }
+
+    fn encode_element(&self, writer: &mut Vec<u8>) -> Result<(), CoderError> {
+        self.rows.encode_element(writer)?;
+        self.bytes.encode_element(writer)
+    }
+
+    fn decode_element(reader: &mut &[u8]) -> Result<Self, CoderError> {
+        let rows = i64::decode_element(reader)?;
+        let bytes = Vec::<u8>::decode_element(reader)?;
+        Ok(Self { bytes, rows })
+    }
+
+    fn register_coder<R: CoderRegistry + ?Sized>(registry: &R) -> String {
+        let rows = i64::register_coder(registry);
+        let bytes = Vec::<u8>::register_coder(registry);
+        registry.register_coder(URN_KV, vec![rows, bytes])
+    }
+}
 
 /// A [`RecordBatch`] whose [`DefaultCoder`] uses the Arrow IPC streaming format.
 #[derive(Clone, Debug, PartialEq)]
@@ -117,10 +177,10 @@ impl Coder<ArrowRecordBatch> for ArrowRecordBatchCoder {
         reader: &mut &[u8],
         _context: Context,
     ) -> Result<ArrowRecordBatch, CoderError> {
-        let len = VarIntCoder::decode_varint(reader)? as usize;
-        let mut buffer = vec![0u8; len];
-        reader.read_exact(&mut buffer)?;
-        let mut stream_reader = StreamReader::try_new(std::io::Cursor::new(buffer), None)
+        // `read_length_prefixed_slice` checks the length against the input before it reads. The
+        // reader reads the IPC stream in place.
+        let stream = read_length_prefixed_slice(reader)?;
+        let mut stream_reader = StreamReader::try_new(stream, None)
             .map_err(|e| CoderError::Format(format!("Failed to create Arrow IPC reader: {e}")))?;
         let batch = stream_reader
             .next()
