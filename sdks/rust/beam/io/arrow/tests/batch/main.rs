@@ -134,6 +134,28 @@ fn test_arrow_record_batch_coder_roundtrip() {
 
     assert_eq!(decoded.num_rows(), batch.num_rows());
     assert_eq!(decoded.num_columns(), batch.num_columns());
+    assert!(cursor.is_empty(), "decode reads the whole element");
+}
+
+/// A length prefix larger than the input fails before any buffer of that length exists.
+#[test]
+fn test_arrow_record_batch_coder_rejects_a_length_past_the_input() {
+    let coder = ArrowRecordBatch::coder();
+    // The varint of i64::MAX, then 3 bytes.
+    let bytes = [
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f, 1, 2, 3,
+    ];
+    let err = coder
+        .decode(&mut &bytes[..], Context::WholeStream)
+        .expect_err("the length is past the input");
+    assert!(err.to_string().contains("bytes"), "{err}");
+
+    let negative = [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01];
+    assert!(
+        coder
+            .decode(&mut &negative[..], Context::WholeStream)
+            .is_err()
+    );
 }
 
 /// Registry that records each registration and returns its position as the id.

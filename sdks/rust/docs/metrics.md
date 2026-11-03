@@ -74,4 +74,5 @@ if let Some(metrics) = result.metrics() {
 
 **I/O and service metrics.**
 
-- `beam:metric:io:api_request_count:v1` and `beam:metric:io:api_request_latencies:v1` (*Planned*): standard connector metrics for Cloud Storage, BigQuery and HTTP services. The SDK defines the URNs, but no connector emits them.
+- Lineage: `beam::metrics::Lineage::sources()` and `Lineage::sinks()` record the resources that a connector reads and writes. They are string sets with the namespace `lineage` and the names `sources` and `sinks`. Each entry is `{system}:{segments}`. The BigQuery, Bigtable, Kafka and Iceberg connectors record lineage.
+- `beam:metric:io:api_request_count:v1` and `beam:metric:io:api_request_latencies:v1` (*Planned*): standard connector metrics for Cloud Storage, BigQuery and HTTP services. The model protos define the URNs, but no connector emits them.

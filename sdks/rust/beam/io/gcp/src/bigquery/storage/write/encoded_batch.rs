@@ -19,68 +19,9 @@
 
 //! Rows in Arrow IPC format, and the append requests that hold them.
 
-use beam::coders::{Coder, CoderError, CoderRegistry, Context, DefaultCoder, URN_KV};
+use beam_io_arrow::EncodedBatch;
 use bytes::Bytes;
 use google_cloud_bigquery::model::ArrowRecordBatch;
-
-/// Rows in Arrow IPC format, for one append request. The shuffle of an exactly-once write
-/// moves these, so [`EncodedBatchCoder`] writes the bytes with no copy into a row.
-#[derive(Clone, Debug, PartialEq)]
-#[doc(hidden)]
-pub struct EncodedBatch {
-    pub bytes: Vec<u8>,
-    pub rows: i64,
-}
-
-/// Encodes an [`EncodedBatch`] as `KV<varint, bytes>`. Both parts take the nested context,
-/// as [`DefaultCoder::encode_element`] writes them.
-#[derive(Clone, Debug, Default)]
-#[doc(hidden)]
-pub struct EncodedBatchCoder;
-
-impl Coder<EncodedBatch> for EncodedBatchCoder {
-    fn urn(&self) -> &'static str {
-        URN_KV
-    }
-
-    fn encode(
-        &self,
-        value: &EncodedBatch,
-        writer: &mut Vec<u8>,
-        _context: Context,
-    ) -> Result<(), CoderError> {
-        value.encode_element(writer)
-    }
-
-    fn decode(&self, reader: &mut &[u8], _context: Context) -> Result<EncodedBatch, CoderError> {
-        EncodedBatch::decode_element(reader)
-    }
-}
-
-impl DefaultCoder for EncodedBatch {
-    type Coder = EncodedBatchCoder;
-
-    fn coder() -> Self::Coder {
-        EncodedBatchCoder
-    }
-
-    fn encode_element(&self, writer: &mut Vec<u8>) -> Result<(), CoderError> {
-        self.rows.encode_element(writer)?;
-        self.bytes.encode_element(writer)
-    }
-
-    fn decode_element(reader: &mut &[u8]) -> Result<Self, CoderError> {
-        let rows = i64::decode_element(reader)?;
-        let bytes = Vec::<u8>::decode_element(reader)?;
-        Ok(Self { bytes, rows })
-    }
-
-    fn register_coder<R: CoderRegistry + ?Sized>(registry: &R) -> String {
-        let rows = i64::register_coder(registry);
-        let bytes = Vec::<u8>::register_coder(registry);
-        registry.register_coder(URN_KV, vec![rows, bytes])
-    }
-}
 
 /// The rows of one append request. A clone shares the bytes, so a writer keeps the rows of a
 /// request that it sent with no copy.

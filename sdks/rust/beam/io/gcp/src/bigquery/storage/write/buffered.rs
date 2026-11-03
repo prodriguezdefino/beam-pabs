@@ -35,10 +35,12 @@ use google_cloud_bigquery::write::format::Arrow;
 use google_cloud_gax::error::Error;
 use google_cloud_gax::error::rpc::Code;
 
+use beam_io_arrow::EncodedBatch;
+
 use super::append::{Failure, append_at};
 use super::client::{APPEND_RETRY, CALL_RETRY, open_decision, transient_decision, write_client};
 use super::encode::{Encoded, Encoder};
-use super::encoded_batch::{EncodedBatch, Request};
+use super::encoded_batch::Request;
 use super::projection::Selection;
 use super::table::Destination;
 use crate::runtime::block_on_async;
