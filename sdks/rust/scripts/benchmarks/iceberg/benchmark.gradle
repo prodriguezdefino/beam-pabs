@@ -1,0 +1,150 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Iceberg benchmark on Dataflow (`icebergBenchmark`): Kafka to an Iceberg table of the BigLake
+// REST catalog, in streaming.
+//
+// Shape `ingest`: read the DeviceMetric JSON records of -Ptopic, count each record in a step of
+// the pipeline language (e2e/rows, and e2e/latency_ms from the Kafka record timestamp), parse
+// it as the Python reference job does, and append it to a new table
+// <namespace>.ingest_<job name> with -Pwriter. The table is partitioned by the hour of
+// `timestamp_ms` and has the BigLake table properties of the reference job. With
+// -PexpectedRows=<n> or -PdrainAfterSeconds=<s>, the job drains at that count or time.
+//
+// The check after the job expects every record of the topic in the table, and drops the table
+// unless -PkeepTable. The topic is the reference, not the e2e/rows counter: a work item that
+// Dataflow rejects at commit still reports its counters, so the counter can be above the rows.
+// The reference is the largest committed offset of each partition over the consumer groups of
+// -PkafkaCluster, so the topic must start empty and one job must read all of it. The producer
+// is at least once, so the topic can hold a record twice. With -PkillWorkerAfterSeconds=<s>
+// (Rust pipeline), the script deletes one worker VM at that time.
+//
+// Writers (-Pwriter): rust (native Kafka read and native Iceberg write) in a Rust pipeline;
+// java-native (KafkaIO and IcebergIO) in a Java pipeline; java (Managed Kafka and Managed
+// Iceberg, the reference job) in a Python pipeline.
+//
+// The load comes from `kafkaBenchmark -Pshape=produce -Ppipeline=java` with
+// -PsamplePath=<gs://.../device_metrics.jsonl> (testdata/device_metrics.jsonl): its
+// placeholders give each record a unique id and the current time.
+//
+// A round:
+// 1. Create a new empty topic (-Ptopic).
+// 2. Start the ingest jobs, which read from the earliest offset, with
+//    -PdrainAfterSeconds=<startup + load + 300>.
+// 3. When they run, start the producer with -PdrainAfterSeconds=<load>, not detached.
+// 4. The ingest jobs have 5 idle minutes before their drain, more than the buffering time and
+//    the commit period.
+
+registerDataflowBenchmark(
+    task: 'icebergBenchmark',
+    compileTask: 'compileIcebergJavaBenchmark',
+    dir: 'iceberg',
+    label: 'iceberg',
+    jobPrefix: 'iceberg',
+    pythonScript: 'iceberg_benchmark.py',
+    mainClass: 'IcebergBenchmark',
+    counter: 'rows',
+    counterShapes: ['ingest'],
+    io: { shape -> [namespace: 'e2e', rows: 'rows', streaming: true, latency: 'latency_ms',
+                    buckets: 'latency_le_'] },
+    rustPackage: 'iceberg_benchmark',
+    rustWorkerTask: 'buildIcebergRustBenchmarkWorker',
+    rustShapes: ['ingest'],
+    defaultShape: 'ingest',
+    shapes: ['ingest'],
+    readShapes: [],
+    writeShapes: ['ingest'],
+    writers: [
+      python: ['java'],
+      java: ['java-native'],
+      rust: ['rust'],
+    ],
+    description: 'Stream DeviceMetric records from Kafka to a BigLake Iceberg table on Dataflow ' +
+        '([-Ppipeline=rust|java|python] -Pwriter=rust (Rust) or java-native (Java) or java ' +
+        '(Python) [-PbootstrapServers=<host:port>] [-Ptopic=device-metrics] ' +
+        '[-Pcatalog=<BigLake catalog>] [-Pnamespace=iceberg_bench] [-PtriggeringFrequency=60] ' +
+        '[-PnumShards=<n>] [-PobjectStorage] [-PautoOffsetReset=earliest|latest] [-PgroupId=<id>] ' +
+        '[-PkafkaCluster=iceberg-bench] ' +
+        '[-PexpectedRows=<n>] [-PdrainAfterSeconds=<s>] [-PkillWorkerAfterSeconds=<s>, rust only] ' +
+        '[-PkeepTable] ' +
+        '[-PnumWorkers=4] [-PmaxNumWorkers=<n>] [-PworkerMachineType=n2-standard-4] ' +
+        '[-PextraArgs="<pipeline flags>"])',
+    configure: { Map run ->
+      def bootstrapServers = (project.findProperty('bootstrapServers') ?:
+          benchProps('bootstrapServers'))?.toString()
+      def catalog = (project.findProperty('catalog') ?: benchProps('icebergCatalog'))?.toString()
+      if (!bootstrapServers || !catalog) {
+        throw new GradleException('Set -PbootstrapServers and -Pcatalog (or ' +
+            'example.benchmark.bootstrapServers and example.benchmark.icebergCatalog in ' +
+            'sdks/rust/.local/sdk.properties).')
+      }
+      def gcpProject = gcpProjectFrom(benchProps) ?: '<gcpProject>'
+      def region = benchProps('gcpRegion', 'GCP_REGION', 'us-central1').toString()
+      def namespace = (project.findProperty('namespace') ?: 'iceberg_bench').toString()
+      def table = "${namespace}.ingest_{job_name_underscore}"
+      def autoOffsetReset = (project.findProperty('autoOffsetReset') ?: 'earliest').toString()
+      if (!['earliest', 'latest'].contains(autoOffsetReset)) {
+        throw new GradleException("Unknown autoOffsetReset '${autoOffsetReset}': use earliest or latest.")
+      }
+      def frequency = (project.findProperty('triggeringFrequency') ?: '60').toString()
+      def topic = (project.findProperty('topic') ?: 'device-metrics').toString()
+      def kafkaCluster = (project.findProperty('kafkaCluster') ?: benchProps('kafkaCluster') ?:
+          'iceberg-bench').toString()
+      def args = [
+        "${run.flag('bootstrap_servers')}=${bootstrapServers}",
+        "--topic=${topic}",
+        "${run.flag('auto_offset_reset')}=${autoOffsetReset}",
+        "--warehouse=bl://projects/${gcpProject}/catalogs/${catalog}",
+        "--table=${table}",
+        "${run.flag('user_project')}=${gcpProject}",
+        "${run.flag('gcp_location')}=${region}",
+        "${run.flag('triggering_frequency_seconds')}=${frequency}",
+      ]
+      ['groupId': 'group_id', 'expectedRows': 'expected_rows',
+       'drainAfterSeconds': 'drain_after_seconds', 'numShards': 'num_shards',
+       'killWorkerAfterSeconds': 'kill_worker_after_seconds'].each { prop, flag ->
+        def value = project.findProperty(prop)?.toString()
+        if (value) {
+          args << "${run.flag(flag)}=${value}"
+        }
+      }
+      if (project.hasProperty('objectStorage') && project.property('objectStorage').toString() != 'false') {
+        args << run.flag('object_storage')
+      }
+      [
+        catalog: catalog,
+        gcpProject: gcpProject,
+        region: region,
+        table: table,
+        kafkaTopic: "${kafkaCluster}/${topic}",
+        labels: [frequency: "${frequency}s", offset: autoOffsetReset],
+        args: args,
+      ]
+    },
+    after: { spec ->
+      def args = [
+        "${benchVenv}/bin/python", "${rustDir}/scripts/benchmarks/tools/check_iceberg_table.py",
+        "--table=${spec.table}", "--catalog=${spec.catalog}", "--project=${spec.gcpProject}",
+        "--region=${spec.region}", "--kafka_topic=${spec.kafkaTopic}", '--distinct_column=id,timestamp_ms',
+      ]
+      if (!project.hasProperty('keepTable')) {
+        args << '--drop'
+      }
+      args
+    },
+)

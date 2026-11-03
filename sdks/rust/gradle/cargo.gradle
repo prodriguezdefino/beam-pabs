@@ -41,7 +41,7 @@ ext.beamCargoEnv = [
 
 // The benchmark pipelines under scripts/benchmarks. The lifecycle tasks leave them out, so
 // every build does not compile them. `checkBenchmarks` and the benchmark tasks build them.
-ext.benchmarkPackages = ['bigtable_benchmark', 'kafka_benchmark']
+ext.benchmarkPackages = ['bigtable_benchmark', 'iceberg_benchmark', 'kafka_benchmark']
 ext.workspaceScope = ['--workspace'] + benchmarkPackages.collectMany { ['--exclude', it] }
 
 // -Ppkg=<crate> narrows `build` and `test` to one crate; the default is the workspace but the

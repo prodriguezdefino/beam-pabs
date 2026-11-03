@@ -37,6 +37,7 @@ members = [
     "beam/testing",
     "examples/*",
     "scripts/benchmarks/bigtable/rust",
+    "scripts/benchmarks/iceberg/rust",
     "scripts/benchmarks/kafka/rust",
 ]
 # Every member except the benchmark pipelines, so a bare `cargo build`, `cargo clippy` or

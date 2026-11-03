@@ -94,11 +94,30 @@ configurations {
     }
   }
 }
+// Some jars publish only a shadowed variant, for example iceberg-bundled-guava of IcebergIO.
+// The javaBenchmark configuration asks for external bundling, so accept a shadowed jar too.
+class ShadowedIsExternal implements AttributeCompatibilityRule<Bundling> {
+  void execute(CompatibilityCheckDetails<Bundling> details) {
+    if (details.consumerValue?.name == Bundling.EXTERNAL &&
+        details.producerValue?.name == Bundling.SHADOWED) {
+      details.compatible()
+    }
+  }
+}
+dependencies.attributesSchema {
+  attribute(Bundling.BUNDLING_ATTRIBUTE) {
+    compatibilityRules.add(ShadowedIsExternal)
+  }
+}
 dependencies {
   ['beam-sdks-java-core', 'beam-sdks-java-managed', 'beam-sdks-java-io-google-cloud-platform',
-   'beam-sdks-java-io-kafka', 'beam-runners-google-cloud-dataflow-java'].each {
+   'beam-sdks-java-io-kafka', 'beam-sdks-java-io-iceberg',
+   'beam-runners-google-cloud-dataflow-java'].each {
     javaBenchmark "org.apache.beam:${it}:${benchBeamVersion}"
   }
+  // The IcebergIO POM leaves out its runtime catalog modules. The BigLake catalog needs the
+  // Google auth manager and GCSFileIO of iceberg-gcp. Keep the version of IcebergIO.
+  javaBenchmark 'org.apache.iceberg:iceberg-gcp:1.11.0'
   // KafkaIO compiles with kafka-clients as provided, so the worker classpath needs it explicitly.
   javaBenchmark 'org.apache.kafka:kafka-clients:3.9.2'
   // The JSON format of KafkaIO reads JSON Schemas with everit, which Beam does not ship.
@@ -142,7 +161,8 @@ def benchSet = { String name ->
 
 // The flags of a streaming job that the benchmark script handles for a Rust pipeline. The Rust
 // program submits the job with --async_job and stops. See scripts/benchmarks/job_wait.py.
-def rustWaitFlags = ['--expected_rows', '--drain_after_seconds', '--detach']
+def rustWaitFlags = ['--expected_rows', '--drain_after_seconds', '--detach',
+                     '--kill_worker_after_seconds']
 
 def flagValue = { List<String> args, String flag ->
   args.find { it.startsWith("${flag}=") }?.substring(flag.length() + 1)
@@ -156,7 +176,8 @@ def waitFor = { String pipeline, List<String> args, String counter ->
   }
   [async: true, detach: detach ?: null, counter: counter,
    expected_rows: flagValue(args, '--expected_rows')?.toLong(),
-   drain_after_seconds: flagValue(args, '--drain_after_seconds')?.toLong()].findAll { it.value != null }
+   drain_after_seconds: flagValue(args, '--drain_after_seconds')?.toLong(),
+   kill_worker_after_seconds: flagValue(args, '--kill_worker_after_seconds')?.toLong()].findAll { it.value != null }
 }
 
 // The launch command of the program of `pipeline` with `args`. The script of
@@ -230,7 +251,7 @@ def checkChoices = { Map cfg, String shape, boolean reads, boolean writes ->
     throw new GradleException("The Rust pipeline runs only ${(cfg.rustShapes ?: []).join(', ')}, " +
         "not shape '${shape}'.")
   }
-  [[reads, 'reader', benchReaders, cfg.readers, cfg.readShapes ?: cfg.shapes],
+  [[reads, 'reader', benchReaders, cfg.readers, cfg.containsKey('readShapes') ? cfg.readShapes : cfg.shapes],
    [writes, 'writer', benchWriters, cfg.writers, cfg.writeShapes]].each { used, noun, chosen, known, shapes ->
     def valid = ((known ?: [:])[benchPipeline] ?: []).join(', ')
     if (!used && (project.hasProperty(noun) || project.hasProperty("${noun}s"))) {
@@ -293,7 +314,7 @@ def benchVariant = { Map cfg, Map job, String reader, String writer ->
 ext.registerDataflowBenchmark = { Map cfg ->
   def benchDir = "${rustDir}/scripts/benchmarks/${cfg.dir}"
   def shape = (project.findProperty('shape') ?: (cfg.defaultShape ?: 'count')).toString()
-  def reads = (cfg.readShapes ?: cfg.shapes ?: []).contains(shape)
+  def reads = ((cfg.containsKey('readShapes') ? cfg.readShapes : cfg.shapes) ?: []).contains(shape)
   def writes = (cfg.writeShapes ?: []).contains(shape)
   def usesRust = benchPipeline != 'rust' &&
       ((reads && benchReaders.contains('rust')) || (writes && benchWriters.contains('rust')))

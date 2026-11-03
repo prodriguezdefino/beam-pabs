@@ -73,6 +73,18 @@ class TestJobWait(unittest.TestCase):
     _, drains, _ = run_wait({"async": True, "drain_after_seconds": 90}, states)
     self.assertEqual(len(drains), 1)
 
+  def test_streaming_job_loses_one_worker_once_after_the_time(self):
+    clock, kills, drains = Clock(), [], []
+    polls = iter([job("RUNNING")] * 5 + [job("DRAINED")])
+    with contextlib.redirect_stdout(io.StringIO()):
+      result = job_wait.wait({"async": True, "kill_worker_after_seconds": 60,
+                              "drain_after_seconds": 120},
+                             lambda: next(polls), lambda j: None, drains.append,
+                             kill=kills.append, sleep=clock.sleep, clock=lambda: clock.now)
+    self.assertEqual(kills, [job("RUNNING")])
+    self.assertEqual(len(drains), 1)
+    self.assertIsNone(result["error"])
+
   def test_errors(self):
     result, _, _ = run_wait({"async": True}, [job("FAILED")])
     self.assertEqual(result["error"], "job ended in JOB_STATE_FAILED")

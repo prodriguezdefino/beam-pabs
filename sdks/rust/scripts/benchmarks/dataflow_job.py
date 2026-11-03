@@ -421,6 +421,21 @@ def drain(project: str, region: str, job_id: str) -> None:
                   f"--region={region}"], check=False)
 
 
+def kill_worker(project: str, job_id: str) -> None:
+  """Deletes one worker VM of the job, for a fault test. Dataflow replaces it."""
+  listed = subprocess.run(
+      ["gcloud", "compute", "instances", "list", f"--project={project}",
+       f"--filter=labels.dataflow_job_id={job_id}", "--format=value(name,zone.basename())"],
+      check=False, capture_output=True, text=True).stdout.split()
+  if len(listed) < 2:
+    print(f"No worker VM of job {job_id} to delete", flush=True)
+    return
+  name, zone = listed[0], listed[1]
+  print(f"Delete worker VM {name} in {zone}", flush=True)
+  subprocess.run(["gcloud", "compute", "instances", "delete", name, f"--project={project}",
+                  f"--zone={zone}", "--quiet"], check=False)
+
+
 def after(variant: report.Variant, values: Dict[str, Any], base: str) -> Optional[str]:
   """Runs the "after" command of a variant, for example a check of the output. An error, or
   None."""
@@ -470,7 +485,8 @@ def launch(args: argparse.Namespace, variant: report.Variant, round_number: int,
     counter = spec.get("counter", "")
     waited = job_wait.wait(spec, poll,
                            lambda j: counter_value(args.project, args.region, j["id"], counter),
-                           lambda j: drain(args.project, args.region, j["id"]))
+                           lambda j: drain(args.project, args.region, j["id"]),
+                           kill=lambda j: kill_worker(args.project, j["id"]))
     job = waited["job"] or job
     record["platforms"] = sorted(platforms)
   with open(f"{base}.log") as f:
