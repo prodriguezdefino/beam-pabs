@@ -110,7 +110,8 @@ directory: it holds the function names.
 
 ## Benchmarks
 
-[gradle/benchmarks.gradle](../gradle/benchmarks.gradle) defines the benchmarks. Each runs
+[gradle/benchmarks.gradle](../gradle/benchmarks.gradle) defines the benchmarks, and
+[gradle/nexmark.gradle](../gradle/nexmark.gradle) the Nexmark tasks. Each benchmark runs
 some rounds (`-Pruns`, default 3), one after the other, and writes `results.json` and
 `report.md` to `build/reports/benchmarks/<task>-<timestamp>/`. The report gives each run and
 the medians. The scripts are in [scripts/benchmarks/](../scripts/benchmarks/).
