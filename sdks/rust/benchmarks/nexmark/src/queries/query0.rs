@@ -33,7 +33,7 @@ impl PTransform<PCollection<Event>> for Query0 {
     type Output = PCollection<Event>;
 
     fn expand(&self, input: &PCollection<Event>) -> PCollection<Event> {
-        input.apply("Serialize", ParDo::new(Query0Fn::default()))
+        input.par_do("Serialize", Query0Fn::default())
     }
 }
 

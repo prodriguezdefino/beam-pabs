@@ -17,25 +17,56 @@
  * under the License.
  */
 
-//! Batch Prism integration tests for `BoundedEventSource` and `Query0`.
+//! Batch Prism integration tests for `BoundedEventSource` and Nexmark queries.
+
+mod stateless;
+mod utility_and_side_inputs;
+mod windowed;
+
+use std::collections::BTreeMap;
+use std::fmt::Debug;
 
 use beam::coders::{Coder, Context, DefaultCoder};
 use beam::prelude::*;
 use beam::testing::{TestPipeline, TestPipelineError, passert};
 use nexmark::config::{NexmarkConfig, NexmarkQueryName, RateShape, RateUnit};
-use nexmark::model::EventCoder;
+use nexmark::model::{BidsPerSession, Event, EventCoder};
 use nexmark::models;
 use nexmark::queries::Query0;
 use nexmark::source::BoundedEventSource;
 
-fn stamp<T: DefaultCoder>(pcoll: &PCollection<T>) -> PCollection<(T, Instant)> {
+pub(crate) fn stamp<T: DefaultCoder>(pcoll: &PCollection<T>) -> PCollection<(T, Instant)> {
     pcoll.par_do_fn("Stamp", |elem: T, ctx| {
         let ts = ctx.timestamp();
         ctx.emit((elem, ts))
     })
 }
 
-fn expected_whole_stream_bytes(config: &NexmarkConfig) -> i64 {
+pub(crate) async fn assert_query_matches_model<Q, Out>(
+    label: &str,
+    config: &NexmarkConfig,
+    query: Q,
+    expected: Vec<(Out, Instant)>,
+) -> std::result::Result<(), TestPipelineError>
+where
+    Q: PTransform<PCollection<Event>, Output = PCollection<Out>>,
+    Out: DefaultCoder + Clone + PartialEq + Debug + Send + Sync + 'static,
+{
+    assert!(
+        !expected.is_empty(),
+        "{label} reference model produced zero outputs"
+    );
+    let p = TestPipeline::new();
+    let stamped = stamp(
+        &p.apply("ReadEvents", BoundedEventSource::new(config))
+            .apply(label, query),
+    );
+    passert::that(format!("{label}MatchesModel"), &stamped).contains_in_any_order(expected);
+    p.run().await?;
+    Ok(())
+}
+
+pub(crate) fn expected_whole_stream_bytes(config: &NexmarkConfig) -> i64 {
     models::query0(config)
         .into_iter()
         .fold((Vec::new(), 0_i64), |(mut buf, total), (event, _)| {
@@ -47,6 +78,36 @@ fn expected_whole_stream_bytes(config: &NexmarkConfig) -> i64 {
             (buf, total + added)
         })
         .1
+}
+
+pub(crate) fn expected_bid_counts_by_bidder(config: &NexmarkConfig) -> BTreeMap<i64, i64> {
+    models::query1(config)
+        .into_iter()
+        .fold(BTreeMap::new(), |mut counts, (bid, _)| {
+            *counts.entry(bid.bidder).or_insert(0) += 1;
+            counts
+        })
+}
+
+pub(crate) fn check_session_totals(
+    actual: &[BidsPerSession],
+    expected_totals: &BTreeMap<i64, i64>,
+) -> Result {
+    if actual.is_empty() {
+        return Err("expected non-empty BidsPerSession output".into());
+    }
+    if let Some(invalid) = actual.iter().find(|r| r.bids_per_session <= 0) {
+        return Err(format!("non-positive session count: {invalid:?}").into());
+    }
+    let summed = actual.iter().fold(BTreeMap::new(), |mut acc, record| {
+        *acc.entry(record.person_id).or_insert(0) += record.bids_per_session;
+        acc
+    });
+    if &summed == expected_totals {
+        Ok(())
+    } else {
+        Err(format!("summed bidder counts {summed:?} != expected {expected_totals:?}").into())
+    }
 }
 
 #[tokio::test]
