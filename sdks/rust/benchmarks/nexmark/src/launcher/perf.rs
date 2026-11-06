@@ -19,6 +19,8 @@
 
 //! Performance figures of one query run, from the [`Monitor`](super::Monitor) metrics.
 
+use std::time::Duration;
+
 use beam::metrics::MetricResults;
 
 use super::monitor::{
@@ -103,4 +105,57 @@ impl NexmarkPerf {
 
 fn seconds(millis: i64) -> f64 {
     millis as f64 / 1000.0
+}
+
+/// Counts that one poll of a streaming job read.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ProgressSnapshot {
+    /// Seconds from the job submission to the poll.
+    pub seconds_since_start: f64,
+    /// [`NexmarkPerf::runtime_sec`] at the poll.
+    pub runtime_sec: Option<f64>,
+    pub events: Option<i64>,
+    pub results: Option<i64>,
+}
+
+/// Fewest samples that give a steady-state rate.
+const MIN_STEADY_SAMPLES: usize = 9;
+
+/// Event rate fitted by least squares over the middle third of the snapshots with progress.
+///
+/// The fit uses the runtime, not the poll time, so delays in polling do not change it.
+/// Gives `None` with fewer than 9 samples or a middle third shorter than `min_window`.
+pub fn steady_state_events_per_sec(
+    snapshots: &[ProgressSnapshot],
+    min_window: Duration,
+) -> Option<f64> {
+    let start = snapshots.iter().position(|s| s.events.is_some())?;
+    let changed = |i: usize| {
+        let (now, before) = (&snapshots[i], &snapshots[i - 1]);
+        (now.events, now.results) != (before.events, before.results)
+    };
+    let end = (start + 1..snapshots.len())
+        .rev()
+        .find(|&i| changed(i))
+        .unwrap_or(start);
+    let samples = end - start + 1;
+    if samples < MIN_STEADY_SAMPLES {
+        return None;
+    }
+    let middle = &snapshots[start + samples / 3..=end - samples / 3];
+    let span = middle.last()?.seconds_since_start - middle.first()?.seconds_since_start;
+    if span < min_window.as_secs_f64() {
+        return None;
+    }
+    let (sum_xx, sum_xy, _) = middle.iter().fold(
+        (0.0, 0.0, None),
+        |(sum_xx, sum_xy, previous), snapshot| match (snapshot.events, snapshot.runtime_sec) {
+            // A sample without new events adds no data.
+            (Some(events), Some(x)) if previous != Some(events) => {
+                (sum_xx + x * x, sum_xy + x * events as f64, Some(events))
+            }
+            _ => (sum_xx, sum_xy, previous),
+        },
+    );
+    (sum_xx > 0.0).then(|| sum_xy / sum_xx)
 }

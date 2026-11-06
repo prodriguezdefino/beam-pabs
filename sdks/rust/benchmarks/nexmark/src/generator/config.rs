@@ -180,6 +180,14 @@ impl GeneratorConfig {
             + num_bids * (self.configuration.avg_bid_byte_size as i64)
     }
 
+    /// Mean estimated byte size of one event, weighted by the event-kind proportions.
+    pub fn avg_event_bytes(&self) -> f64 {
+        let weighted = Self::PERSON_PROPORTION * i64::from(self.configuration.avg_person_byte_size)
+            + Self::AUCTION_PROPORTION * i64::from(self.configuration.avg_auction_byte_size)
+            + Self::BID_PROPORTION * i64::from(self.configuration.avg_bid_byte_size);
+        weighted as f64 / Self::PROPORTION_DENOMINATOR as f64
+    }
+
     /// First unadjusted event ID covered by this configuration.
     pub const fn start_event_id(&self) -> i64 {
         self.first_event_id + self.first_event_number

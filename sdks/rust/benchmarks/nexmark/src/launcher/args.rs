@@ -166,6 +166,15 @@ pub struct NexmarkArgs {
     /// Log each query result at the `info` level.
     #[arg(long)]
     pub log_results: bool,
+
+    /// Seconds that a streaming run may last after its first event before the launcher
+    /// cancels it.
+    #[arg(long)]
+    pub stream_timeout: Option<i32>,
+
+    /// Cancel a finished streaming job instead of draining it.
+    #[arg(long)]
+    pub cancel_streaming_job_after_finish: bool,
 }
 
 impl Default for NexmarkArgs {
@@ -205,6 +214,8 @@ impl Default for NexmarkArgs {
             assert_correctness: false,
             log_events: false,
             log_results: false,
+            stream_timeout: None,
+            cancel_streaming_job_after_finish: false,
         }
     }
 }
@@ -264,6 +275,7 @@ impl NexmarkArgs {
             next_event_rate: self.next_event_rate.unwrap_or(base.next_event_rate),
             rate_unit: self.rate_unit.unwrap_or(base.rate_unit),
             rate_period_sec: self.rate_period_sec.unwrap_or(base.rate_period_sec),
+            stream_timeout: self.stream_timeout.unwrap_or(base.stream_timeout),
             is_rate_limited: self.is_rate_limited.unwrap_or(base.is_rate_limited),
             use_wallclock_event_time: self
                 .use_wallclock_event_time

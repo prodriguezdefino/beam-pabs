@@ -24,18 +24,25 @@ use beam::prelude::*;
 use beam::testing::passert;
 
 use super::NexmarkArgs;
-use super::perf::NexmarkPerf;
+use super::perf::{NexmarkPerf, ProgressSnapshot, steady_state_events_per_sec};
 use super::pipeline::{LauncherError, build_nexmark_pipeline, is_prism_runner};
-use crate::config::NexmarkQueryName;
+use super::stop::{MonitorTiming, StopRules};
+use super::watch::{StopReason, StreamingRun, monitor_streaming_job};
+use crate::config::{NexmarkConfig, NexmarkQueryName};
 
 const PRISM_QUERY11_SKIP_REASON: &str = "apache/beam#31438";
 
 /// Execution outcome recorded for one query in a suite run.
 #[derive(Clone, Debug, PartialEq)]
 pub enum NexmarkRunOutcome {
-    /// The job finished and its checks passed.
-    Executed(NexmarkPerf),
-    /// The job failed, or a `--assert_correctness` check did not pass.
+    /// The job ran and its checks passed.
+    Executed {
+        perf: NexmarkPerf,
+        stop: StopReason,
+        /// One entry per poll of a streaming job. Empty in batch mode.
+        snapshots: Vec<ProgressSnapshot>,
+    },
+    /// The job failed, the monitor cancelled it, or a `--assert_correctness` check failed.
     Failed { reason: String },
     /// Pipeline was skipped before submission.
     Skipped { reason: &'static str },
@@ -50,10 +57,12 @@ pub struct QueryRunSummary {
 
 /// Executes every query resolved from `args` and prints a summary table on the driver.
 ///
-/// A failed job gives a [`NexmarkRunOutcome::Failed`] row, and the suite continues.
+/// A failed job gives a [`NexmarkRunOutcome::Failed`] row, and the suite continues. `timing`
+/// controls the polling and the stop rules of streaming jobs.
 pub async fn run_nexmark(
     options: &PipelineOptions,
     args: &NexmarkArgs,
+    timing: &MonitorTiming,
 ) -> Result<Vec<QueryRunSummary>, LauncherError> {
     let configs = args.resolve_configs();
     let multi_query = configs.len() > 1;
@@ -96,12 +105,18 @@ pub async fn run_nexmark(
             };
             tracing::info!(%query, "skipping --assert_correctness: {reason}");
         }
-        let outcome = match execute(&pipeline).await {
-            Ok(perf) => NexmarkRunOutcome::Executed(perf),
-            Err(err) => NexmarkRunOutcome::Failed {
-                reason: err.to_string(),
-            },
+        let run = RunSettings {
+            streaming: options.streaming,
+            config: &config,
+            args,
+            timing,
         };
+        let outcome =
+            execute(&pipeline, &run)
+                .await
+                .unwrap_or_else(|err| NexmarkRunOutcome::Failed {
+                    reason: err.to_string(),
+                });
         summaries.push(QueryRunSummary { query, outcome });
     }
 
@@ -112,21 +127,69 @@ pub async fn run_nexmark(
     Ok(summaries)
 }
 
-/// Submits `pipeline`, waits for the job, checks its assertions and computes its performance.
-async fn execute(pipeline: &Pipeline) -> Result<NexmarkPerf, LauncherError> {
+/// The settings of one query run that [`execute`] needs.
+struct RunSettings<'a> {
+    streaming: bool,
+    config: &'a NexmarkConfig,
+    args: &'a NexmarkArgs,
+    timing: &'a MonitorTiming,
+}
+
+/// Submits `pipeline`, waits for or monitors the job, and computes its performance.
+async fn execute(
+    pipeline: &Pipeline,
+    run: &RunSettings<'_>,
+) -> Result<NexmarkRunOutcome, LauncherError> {
     let submit_ms = Instant::now().as_millis();
     let job = pipeline.submit().await?;
-    let result = job.wait_until_finish(None).await?;
-    if !result.state.is_successful() {
-        return Err(LauncherError::Unsuccessful(result.state));
-    }
-    // A check whose input never closes does not fail the job, so require each check to pass.
-    let assertions = passert::assertion_names(pipeline);
-    if !assertions.is_empty() {
-        passert::verify_assertions(&result, &assertions).map_err(LauncherError::Correctness)?;
-    }
-    let metrics = result.metrics.unwrap_or_default();
-    Ok(NexmarkPerf::from_metrics(&metrics, submit_ms))
+    let StreamingRun {
+        metrics,
+        stop,
+        snapshots,
+    } = match run.streaming {
+        true => {
+            let rules = StopRules::new(run.timing, run.config);
+            let cancel = run.args.cancel_streaming_job_after_finish;
+            monitor_streaming_job(job.as_ref(), run.timing, rules, cancel, submit_ms).await?
+        }
+        false => {
+            let result = job.wait_until_finish(None).await?;
+            if !result.state.is_successful() {
+                return Err(LauncherError::Unsuccessful(result.state));
+            }
+            // A check whose input never closes does not fail the job, so require each check
+            // to pass.
+            let assertions = passert::assertion_names(pipeline);
+            if !assertions.is_empty() {
+                passert::verify_assertions(&result, &assertions)
+                    .map_err(LauncherError::Correctness)?;
+            }
+            StreamingRun {
+                metrics: result.metrics.unwrap_or_default(),
+                stop: StopReason::Finished,
+                snapshots: Vec::new(),
+            }
+        }
+    };
+    let perf = NexmarkPerf::from_metrics(&metrics, submit_ms);
+    let perf = match steady_state_events_per_sec(&snapshots, run.timing.min_steady_window) {
+        Some(rate) => {
+            tracing::info!(
+                "revising events/sec from {:?} to the steady-state {rate:.1}",
+                perf.events_per_sec
+            );
+            NexmarkPerf {
+                events_per_sec: Some(rate),
+                ..perf
+            }
+        }
+        None => perf,
+    };
+    Ok(NexmarkRunOutcome::Executed {
+        perf,
+        stop,
+        snapshots,
+    })
 }
 
 /// Formats query run summaries into a fixed-width ASCII table.
@@ -149,7 +212,10 @@ pub fn format_summary_table(summaries: &[QueryRunSummary]) -> String {
     let separator = "-".repeat(header.len());
     let rows = summaries.iter().map(|summary| {
         let (status, perf) = match &summary.outcome {
-            NexmarkRunOutcome::Executed(perf) => ("OK".to_owned(), *perf),
+            NexmarkRunOutcome::Executed { perf, stop, .. } => match stop {
+                StopReason::Finished => ("OK".to_owned(), *perf),
+                StopReason::TimedOut => ("TIMEOUT".to_owned(), *perf),
+            },
             NexmarkRunOutcome::Failed { .. } => ("FAILED".to_owned(), NexmarkPerf::default()),
             NexmarkRunOutcome::Skipped { reason } => {
                 (format!("SKIPPED ({reason})"), NexmarkPerf::default())
@@ -177,7 +243,7 @@ pub fn format_summary_table(summaries: &[QueryRunSummary]) -> String {
                 summary.query.number(),
                 summary.query.as_str()
             )),
-            NexmarkRunOutcome::Executed(_) | NexmarkRunOutcome::Skipped { .. } => None,
+            NexmarkRunOutcome::Executed { .. } | NexmarkRunOutcome::Skipped { .. } => None,
         });
     let body: String = rows.map(|row| row + "\n").collect();
     let notes: String = failures.collect();

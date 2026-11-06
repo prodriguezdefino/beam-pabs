@@ -19,6 +19,7 @@
 
 //! Streaming Prism integration tests for `UnboundedEventSource`, `Query10`, and Nexmark queries.
 
+mod launcher;
 mod queries;
 mod query10;
 mod source;

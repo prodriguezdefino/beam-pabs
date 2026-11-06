@@ -59,6 +59,8 @@ pub enum LauncherError {
     Unsuccessful(JobState),
     /// A `--assert_correctness` check did not run or did not pass.
     Correctness(String),
+    /// The streaming monitor cancelled the job because of fatal errors or no progress.
+    Stopped(String),
 }
 
 impl fmt::Display for LauncherError {
@@ -71,6 +73,7 @@ impl fmt::Display for LauncherError {
             Self::Runner(err) => write!(f, "pipeline execution error: {err}"),
             Self::Unsuccessful(state) => write!(f, "job ended in state {state}"),
             Self::Correctness(reason) => write!(f, "correctness check failed: {reason}"),
+            Self::Stopped(reason) => write!(f, "streaming job cancelled: {reason}"),
         }
     }
 }
@@ -80,7 +83,10 @@ impl std::error::Error for LauncherError {
         match self {
             Self::Options(err) => Some(err),
             Self::Runner(err) => Some(err),
-            Self::MissingOutputPath | Self::Unsuccessful(_) | Self::Correctness(_) => None,
+            Self::MissingOutputPath
+            | Self::Unsuccessful(_)
+            | Self::Correctness(_)
+            | Self::Stopped(_) => None,
         }
     }
 }

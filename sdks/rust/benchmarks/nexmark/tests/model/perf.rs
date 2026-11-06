@@ -17,12 +17,14 @@
  * under the License.
  */
 
+use std::time::Duration;
+
 use beam::metrics::{
     DistributionValue, MetricKey, MetricPhase, MetricReading, MetricResults, MetricValue,
 };
 use nexmark::launcher::{
     BYTES, ELEMENTS, EVENT_TIMESTAMP_MS, EVENTS, METRIC_NAMESPACE, NexmarkPerf, PROCESSING_TIME_MS,
-    RESULTS, metric_name,
+    ProgressSnapshot, RESULTS, metric_name, steady_state_events_per_sec,
 };
 
 const SUBMIT_MS: i64 = 1_000_000;
@@ -167,4 +169,60 @@ fn events_without_results_use_the_last_event_as_the_end() {
     assert_eq!(perf.num_results, None);
     assert_eq!(perf.processing_delay_sec, None);
     assert_eq!(perf.time_dilation, None);
+}
+
+/// Snapshots one second apart with `rate` events per second of runtime, then `flat` polls
+/// without progress.
+fn steady_snapshots(count: usize, rate: i64, flat: usize) -> Vec<ProgressSnapshot> {
+    let moving = (0..count).map(|i| ProgressSnapshot {
+        seconds_since_start: (i + 5) as f64,
+        runtime_sec: Some(i as f64),
+        events: Some(rate * i as i64),
+        results: None,
+    });
+    let last = count.saturating_sub(1);
+    let idle = (1..=flat).map(move |j| ProgressSnapshot {
+        seconds_since_start: (last + 5 + j) as f64,
+        runtime_sec: Some(last as f64),
+        events: Some(rate * last as i64),
+        results: None,
+    });
+    moving.chain(idle).collect()
+}
+
+#[test]
+fn steady_state_fits_the_rate_of_the_middle_third() {
+    let snapshots = steady_snapshots(12, 250, 4);
+    assert_close(
+        steady_state_events_per_sec(&snapshots, Duration::from_secs(2)),
+        250.0,
+    );
+
+    let without_counts = [ProgressSnapshot {
+        seconds_since_start: 1.0,
+        runtime_sec: None,
+        events: None,
+        results: None,
+    }; 3];
+    let late_start: Vec<ProgressSnapshot> = without_counts
+        .into_iter()
+        .chain(steady_snapshots(12, 40, 0))
+        .collect();
+    assert_close(
+        steady_state_events_per_sec(&late_start, Duration::from_secs(2)),
+        40.0,
+    );
+}
+
+#[test]
+fn steady_state_needs_enough_samples_and_time() {
+    assert_eq!(
+        steady_state_events_per_sec(&steady_snapshots(8, 100, 10), Duration::ZERO),
+        None
+    );
+    assert_eq!(
+        steady_state_events_per_sec(&steady_snapshots(12, 100, 0), Duration::from_secs(30)),
+        None
+    );
+    assert_eq!(steady_state_events_per_sec(&[], Duration::ZERO), None);
 }

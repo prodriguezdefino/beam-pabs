@@ -189,16 +189,18 @@ impl SplittableDoFn for UnboundedGeneratorFn {
         }
     }
 
+    /// Backlog in estimated bytes: the unclaimed offsets at the average event size plus the
+    /// held-back events. The tracker reports its remaining work in the same unit.
     fn restriction_size(&self, _element: &Self::In, restriction: &Self::Restriction) -> f64 {
-        let count = restriction.end.saturating_sub(restriction.start).max(0)
-            + (restriction.held_back.len() as i64);
-        self.root.estimated_bytes_for_events(count).max(1) as f64
+        restriction
+            .estimated_bytes(self.root.avg_event_bytes())
+            .max(1.0)
     }
 
     fn create_tracker(&self, restriction: &Self::Restriction) -> Self::Tracker {
         WatermarkedTracker::new(
             // SplittableDoFn::create_tracker borrows &Restriction while the tracker mutates its queue.
-            GeneratorRestrictionTracker::new(restriction.clone()),
+            GeneratorRestrictionTracker::new(restriction.clone(), self.root.avg_event_bytes()),
             ManualWatermarkEstimator::default(),
         )
         .with_boundedness(IsBounded::Unbounded)

@@ -82,7 +82,6 @@ impl FromStr for SinkType {
 /// Parameters for event synthesis and query execution.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NexmarkConfig {
-    pub debug: bool,
     pub query: Option<NexmarkQueryName>,
     pub source_type: SourceType,
     pub sink_type: SinkType,
@@ -96,6 +95,8 @@ pub struct NexmarkConfig {
     pub next_event_rate: i32,
     pub rate_unit: RateUnit,
     pub rate_period_sec: i32,
+    /// Seconds that a streaming run may last after its first event. The launcher then
+    /// cancels the job.
     pub stream_timeout: i32,
     pub is_rate_limited: bool,
     /// Anchor event timestamps to wallclock time instead of [`BASE_TIME_MS`].
@@ -128,7 +129,6 @@ pub struct NexmarkConfig {
 impl Default for NexmarkConfig {
     fn default() -> Self {
         Self {
-            debug: true,
             query: None,
             source_type: SourceType::Direct,
             sink_type: SinkType::Devnull,

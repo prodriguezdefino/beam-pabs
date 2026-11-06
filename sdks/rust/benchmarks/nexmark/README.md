@@ -98,6 +98,8 @@ Pass Nexmark flags directly or through `-PextraArgs="..."`:
   model (0 to 9 and the two side-input joins) with the model. A mismatch fails the job and
   marks the row `FAILED`. Other queries and streaming runs log that the check is skipped.
 - `--log_events`, `--log_results`: log each event or result at the `info` level.
+- `--stream_timeout=<sec>` (default 240): longest streaming run after its first event.
+- `--cancel_streaming_job_after_finish`: cancel a finished streaming job instead of draining it.
 
 ## Metrics and Summary Table
 
@@ -106,7 +108,7 @@ in namespace `nexmark`, the counters `<prefix>.elements` and `<prefix>.bytes` an
 distributions `<prefix>.processing_time_ms` (wall clock) and `<prefix>.event_timestamp_ms`.
 The prefix is `events` or `results`.
 
-The launcher submits each job, waits for it, and computes these columns from the final metrics:
+The launcher submits each job and computes these columns from the final metrics:
 
 | Column | Value |
 |---|---|
@@ -117,3 +119,22 @@ The launcher submits each job, waits for it, and computes these columns from the
 | `Processing delay(sec)` | First event to the first result. |
 
 A `-` marks a value that the metrics cannot give, for example a rate when the runtime is zero.
+
+## Streaming Runs
+
+A batch job runs to its end. A streaming job is polled every 15 seconds, and these rules stop it:
+
+| Rule | Action | Row |
+|---|---|---|
+| A `fatal` counter is above zero. | Cancel. | `FAILED` |
+| All `--num_events` passed and the counts did not change for 1 minute. | Drain, or cancel if the runner cannot drain or with `--cancel_streaming_job_after_finish`. | `OK` |
+| The counts did not change for 1 hour (a warning after 10 minutes). | Cancel. | `FAILED` |
+| `--stream_timeout` seconds passed since the first event. | Cancel. | `TIMEOUT` |
+
+With at least 9 polls over at least 2 minutes, `Events(/sec)` is the steady-state rate: a
+least-squares fit over the middle third of the polls. Prism ends a finite streaming job by
+itself, so on Prism the job usually ends before the drain rule applies.
+
+The unbounded source reports its backlog in estimated bytes: the unclaimed events at the
+average event size plus the size of the held-back late events. Its restriction size and its
+progress use this unit.

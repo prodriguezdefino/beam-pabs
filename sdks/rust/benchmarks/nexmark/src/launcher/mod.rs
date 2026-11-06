@@ -24,12 +24,16 @@ mod monitor;
 mod perf;
 mod pipeline;
 mod report;
+mod stop;
+mod watch;
 
 pub use self::args::NexmarkArgs;
 pub use self::monitor::{
     BYTES, ELEMENTS, EVENT_TIMESTAMP_MS, EVENTS, METRIC_NAMESPACE, Monitor, PROCESSING_TIME_MS,
     RESULTS, metric_name,
 };
-pub use self::perf::NexmarkPerf;
+pub use self::perf::{NexmarkPerf, ProgressSnapshot, steady_state_events_per_sec};
 pub use self::pipeline::{LauncherError, build_nexmark_pipeline, is_prism_runner};
 pub use self::report::{NexmarkRunOutcome, QueryRunSummary, format_summary_table, run_nexmark};
+pub use self::stop::{Decision, MonitorState, MonitorTiming, Observation, StopRules, decide};
+pub use self::watch::{StopReason, StreamingRun, monitor_streaming_job};

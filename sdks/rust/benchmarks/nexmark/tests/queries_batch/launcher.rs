@@ -24,8 +24,9 @@ use beam::testing::TestPipeline;
 use nexmark::config::{NexmarkConfig, NexmarkQueryName, NexmarkSuite, SinkType};
 use nexmark::correctness::assert_timestamped;
 use nexmark::launcher::{
-    BYTES, ELEMENTS, EVENT_TIMESTAMP_MS, EVENTS, METRIC_NAMESPACE, NexmarkArgs, NexmarkRunOutcome,
-    PROCESSING_TIME_MS, RESULTS, build_nexmark_pipeline, metric_name, run_nexmark,
+    BYTES, ELEMENTS, EVENT_TIMESTAMP_MS, EVENTS, METRIC_NAMESPACE, MonitorTiming, NexmarkArgs,
+    NexmarkRunOutcome, PROCESSING_TIME_MS, RESULTS, build_nexmark_pipeline, metric_name,
+    run_nexmark,
 };
 use nexmark::models;
 use nexmark::queries::Query2;
@@ -164,7 +165,7 @@ async fn prism_smoke_suite_passes_correctness_checks_and_skips_query11() -> Resu
         ..NexmarkArgs::default()
     };
 
-    let summaries = run_nexmark(&options, &args).await?;
+    let summaries = run_nexmark(&options, &args, &MonitorTiming::default()).await?;
     assert_eq!(summaries.len(), NexmarkQueryName::ALL.len());
 
     for summary in &summaries {
@@ -172,7 +173,7 @@ async fn prism_smoke_suite_passes_correctness_checks_and_skips_query11() -> Resu
             (NexmarkRunOutcome::Skipped { reason }, NexmarkQueryName::UserSessions) => {
                 assert_eq!(*reason, "apache/beam#31438");
             }
-            (NexmarkRunOutcome::Executed(perf), _) => {
+            (NexmarkRunOutcome::Executed { perf, .. }, _) => {
                 assert_eq!(perf.num_events, Some(60), "events of {}", summary.query);
             }
             (outcome, query) => panic!("unexpected outcome on {query}: {outcome:?}"),
@@ -197,11 +198,11 @@ async fn run_reports_perf_from_monitor_metrics() -> Result {
         ..NexmarkArgs::default()
     };
 
-    let summaries = run_nexmark(&options, &args).await?;
+    let summaries = run_nexmark(&options, &args, &MonitorTiming::default()).await?;
     let [summary] = summaries.as_slice() else {
         panic!("expected one summary, got {summaries:?}");
     };
-    let NexmarkRunOutcome::Executed(perf) = summary.outcome else {
+    let NexmarkRunOutcome::Executed { perf, .. } = &summary.outcome else {
         panic!("expected an executed run, got {:?}", summary.outcome);
     };
     let config = args.resolve_configs().remove(0);

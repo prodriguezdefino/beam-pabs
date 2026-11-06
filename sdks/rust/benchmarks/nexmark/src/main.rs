@@ -20,13 +20,13 @@
 //! Command-line entry point for the Nexmark benchmark suite.
 
 use beam::prelude::*;
-use nexmark::launcher::{NexmarkArgs, NexmarkRunOutcome, run_nexmark};
+use nexmark::launcher::{MonitorTiming, NexmarkArgs, NexmarkRunOutcome, run_nexmark};
 
 #[tokio::main]
 async fn main() -> Result {
     beam::logging::init_logging();
     let (options, args) = beam::options::parse::<NexmarkArgs>();
-    let summaries = run_nexmark(&options, &args).await?;
+    let summaries = run_nexmark(&options, &args, &MonitorTiming::default()).await?;
     let failed = summaries
         .iter()
         .filter(|summary| matches!(summary.outcome, NexmarkRunOutcome::Failed { .. }))

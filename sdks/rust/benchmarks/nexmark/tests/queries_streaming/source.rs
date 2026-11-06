@@ -25,7 +25,7 @@ use beam::testing::{TestPipelineError, passert};
 use beam::transforms::sdf::{RestrictionError, RestrictionTracker};
 use nexmark::config::{BASE_TIME_MS, NexmarkConfig, RateShape, RateUnit};
 use nexmark::generator::{Generator, GeneratorConfig, NextEvent};
-use nexmark::model::Event;
+use nexmark::model::{Event, KnownSize};
 use nexmark::models;
 use nexmark::source::{GeneratorRestriction, GeneratorRestrictionTracker, UnboundedEventSource};
 
@@ -95,11 +95,43 @@ fn generator_restriction_coder_round_trips_empty_and_delayed_queues() {
     assert_eq!(dec_populated, populated);
 }
 
+const AVG_EVENT_BYTES: f64 = 100.0;
+
+#[test]
+fn restriction_size_and_tracker_progress_are_estimated_bytes() {
+    let delayed = sample_delayed_events();
+    let delayed_bytes: f64 = delayed
+        .iter()
+        .map(|next| next.event.estimated_size_bytes() as f64)
+        .sum();
+    assert!(delayed_bytes > 0.0);
+
+    let plain = GeneratorRestriction::new(10, 20);
+    assert_eq!(plain.estimated_bytes(AVG_EVENT_BYTES), 1_000.0);
+    let with_delayed = GeneratorRestriction::with_state(10, 20, BASE_TIME_MS, delayed.clone());
+    assert_eq!(
+        with_delayed.estimated_bytes(AVG_EVENT_BYTES),
+        1_000.0 + delayed_bytes
+    );
+
+    let tracker = GeneratorRestrictionTracker::new(plain, AVG_EVENT_BYTES);
+    let start = tracker.current_progress();
+    assert_eq!((start.work_completed, start.work_remaining), (0.0, 1_000.0));
+
+    (10..14).for_each(|pos| assert!(tracker.try_claim(&pos)));
+    delayed
+        .into_iter()
+        .for_each(|next| tracker.defer_delayed(next));
+    let claimed = tracker.current_progress();
+    assert_eq!(claimed.work_completed, 400.0);
+    assert_eq!(claimed.work_remaining, 600.0 + delayed_bytes);
+}
+
 #[test]
 fn generator_restriction_tracker_splits_and_checkpoints_trailing_delayed_events() {
     let delayed = sample_delayed_events();
     let initial = GeneratorRestriction::new(10, 20);
-    let tracker = GeneratorRestrictionTracker::new(initial);
+    let tracker = GeneratorRestrictionTracker::new(initial, AVG_EVENT_BYTES);
     assert_eq!(tracker.wallclock_base_ms(|| BASE_TIME_MS), BASE_TIME_MS);
 
     assert!(tracker.try_claim(&10));
@@ -137,7 +169,7 @@ fn generator_restriction_tracker_splits_and_checkpoints_trailing_delayed_events(
     assert_eq!(trailing.wallclock_base_ms, BASE_TIME_MS);
     assert_eq!(trailing.held_back.len(), 2);
 
-    let resumed = GeneratorRestrictionTracker::new(trailing);
+    let resumed = GeneratorRestrictionTracker::new(trailing, AVG_EVENT_BYTES);
     assert!(resumed.has_remaining_work());
     let first = resumed.pop_due_delayed(i64::MAX).expect("first delayed");
     let second = resumed.pop_due_delayed(i64::MAX).expect("second delayed");
@@ -146,7 +178,8 @@ fn generator_restriction_tracker_splits_and_checkpoints_trailing_delayed_events(
     assert!(resumed.check_done().is_ok());
     assert!(resumed.try_checkpoint().is_none());
 
-    let err_tracker = GeneratorRestrictionTracker::new(GeneratorRestriction::new(5, 10));
+    let err_tracker =
+        GeneratorRestrictionTracker::new(GeneratorRestriction::new(5, 10), AVG_EVENT_BYTES);
     assert!(!err_tracker.try_claim(&4));
     assert!(matches!(
         err_tracker.check_done(),

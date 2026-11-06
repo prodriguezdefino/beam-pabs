@@ -29,10 +29,21 @@ use beam::transforms::sdf::{RestrictionError, RestrictionProgress, RestrictionTr
 use serde::{Deserialize, Serialize};
 
 use crate::generator::NextEvent;
-use crate::model::{EventCoder, decode_framed, encode_framed};
+use crate::model::{EventCoder, KnownSize, decode_framed, encode_framed};
 
 fn held_back_key(event: &NextEvent) -> (i64, i64) {
     (event.wallclock_timestamp, event.event_timestamp)
+}
+
+fn offset_bytes(from: i64, to: i64, avg_event_bytes: f64) -> f64 {
+    (i128::from(to) - i128::from(from)).max(0) as f64 * avg_event_bytes
+}
+
+fn held_back_bytes<'a>(events: impl IntoIterator<Item = &'a NextEvent>) -> f64 {
+    events
+        .into_iter()
+        .map(|next| next.event.estimated_size_bytes() as f64)
+        .sum()
 }
 
 /// Half-open generator offset range `[start, end)` paired with wallclock anchor and delayed events.
@@ -76,6 +87,12 @@ impl GeneratorRestriction {
     /// Reports true when both the offset interval and buffered queue have no items.
     pub fn is_empty(&self) -> bool {
         self.start >= self.end && self.held_back.is_empty()
+    }
+
+    /// Estimated bytes of the work left: each offset at `avg_event_bytes`, plus the known
+    /// size of each held-back event.
+    pub fn estimated_bytes(&self, avg_event_bytes: f64) -> f64 {
+        offset_bytes(self.start, self.end, avg_event_bytes) + held_back_bytes(&self.held_back)
     }
 
     fn encode_raw(&self, writer: &mut Vec<u8>) -> Result<(), CoderError> {
@@ -183,17 +200,23 @@ struct TrackerState {
 }
 
 /// Thread-safe [`RestrictionTracker`] over a [`GeneratorRestriction`].
+///
+/// Progress is in estimated bytes, the unit of the source's restriction size, so a runner
+/// reads the remaining work as backlog bytes.
 #[derive(Clone, Debug)]
 pub struct GeneratorRestrictionTracker {
     state: Arc<Mutex<TrackerState>>,
+    avg_event_bytes: f64,
 }
 
 impl GeneratorRestrictionTracker {
-    /// Initializes mutable cursor and queue state from a snapshot.
-    pub fn new(restriction: GeneratorRestriction) -> Self {
+    /// Initializes mutable cursor and queue state from a snapshot. `avg_event_bytes` prices
+    /// each unclaimed offset in [`current_progress`](RestrictionTracker::current_progress).
+    pub fn new(restriction: GeneratorRestriction, avg_event_bytes: f64) -> Self {
         let mut sorted = restriction.held_back;
         sorted.sort_by_key(held_back_key);
         Self {
+            avg_event_bytes,
             state: Arc::new(Mutex::new(TrackerState {
                 start: restriction.start,
                 next_offset: restriction.start,
@@ -387,14 +410,14 @@ impl RestrictionTracker for GeneratorRestrictionTracker {
 
     fn current_progress(&self) -> RestrictionProgress {
         let guard = self.lock();
-        let completed =
-            (i128::from(guard.next_offset.min(guard.end)) - i128::from(guard.start)).max(0) as f64;
+        let claimed_end = guard.next_offset.min(guard.end);
+        let completed = offset_bytes(guard.start, claimed_end, self.avg_event_bytes);
         let remaining_offsets = if guard.offset_stopped || guard.checkpointed {
             0.0
         } else {
-            (i128::from(guard.end) - i128::from(guard.next_offset)).max(0) as f64
+            offset_bytes(guard.next_offset, guard.end, self.avg_event_bytes)
         };
-        let remaining = remaining_offsets + (guard.held_back.len() as f64);
+        let remaining = remaining_offsets + held_back_bytes(&guard.held_back);
         RestrictionProgress::new(completed, remaining)
     }
 

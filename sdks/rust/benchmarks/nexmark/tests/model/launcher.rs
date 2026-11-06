@@ -22,7 +22,7 @@ use nexmark::config::{
     NexmarkConfig, NexmarkQueryName, NexmarkSuite, RateShape, RateUnit, SinkType, SourceType,
 };
 use nexmark::launcher::{
-    LauncherError, NexmarkArgs, NexmarkPerf, NexmarkRunOutcome, QueryRunSummary,
+    LauncherError, NexmarkArgs, NexmarkPerf, NexmarkRunOutcome, QueryRunSummary, StopReason,
     build_nexmark_pipeline, format_summary_table, is_prism_runner,
 };
 
@@ -72,6 +72,8 @@ fn parses_nexmark_and_dataflow_flags_without_collision() {
         "--assert_correctness",
         "--log_events",
         "--log_results",
+        "--stream_timeout=90",
+        "--cancel_streaming_job_after_finish",
     ])
     .expect("valid Nexmark and Dataflow CLI flags");
 
@@ -116,6 +118,9 @@ fn parses_nexmark_and_dataflow_flags_without_collision() {
     assert_eq!(args.num_key_buckets, Some(1_024));
     assert_eq!(args.pardo_cpu_factor, Some(2.5));
     assert!(args.assert_correctness && args.log_events && args.log_results);
+    assert_eq!(args.stream_timeout, Some(90));
+    assert!(args.cancel_streaming_job_after_finish);
+    assert_eq!(args.resolve_configs()[0].stream_timeout, 90);
 }
 
 #[test]
@@ -128,6 +133,8 @@ fn correctness_and_logging_flags_default_to_false() {
 
     let defaults = NexmarkArgs::default();
     assert!(!defaults.assert_correctness && !defaults.log_events && !defaults.log_results);
+    assert!(!defaults.cancel_streaming_job_after_finish);
+    assert_eq!(defaults.resolve_configs()[0].stream_timeout, 240);
 }
 
 #[test]
@@ -237,21 +244,34 @@ fn prism_runner_detection_and_summary_table_formatting() {
     assert!(!is_prism_runner("DataflowRunner"));
     assert!(!is_prism_runner("dataflow"));
 
+    let perf = NexmarkPerf {
+        runtime_sec: Some(0.5),
+        num_events: Some(1_000),
+        events_per_sec: Some(2_000.0),
+        event_bytes_per_sec: Some(400_000.0),
+        num_results: Some(1_000),
+        results_per_sec: Some(2_000.0),
+        result_bytes_per_sec: Some(400_000.0),
+        startup_delay_sec: Some(1.25),
+        processing_delay_sec: None,
+        time_dilation: Some(4.0),
+    };
     let summaries = vec![
         QueryRunSummary {
             query: NexmarkQueryName::Passthrough,
-            outcome: NexmarkRunOutcome::Executed(NexmarkPerf {
-                runtime_sec: Some(0.5),
-                num_events: Some(1_000),
-                events_per_sec: Some(2_000.0),
-                event_bytes_per_sec: Some(400_000.0),
-                num_results: Some(1_000),
-                results_per_sec: Some(2_000.0),
-                result_bytes_per_sec: Some(400_000.0),
-                startup_delay_sec: Some(1.25),
-                processing_delay_sec: None,
-                time_dilation: Some(4.0),
-            }),
+            outcome: NexmarkRunOutcome::Executed {
+                perf,
+                stop: StopReason::Finished,
+                snapshots: Vec::new(),
+            },
+        },
+        QueryRunSummary {
+            query: NexmarkQueryName::CurrencyConversion,
+            outcome: NexmarkRunOutcome::Executed {
+                perf,
+                stop: StopReason::TimedOut,
+                snapshots: Vec::new(),
+            },
         },
         QueryRunSummary {
             query: NexmarkQueryName::Selection,
@@ -297,6 +317,11 @@ fn prism_runner_detection_and_summary_table_formatting() {
             "1.250",
             "-"
         ]
+    );
+    assert!(
+        table
+            .lines()
+            .any(|line| line.contains("CURRENCY_CONVERSION") && line.contains("TIMEOUT"))
     );
     assert!(table.contains("FAILED"));
     assert!(table.contains("Query 2 (SELECTION) failed: PAssert 'AssertCorrectness' failed"));
