@@ -379,9 +379,9 @@ tasks.register('nexmarkBenchmark') {
       runDataflowBenchmark([
           task: 'nexmarkBenchmark',
           describe: summary,
-          countOutput: 'RecordSourceMetrics',
+          countOutput: 'MonitorEvents',
           countName: 'events',
-          counter: 'source_events',
+          counter: 'events.elements',
       ], variants)
     }
   }

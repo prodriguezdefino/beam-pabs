@@ -146,7 +146,7 @@ gsutil cp gs://apache-beam-samples/wikipedia_edits/wiki_data-000000000000.json b
   (`-Psuite=DEFAULT|SMOKE|STRESS|FULL_THROTTLE`, `-Pquery=0..16`, `-Pstreaming`, `-PextraArgs`).
   `nexmarkBenchmark` runs one query across rounds on Dataflow (`-Pquery=0`,
   `-PnumEvents=1000000`, `-Pstreaming`, `-Pbaseline=<git ref>`) and reports CPU and
-  `source_events` throughput.
+  `events.elements` throughput.
 - `harnessBenchmark` runs the criterion benches in
   [harness/benches/](../beam/harness/benches/). `process_bundle` runs bundles through a worker
   and an in-process runner over gRPC, with the pipelines and 16 concurrent callers of Java's

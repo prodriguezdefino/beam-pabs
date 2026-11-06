@@ -17,15 +17,13 @@
  * under the License.
  */
 
-use std::time::Duration;
-
 use beam::options::{PipelineOptions, WorkerOptions, try_parse_from};
 use nexmark::config::{
     NexmarkConfig, NexmarkQueryName, NexmarkSuite, RateShape, RateUnit, SinkType, SourceType,
 };
 use nexmark::launcher::{
-    LauncherError, NexmarkArgs, NexmarkRunOutcome, QueryRunSummary, build_nexmark_pipeline,
-    format_summary_table, is_prism_runner,
+    LauncherError, NexmarkArgs, NexmarkPerf, NexmarkRunOutcome, QueryRunSummary,
+    build_nexmark_pipeline, format_summary_table, is_prism_runner,
 };
 
 #[test]
@@ -71,6 +69,9 @@ fn parses_nexmark_and_dataflow_flags_without_collision() {
         "--side_input_row_count=250",
         "--num_key_buckets=1024",
         "--pardo_cpu_factor=2.5",
+        "--assert_correctness",
+        "--log_events",
+        "--log_results",
     ])
     .expect("valid Nexmark and Dataflow CLI flags");
 
@@ -114,6 +115,19 @@ fn parses_nexmark_and_dataflow_flags_without_collision() {
     assert_eq!(args.side_input_row_count, Some(250));
     assert_eq!(args.num_key_buckets, Some(1_024));
     assert_eq!(args.pardo_cpu_factor, Some(2.5));
+    assert!(args.assert_correctness && args.log_events && args.log_results);
+}
+
+#[test]
+fn correctness_and_logging_flags_default_to_false() {
+    let (_, args) =
+        try_parse_from::<NexmarkArgs, _, _>(["nexmark", "--log_results"]).expect("flags");
+    assert!(!args.assert_correctness);
+    assert!(!args.log_events);
+    assert!(args.log_results);
+
+    let defaults = NexmarkArgs::default();
+    assert!(!defaults.assert_correctness && !defaults.log_events && !defaults.log_results);
 }
 
 #[test]
@@ -226,12 +240,23 @@ fn prism_runner_detection_and_summary_table_formatting() {
     let summaries = vec![
         QueryRunSummary {
             query: NexmarkQueryName::Passthrough,
-            outcome: NexmarkRunOutcome::Executed {
-                elapsed: Duration::from_millis(500),
-                source_events: 1_000,
-                source_bytes: 200_000,
-                sink_records: 1_000,
-                sink_bytes: 200_000,
+            outcome: NexmarkRunOutcome::Executed(NexmarkPerf {
+                runtime_sec: Some(0.5),
+                num_events: Some(1_000),
+                events_per_sec: Some(2_000.0),
+                event_bytes_per_sec: Some(400_000.0),
+                num_results: Some(1_000),
+                results_per_sec: Some(2_000.0),
+                result_bytes_per_sec: Some(400_000.0),
+                startup_delay_sec: Some(1.25),
+                processing_delay_sec: None,
+                time_dilation: Some(4.0),
+            }),
+        },
+        QueryRunSummary {
+            query: NexmarkQueryName::Selection,
+            outcome: NexmarkRunOutcome::Failed {
+                reason: "PAssert 'AssertCorrectness' failed".to_owned(),
             },
         },
         QueryRunSummary {
@@ -242,9 +267,38 @@ fn prism_runner_detection_and_summary_table_formatting() {
         },
     ];
     let table = format_summary_table(&summaries);
-    assert!(table.contains("PASSTHROUGH"));
-    assert!(table.contains("2000.0"));
-    assert!(table.contains("0.40"));
-    assert!(table.contains("USER_SESSIONS"));
+    for column in [
+        "Runtime(sec)",
+        "Events(/sec)",
+        "Events(bytes/sec)",
+        "Results",
+        "Results(/sec)",
+        "Startup(sec)",
+        "Processing delay(sec)",
+    ] {
+        assert!(table.contains(column), "missing column {column}:\n{table}");
+    }
+    let passthrough = table
+        .lines()
+        .find(|line| line.contains("PASSTHROUGH"))
+        .expect("PASSTHROUGH row");
+    let cells: Vec<&str> = passthrough.split_whitespace().collect();
+    assert_eq!(
+        cells,
+        [
+            "0",
+            "PASSTHROUGH",
+            "OK",
+            "0.500",
+            "2000.0",
+            "400000.0",
+            "1000",
+            "2000.0",
+            "1.250",
+            "-"
+        ]
+    );
+    assert!(table.contains("FAILED"));
+    assert!(table.contains("Query 2 (SELECTION) failed: PAssert 'AssertCorrectness' failed"));
     assert!(table.contains("SKIPPED (apache/beam#31438)"));
 }

@@ -154,6 +154,18 @@ pub struct NexmarkArgs {
     /// Synthetic CPU load multiplier for Queries 13 and 14.
     #[arg(long)]
     pub pardo_cpu_factor: Option<f64>,
+
+    /// Compare query output with its reference model in batch mode. A mismatch fails the job.
+    #[arg(long)]
+    pub assert_correctness: bool,
+
+    /// Log each generated event at the `info` level.
+    #[arg(long)]
+    pub log_events: bool,
+
+    /// Log each query result at the `info` level.
+    #[arg(long)]
+    pub log_results: bool,
 }
 
 impl Default for NexmarkArgs {
@@ -190,6 +202,9 @@ impl Default for NexmarkArgs {
             side_input_row_count: None,
             num_key_buckets: None,
             pardo_cpu_factor: None,
+            assert_correctness: false,
+            log_events: false,
+            log_results: false,
         }
     }
 }

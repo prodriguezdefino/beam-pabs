@@ -20,14 +20,15 @@
 //! Batch Prism tests for `Query1`, `Query2`, and stateful `Query3`.
 
 use beam::prelude::*;
-use beam::testing::{TestPipeline, TestPipelineError, passert};
+use beam::testing::{TestPipeline, TestPipelineError};
 use nexmark::config::{BASE_TIME_MS, NexmarkConfig, NexmarkQueryName};
+use nexmark::correctness::assert_timestamped;
 use nexmark::model::{Auction, Event, NameCityStateId, Person};
 use nexmark::models;
 use nexmark::queries::{Query1, Query2, Query3};
 use nexmark::source::BoundedEventSource;
 
-use crate::{assert_query_matches_model, stamp};
+use crate::assert_query_matches_model;
 
 #[tokio::test]
 async fn query1_matches_model_single_and_multi_generator()
@@ -82,11 +83,10 @@ async fn query3_matches_model_and_records_state_metrics()
     let expected_len = expected.len() as i64;
 
     let p = TestPipeline::new();
-    let stamped = stamp(
-        &p.apply("ReadEvents", BoundedEventSource::new(&config))
-            .apply("Query3", Query3::from_config(&config)),
-    );
-    passert::that("Query3MatchesModel", &stamped).contains_in_any_order(expected);
+    let out = p
+        .apply("ReadEvents", BoundedEventSource::new(&config))
+        .apply("Query3", Query3::from_config(&config));
+    assert_timestamped("Query3MatchesModel", &out, expected);
 
     let result = p.run().await?;
     let metrics = result.metrics().expect("Prism reports pipeline metrics");
@@ -165,28 +165,32 @@ async fn query3_joins_auctions_arriving_before_and_after_seller()
         .par_do_fn("WithTimestamps", |(event, ts): (Event, Instant), ctx| {
             ctx.output(event).at(ts).emit()
         });
-    let stamped = stamp(&events.apply("Query3Synthetic", Query3::new(600)));
+    let out = events.apply("Query3Synthetic", Query3::new(600));
 
-    passert::that("Query3SyntheticMatches", &stamped).contains_in_any_order(vec![
-        (
-            NameCityStateId {
-                name: "Ada Lovelace".to_owned(),
-                city: "Portland".to_owned(),
-                state: "OR".to_owned(),
-                id: 2001,
-            },
-            t1,
-        ),
-        (
-            NameCityStateId {
-                name: "Ada Lovelace".to_owned(),
-                city: "Portland".to_owned(),
-                state: "OR".to_owned(),
-                id: 2002,
-            },
-            t2,
-        ),
-    ]);
+    assert_timestamped(
+        "Query3SyntheticMatches",
+        &out,
+        vec![
+            (
+                NameCityStateId {
+                    name: "Ada Lovelace".to_owned(),
+                    city: "Portland".to_owned(),
+                    state: "OR".to_owned(),
+                    id: 2001,
+                },
+                t1,
+            ),
+            (
+                NameCityStateId {
+                    name: "Ada Lovelace".to_owned(),
+                    city: "Portland".to_owned(),
+                    state: "OR".to_owned(),
+                    id: 2002,
+                },
+                t2,
+            ),
+        ],
+    );
     p.run().await?;
     Ok(())
 }

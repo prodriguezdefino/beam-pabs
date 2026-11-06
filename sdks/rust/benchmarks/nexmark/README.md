@@ -33,7 +33,8 @@ the Apache Beam Rust SDK.
 - `src/queries`: 17 Nexmark query `PTransform` implementations plus the stateful `WinningBids`
   join.
 - `src/models`: pure in-memory reference models for deterministic correctness checks.
-- `src/launcher` and `src/main.rs`: CLI flag parsing, pipeline assembly, metrics collection,
+- `src/correctness.rs`: in-pipeline checks that compare query output with a model.
+- `src/launcher` and `src/main.rs`: CLI flag parsing, pipeline assembly, perf monitors,
   and summary reporting.
 
 ## Queries
@@ -93,3 +94,26 @@ Pass Nexmark flags directly or through `-PextraArgs="..."`:
 - `--window_size_sec=<n>`, `--window_period_sec=<n>`, `--session_gap_sec=<n>`, `--fanout=<n>`
 - `--query10_max_workers=<n>`, `--max_log_events=<n>`, `--side_input_row_count=<n>`,
   `--num_key_buckets=<n>`, `--pardo_cpu_factor=<f>`
+- `--assert_correctness`: in batch mode, compare the output of each query that has a reference
+  model (0 to 9 and the two side-input joins) with the model. A mismatch fails the job and
+  marks the row `FAILED`. Other queries and streaming runs log that the check is skipped.
+- `--log_events`, `--log_results`: log each event or result at the `info` level.
+
+## Metrics and Summary Table
+
+The `MonitorEvents` step after the source and the `MonitorResults` step before the sink record,
+in namespace `nexmark`, the counters `<prefix>.elements` and `<prefix>.bytes` and the
+distributions `<prefix>.processing_time_ms` (wall clock) and `<prefix>.event_timestamp_ms`.
+The prefix is `events` or `results`.
+
+The launcher submits each job, waits for it, and computes these columns from the final metrics:
+
+| Column | Value |
+|---|---|
+| `Runtime(sec)` | First event to the last event or result, whichever is later. |
+| `Events(/sec)`, `Events(bytes/sec)` | Events and event bytes divided by the runtime. |
+| `Results`, `Results(/sec)` | Results, and results divided by the runtime. |
+| `Startup(sec)` | Job submission to the first event. |
+| `Processing delay(sec)` | First event to the first result. |
+
+A `-` marks a value that the metrics cannot give, for example a rate when the runtime is zero.

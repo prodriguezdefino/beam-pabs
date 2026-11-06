@@ -19,17 +19,16 @@
 
 //! Batch Prism tests for `WinningBids`, `Query4`, `Query6`, and `Query9`.
 
-use std::collections::BTreeMap;
-
 use beam::prelude::*;
-use beam::testing::{TestPipeline, TestPipelineError, passert};
+use beam::testing::{TestPipeline, TestPipelineError};
 use nexmark::config::{BASE_TIME_MS, NexmarkConfig, NexmarkQueryName};
+use nexmark::correctness::{assert_final_seller_prices, assert_timestamped};
 use nexmark::model::{Auction, AuctionBid, Bid, Event, SellerPrice};
 use nexmark::models;
 use nexmark::queries::{Query4, Query6, Query9, WinningBids};
 use nexmark::source::BoundedEventSource;
 
-use crate::{assert_query_matches_model, stamp};
+use crate::assert_query_matches_model;
 
 fn mk_auction(id: i64, seller: i64, reserve: i64, open_ms: i64, expires_ms: i64) -> Auction {
     Auction {
@@ -53,41 +52,6 @@ fn mk_bid(auction: i64, bidder: i64, price: i64, offset_ms: i64) -> Bid {
         price,
         date_time: Instant::from_millis(BASE_TIME_MS + offset_ms),
         extra: String::new(),
-    }
-}
-
-fn with_pane_index(pcoll: &PCollection<SellerPrice>) -> PCollection<(SellerPrice, i64)> {
-    pcoll.par_do_fn("WithPaneIndex", |sp: SellerPrice, ctx| {
-        let idx = ctx
-            .pane()
-            .index()
-            .and_then(|i| i64::try_from(i).ok())
-            .unwrap_or(0);
-        ctx.emit((sp, idx))
-    })
-}
-
-fn check_latest_seller_panes(actual: &[(SellerPrice, i64)], expected: &[SellerPrice]) -> Result {
-    if actual.is_empty() {
-        return Err("expected non-empty SellerPrice panes".into());
-    }
-    let latest = actual.iter().fold(
-        BTreeMap::<i64, (i64, SellerPrice)>::new(),
-        |mut acc, &(sp, pane_idx)| {
-            match acc.get(&sp.seller) {
-                Some(&(best_idx, _)) if pane_idx < best_idx => {}
-                Some(_) | None => {
-                    acc.insert(sp.seller, (pane_idx, sp));
-                }
-            }
-            acc
-        },
-    );
-    let final_prices: Vec<SellerPrice> = latest.into_values().map(|(_, sp)| sp).collect();
-    if final_prices == expected {
-        Ok(())
-    } else {
-        Err(format!("final seller panes {final_prices:?} != expected {expected:?}").into())
     }
 }
 
@@ -155,20 +119,23 @@ async fn winning_bids_handles_early_bids_reserve_ties_and_orphans()
     ];
 
     let p = TestPipeline::new();
-    let stamped = stamp(
-        &p.apply("Seed", Create::new(seeded))
-            .par_do_fn("WithTs", |(event, ts): (Event, Instant), ctx| {
-                ctx.output(event).at(ts).emit()
-            })
-            .apply("WinningBids", WinningBids::new(500)),
+    let out = p
+        .apply("Seed", Create::new(seeded))
+        .par_do_fn("WithTs", |(event, ts): (Event, Instant), ctx| {
+            ctx.output(event).at(ts).emit()
+        })
+        .apply("WinningBids", WinningBids::new(500));
+    assert_timestamped(
+        "EdgeCaseWinners",
+        &out,
+        vec![(
+            AuctionBid {
+                auction: auction_10,
+                bid: early_winner,
+            },
+            Instant::from_millis(BASE_TIME_MS + 599),
+        )],
     );
-    passert::that("EdgeCaseWinners", &stamped).contains_in_any_order([(
-        AuctionBid {
-            auction: auction_10,
-            bid: early_winner,
-        },
-        Instant::from_millis(BASE_TIME_MS + 599),
-    )]);
 
     let result = p.run().await?;
     let metrics = result.metrics().expect("Prism reports pipeline metrics");
@@ -226,12 +193,10 @@ async fn query6_final_panes_match_model_and_evict_past_ten()
     assert!(!expected.is_empty());
 
     let p = TestPipeline::new();
-    let panes = with_pane_index(
-        &p.apply("ReadEvents", BoundedEventSource::new(&config))
-            .apply("Query6", Query6::from_config(&config)),
-    );
-    passert::that("Query6FinalPanes", &panes)
-        .satisfies(move |actual| check_latest_seller_panes(actual, &expected));
+    let out = p
+        .apply("ReadEvents", BoundedEventSource::new(&config))
+        .apply("Query6", Query6::from_config(&config));
+    assert_final_seller_prices("Query6FinalPanes", &out, expected);
     p.run().await?;
 
     let twelve_auctions: Vec<(Event, Instant)> = (1_i64..=12)
@@ -245,23 +210,20 @@ async fn query6_final_panes_match_model_and_evict_past_ten()
         .collect();
 
     let p_evict = TestPipeline::new();
-    let evict_panes = with_pane_index(
-        &p_evict
-            .apply("SeedTwelve", Create::new(twelve_auctions))
-            .par_do_fn("WithTs", |(event, ts): (Event, Instant), ctx| {
-                ctx.output(event).at(ts).emit()
-            })
-            .apply("Query6Evict", Query6::new(500)),
+    let evict_out = p_evict
+        .apply("SeedTwelve", Create::new(twelve_auctions))
+        .par_do_fn("WithTs", |(event, ts): (Event, Instant), ctx| {
+            ctx.output(event).at(ts).emit()
+        })
+        .apply("Query6Evict", Query6::new(500));
+    assert_final_seller_prices(
+        "Query6EvictsOldestTwo",
+        &evict_out,
+        vec![SellerPrice {
+            seller: 77,
+            price: 75,
+        }],
     );
-    passert::that("Query6EvictsOldestTwo", &evict_panes).satisfies(|actual| {
-        check_latest_seller_panes(
-            actual,
-            &[SellerPrice {
-                seller: 77,
-                price: 75,
-            }],
-        )
-    });
     p_evict.run().await?;
     Ok(())
 }

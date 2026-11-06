@@ -27,8 +27,9 @@ use std::fmt::Debug;
 
 use beam::coders::DefaultCoder;
 use beam::prelude::*;
-use beam::testing::{TestPipeline, TestPipelineError, passert, test_pipeline_options};
+use beam::testing::{TestPipeline, TestPipelineError, test_pipeline_options};
 use nexmark::config::NexmarkConfig;
+use nexmark::correctness::assert_timestamped;
 use nexmark::model::Event;
 use nexmark::source::UnboundedEventSource;
 
@@ -62,22 +63,20 @@ pub(crate) async fn assert_streaming_query_matches_model<Q, Out>(
 ) -> std::result::Result<(), TestPipelineError>
 where
     Q: PTransform<PCollection<Event>, Output = PCollection<Out>>,
-    Out: DefaultCoder + Clone + PartialEq + Debug + Send + Sync + 'static,
+    Out: DefaultCoder + PartialEq + Debug + Send + Sync + 'static,
 {
     assert!(
         !expected.is_empty(),
         "{label} reference model produced zero outputs"
     );
     let p = streaming_pipeline();
-    let stamped = stamp(
-        &p.apply(
+    let out = p
+        .apply(
             "ReadUnboundedEvents",
             UnboundedEventSource::new(config).with_batch_size(batch_size),
         )
-        .apply(label, query),
-    );
-    passert::that(format!("{label}StreamingMatchesModel"), &stamped)
-        .contains_in_any_order(expected);
+        .apply(label, query);
+    assert_timestamped(&format!("{label}StreamingMatchesModel"), &out, expected);
     p.run().await?;
     Ok(())
 }

@@ -17,15 +17,19 @@
  * under the License.
  */
 
-//! CLI argument parsing, pipeline assembly, and summary reporting for Nexmark runs.
+//! CLI argument parsing, pipeline assembly, monitoring, and summary reporting for Nexmark runs.
 
 mod args;
+mod monitor;
+mod perf;
 mod pipeline;
 mod report;
 
 pub use self::args::NexmarkArgs;
-pub use self::pipeline::{
-    COUNTER_SINK_BYTES, COUNTER_SINK_RECORDS, COUNTER_SOURCE_BYTES, COUNTER_SOURCE_EVENTS,
-    LauncherError, METRIC_NAMESPACE, build_nexmark_pipeline, is_prism_runner,
+pub use self::monitor::{
+    BYTES, ELEMENTS, EVENT_TIMESTAMP_MS, EVENTS, METRIC_NAMESPACE, Monitor, PROCESSING_TIME_MS,
+    RESULTS, metric_name,
 };
+pub use self::perf::NexmarkPerf;
+pub use self::pipeline::{LauncherError, build_nexmark_pipeline, is_prism_runner};
 pub use self::report::{NexmarkRunOutcome, QueryRunSummary, format_summary_table, run_nexmark};

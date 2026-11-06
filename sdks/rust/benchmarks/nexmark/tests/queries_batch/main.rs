@@ -30,19 +30,13 @@ use std::fmt::Debug;
 
 use beam::coders::{Coder, Context, DefaultCoder};
 use beam::prelude::*;
-use beam::testing::{TestPipeline, TestPipelineError, passert};
+use beam::testing::{TestPipeline, TestPipelineError};
 use nexmark::config::{NexmarkConfig, NexmarkQueryName, RateShape, RateUnit};
+use nexmark::correctness::assert_timestamped;
 use nexmark::model::{BidsPerSession, Event, EventCoder};
 use nexmark::models;
 use nexmark::queries::Query0;
 use nexmark::source::BoundedEventSource;
-
-pub(crate) fn stamp<T: DefaultCoder>(pcoll: &PCollection<T>) -> PCollection<(T, Instant)> {
-    pcoll.par_do_fn("Stamp", |elem: T, ctx| {
-        let ts = ctx.timestamp();
-        ctx.emit((elem, ts))
-    })
-}
 
 pub(crate) async fn assert_query_matches_model<Q, Out>(
     label: &str,
@@ -52,18 +46,17 @@ pub(crate) async fn assert_query_matches_model<Q, Out>(
 ) -> std::result::Result<(), TestPipelineError>
 where
     Q: PTransform<PCollection<Event>, Output = PCollection<Out>>,
-    Out: DefaultCoder + Clone + PartialEq + Debug + Send + Sync + 'static,
+    Out: DefaultCoder + PartialEq + Debug + Send + Sync + 'static,
 {
     assert!(
         !expected.is_empty(),
         "{label} reference model produced zero outputs"
     );
     let p = TestPipeline::new();
-    let stamped = stamp(
-        &p.apply("ReadEvents", BoundedEventSource::new(config))
-            .apply(label, query),
-    );
-    passert::that(format!("{label}MatchesModel"), &stamped).contains_in_any_order(expected);
+    let out = p
+        .apply("ReadEvents", BoundedEventSource::new(config))
+        .apply(label, query);
+    assert_timestamped(&format!("{label}MatchesModel"), &out, expected);
     p.run().await?;
     Ok(())
 }
@@ -112,6 +105,26 @@ pub(crate) fn check_session_totals(
     }
 }
 
+async fn assert_query0_matches_model_and_counts_bytes(
+    label: &str,
+    config: &NexmarkConfig,
+) -> std::result::Result<(), TestPipelineError> {
+    let p = TestPipeline::new();
+    let out = p
+        .apply("ReadEvents", BoundedEventSource::new(config))
+        .apply("Query0", Query0);
+    assert_timestamped(label, &out, models::query0(config));
+
+    let result = p.run().await?;
+    let metrics = result.metrics().expect("Prism reports pipeline metrics");
+    assert_eq!(metrics.counter("Query0", "events"), Some(config.num_events));
+    assert_eq!(
+        metrics.counter("Query0", "bytes"),
+        Some(expected_whole_stream_bytes(config))
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn query0_matches_model_single_generator() -> std::result::Result<(), TestPipelineError> {
     let config = NexmarkConfig {
@@ -120,21 +133,7 @@ async fn query0_matches_model_single_generator() -> std::result::Result<(), Test
         num_event_generators: 1,
         ..NexmarkConfig::default()
     };
-    let expected = models::query0(&config);
-    let expected_bytes = expected_whole_stream_bytes(&config);
-
-    let p = TestPipeline::new();
-    let stamped = stamp(
-        &p.apply("ReadEvents", BoundedEventSource::new(&config))
-            .apply("Query0", Query0),
-    );
-    passert::that("Query0MatchesModelSingleGen", &stamped).contains_in_any_order(expected);
-
-    let result = p.run().await?;
-    let metrics = result.metrics().expect("Prism reports pipeline metrics");
-    assert_eq!(metrics.counter("Query0", "events"), Some(500));
-    assert_eq!(metrics.counter("Query0", "bytes"), Some(expected_bytes));
-    Ok(())
+    assert_query0_matches_model_and_counts_bytes("Query0MatchesModelSingleGen", &config).await
 }
 
 #[tokio::test]
@@ -151,19 +150,5 @@ async fn query0_matches_model_multiple_generators() -> std::result::Result<(), T
         out_of_order_group_size: 5,
         ..NexmarkConfig::default()
     };
-    let expected = models::query0(&config);
-    let expected_bytes = expected_whole_stream_bytes(&config);
-
-    let p = TestPipeline::new();
-    let stamped = stamp(
-        &p.apply("ReadEvents", BoundedEventSource::new(&config))
-            .apply("Query0", Query0),
-    );
-    passert::that("Query0MatchesModelMultiGen", &stamped).contains_in_any_order(expected);
-
-    let result = p.run().await?;
-    let metrics = result.metrics().expect("Prism reports pipeline metrics");
-    assert_eq!(metrics.counter("Query0", "events"), Some(500));
-    assert_eq!(metrics.counter("Query0", "bytes"), Some(expected_bytes));
-    Ok(())
+    assert_query0_matches_model_and_counts_bytes("Query0MatchesModelMultiGen", &config).await
 }

@@ -53,13 +53,13 @@ name = "queries_streaming"
 path = "tests/queries_streaming/main.rs"
 
 [dependencies]
-beam = { workspace = true, features = ["prism", "dataflow", "gcp-gcs"] }
+beam = { workspace = true, features = ["prism", "dataflow", "gcp-gcs", "testing"] }
 clap = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
-beam = { workspace = true, features = ["testing"] }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 

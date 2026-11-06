@@ -20,3 +20,4 @@
 mod coders;
 mod config;
 mod launcher;
+mod perf;

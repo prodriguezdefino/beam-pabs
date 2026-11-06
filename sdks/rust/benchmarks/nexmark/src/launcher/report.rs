@@ -17,85 +17,40 @@
  * under the License.
  */
 
-//! Suite execution driver and ASCII throughput summary table.
-
-use std::time::{Duration, Instant as WallInstant};
+//! Suite execution driver and ASCII performance summary table.
 
 use beam::options::PipelineOptions;
+use beam::prelude::*;
+use beam::testing::passert;
 
 use super::NexmarkArgs;
-use super::pipeline::{
-    COUNTER_SINK_BYTES, COUNTER_SINK_RECORDS, COUNTER_SOURCE_BYTES, COUNTER_SOURCE_EVENTS,
-    LauncherError, METRIC_NAMESPACE, build_nexmark_pipeline, is_prism_runner,
-};
+use super::perf::NexmarkPerf;
+use super::pipeline::{LauncherError, build_nexmark_pipeline, is_prism_runner};
 use crate::config::NexmarkQueryName;
 
-const BYTES_PER_MB: f64 = 1_000_000.0;
 const PRISM_QUERY11_SKIP_REASON: &str = "apache/beam#31438";
 
 /// Execution outcome recorded for one query in a suite run.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum NexmarkRunOutcome {
-    /// Pipeline completed and reported metrics.
-    Executed {
-        elapsed: Duration,
-        source_events: i64,
-        source_bytes: i64,
-        sink_records: i64,
-        sink_bytes: i64,
-    },
+    /// The job finished and its checks passed.
+    Executed(NexmarkPerf),
+    /// The job failed, or a `--assert_correctness` check did not pass.
+    Failed { reason: String },
     /// Pipeline was skipped before submission.
     Skipped { reason: &'static str },
 }
 
-/// Metrics and timing summary for a single query run.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Outcome of a single query run.
+#[derive(Clone, Debug, PartialEq)]
 pub struct QueryRunSummary {
     pub query: NexmarkQueryName,
     pub outcome: NexmarkRunOutcome,
 }
 
-impl QueryRunSummary {
-    /// Throughput in generated input events per wallclock second.
-    pub fn events_per_sec(&self) -> Option<f64> {
-        match &self.outcome {
-            NexmarkRunOutcome::Executed {
-                elapsed,
-                source_events,
-                ..
-            } => {
-                let secs = elapsed.as_secs_f64();
-                Some(if secs > 0.0 {
-                    (*source_events as f64) / secs
-                } else {
-                    0.0
-                })
-            }
-            NexmarkRunOutcome::Skipped { .. } => None,
-        }
-    }
-
-    /// Throughput in decimal megabytes (`1_000_000` bytes) per wallclock second.
-    pub fn mb_per_sec(&self) -> Option<f64> {
-        match &self.outcome {
-            NexmarkRunOutcome::Executed {
-                elapsed,
-                source_bytes,
-                ..
-            } => {
-                let secs = elapsed.as_secs_f64();
-                Some(if secs > 0.0 {
-                    (*source_bytes as f64) / (BYTES_PER_MB * secs)
-                } else {
-                    0.0
-                })
-            }
-            NexmarkRunOutcome::Skipped { .. } => None,
-        }
-    }
-}
-
 /// Executes every query resolved from `args` and prints a summary table on the driver.
+///
+/// A failed job gives a [`NexmarkRunOutcome::Failed`] row, and the suite continues.
 pub async fn run_nexmark(
     options: &PipelineOptions,
     args: &NexmarkArgs,
@@ -129,26 +84,25 @@ pub async fn run_nexmark(
         run_options.set(args.pin_query(query))?;
 
         let pipeline = build_nexmark_pipeline(&run_options, args, &config)?;
-        let started = WallInstant::now();
-        let result = pipeline.run().await?;
-        let elapsed = started.elapsed();
-
-        let counter = |name: &str| {
-            result
-                .metrics()
-                .and_then(|m| m.counter(METRIC_NAMESPACE, name))
-                .unwrap_or(0)
-        };
-        summaries.push(QueryRunSummary {
-            query,
-            outcome: NexmarkRunOutcome::Executed {
-                elapsed,
-                source_events: counter(COUNTER_SOURCE_EVENTS),
-                source_bytes: counter(COUNTER_SOURCE_BYTES),
-                sink_records: counter(COUNTER_SINK_RECORDS),
-                sink_bytes: counter(COUNTER_SINK_BYTES),
+        // The graph holds a check only for a batch query with a model. Workers rebuild the
+        // graph, so log here, on the driver, and not during the build.
+        if args.assert_correctness
+            && !options.harness.is_worker()
+            && passert::count_assertions(&pipeline) == 0
+        {
+            let reason = match options.streaming {
+                true => "streaming mode",
+                false => "no reference model",
+            };
+            tracing::info!(%query, "skipping --assert_correctness: {reason}");
+        }
+        let outcome = match execute(&pipeline).await {
+            Ok(perf) => NexmarkRunOutcome::Executed(perf),
+            Err(err) => NexmarkRunOutcome::Failed {
+                reason: err.to_string(),
             },
-        });
+        };
+        summaries.push(QueryRunSummary { query, outcome });
     }
 
     if !options.harness.is_worker() {
@@ -158,49 +112,78 @@ pub async fn run_nexmark(
     Ok(summaries)
 }
 
+/// Submits `pipeline`, waits for the job, checks its assertions and computes its performance.
+async fn execute(pipeline: &Pipeline) -> Result<NexmarkPerf, LauncherError> {
+    let submit_ms = Instant::now().as_millis();
+    let job = pipeline.submit().await?;
+    let result = job.wait_until_finish(None).await?;
+    if !result.state.is_successful() {
+        return Err(LauncherError::Unsuccessful(result.state));
+    }
+    // A check whose input never closes does not fail the job, so require each check to pass.
+    let assertions = passert::assertion_names(pipeline);
+    if !assertions.is_empty() {
+        passert::verify_assertions(&result, &assertions).map_err(LauncherError::Correctness)?;
+    }
+    let metrics = result.metrics.unwrap_or_default();
+    Ok(NexmarkPerf::from_metrics(&metrics, submit_ms))
+}
+
 /// Formats query run summaries into a fixed-width ASCII table.
+///
+/// The reason of each failed row follows the table.
 pub fn format_summary_table(summaries: &[QueryRunSummary]) -> String {
     let header = format!(
-        "{:>5}  {:<31}  {:<26}  {:>9}  {:>12}  {:>12}  {:>9}  {:>12}  {:>12}",
-        "Query", "Name", "Status", "Sec", "Events", "Events/s", "MB/s", "Results", "Sink Bytes"
+        "{:>5}  {:<31}  {:<27}  {:>12}  {:>12}  {:>17}  {:>9}  {:>12}  {:>12}  {:>21}",
+        "Query",
+        "Name",
+        "Status",
+        "Runtime(sec)",
+        "Events(/sec)",
+        "Events(bytes/sec)",
+        "Results",
+        "Results(/sec)",
+        "Startup(sec)",
+        "Processing delay(sec)"
     );
     let separator = "-".repeat(header.len());
-    let body = summaries
-        .iter()
-        .map(|summary| {
-            let num = summary.query.number();
-            let name = summary.query.as_str();
-            match &summary.outcome {
-                NexmarkRunOutcome::Executed {
-                    elapsed,
-                    source_events,
-                    sink_records,
-                    sink_bytes,
-                    ..
-                } => {
-                    let secs = elapsed.as_secs_f64();
-                    let eps = summary.events_per_sec().unwrap_or(0.0);
-                    let mbps = summary.mb_per_sec().unwrap_or(0.0);
-                    format!(
-                        "{num:>5}  {name:<31}  {:<26}  {secs:>9.3}  {source_events:>12}  {eps:>12.1}  {mbps:>9.2}  {sink_records:>12}  {sink_bytes:>12}",
-                        "OK"
-                    )
-                }
-                NexmarkRunOutcome::Skipped { reason } => {
-                    let status = format!("SKIPPED ({reason})");
-                    format!(
-                        "{num:>5}  {name:<31}  {status:<26}  {:>9}  {:>12}  {:>12}  {:>9}  {:>12}  {:>12}",
-                        "-", "-", "-", "-", "-", "-"
-                    )
-                }
+    let rows = summaries.iter().map(|summary| {
+        let (status, perf) = match &summary.outcome {
+            NexmarkRunOutcome::Executed(perf) => ("OK".to_owned(), *perf),
+            NexmarkRunOutcome::Failed { .. } => ("FAILED".to_owned(), NexmarkPerf::default()),
+            NexmarkRunOutcome::Skipped { reason } => {
+                (format!("SKIPPED ({reason})"), NexmarkPerf::default())
             }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+        };
+        format!(
+            "{:>5}  {:<31}  {status:<27}  {:>12}  {:>12}  {:>17}  {:>9}  {:>12}  {:>12}  {:>21}",
+            summary.query.number(),
+            summary.query.as_str(),
+            cell(perf.runtime_sec, 3),
+            cell(perf.events_per_sec, 1),
+            cell(perf.event_bytes_per_sec, 1),
+            perf.num_results
+                .map_or_else(|| "-".to_owned(), |n| n.to_string()),
+            cell(perf.results_per_sec, 1),
+            cell(perf.startup_delay_sec, 3),
+            cell(perf.processing_delay_sec, 3),
+        )
+    });
+    let failures = summaries
+        .iter()
+        .filter_map(|summary| match &summary.outcome {
+            NexmarkRunOutcome::Failed { reason } => Some(format!(
+                "\nQuery {} ({}) failed: {reason}",
+                summary.query.number(),
+                summary.query.as_str()
+            )),
+            NexmarkRunOutcome::Executed(_) | NexmarkRunOutcome::Skipped { .. } => None,
+        });
+    let body: String = rows.map(|row| row + "\n").collect();
+    let notes: String = failures.collect();
+    format!("{separator}\n{header}\n{separator}\n{body}{separator}{notes}")
+}
 
-    if body.is_empty() {
-        format!("{separator}\n{header}\n{separator}\n{separator}")
-    } else {
-        format!("{separator}\n{header}\n{separator}\n{body}\n{separator}")
-    }
+fn cell(value: Option<f64>, precision: usize) -> String {
+    value.map_or_else(|| "-".to_owned(), |v| format!("{v:.precision$}"))
 }

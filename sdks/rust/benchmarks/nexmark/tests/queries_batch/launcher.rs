@@ -17,16 +17,28 @@
  * under the License.
  */
 
+use beam::metrics::MetricResults;
 use beam::options::PipelineOptions;
+use beam::prelude::*;
+use beam::testing::TestPipeline;
 use nexmark::config::{NexmarkConfig, NexmarkQueryName, NexmarkSuite, SinkType};
+use nexmark::correctness::assert_timestamped;
 use nexmark::launcher::{
-    COUNTER_SINK_BYTES, COUNTER_SINK_RECORDS, COUNTER_SOURCE_BYTES, COUNTER_SOURCE_EVENTS,
-    METRIC_NAMESPACE, NexmarkArgs, NexmarkRunOutcome, build_nexmark_pipeline, run_nexmark,
+    BYTES, ELEMENTS, EVENT_TIMESTAMP_MS, EVENTS, METRIC_NAMESPACE, NexmarkArgs, NexmarkRunOutcome,
+    PROCESSING_TIME_MS, RESULTS, build_nexmark_pipeline, metric_name, run_nexmark,
 };
 use nexmark::models;
+use nexmark::queries::Query2;
+use nexmark::source::BoundedEventSource;
+
+fn monitor_counter(metrics: &MetricResults, prefix: &str, metric: &str) -> i64 {
+    metrics
+        .counter(METRIC_NAMESPACE, &metric_name(prefix, metric))
+        .unwrap_or(0)
+}
 
 #[tokio::test]
-async fn count_only_and_devnull_sinks_record_metrics() -> beam::prelude::Result {
+async fn count_only_and_devnull_sinks_record_monitor_metrics() -> Result {
     let options = PipelineOptions::default();
     let expected_q1_records = models::query1(&NexmarkConfig {
         num_events: 150,
@@ -48,33 +60,34 @@ async fn count_only_and_devnull_sinks_record_metrics() -> beam::prelude::Result 
         let result = pipeline.run().await?;
         let metrics = result.metrics().expect("Prism reports pipeline metrics");
 
+        assert_eq!(monitor_counter(metrics, EVENTS, ELEMENTS), 150);
+        assert!(monitor_counter(metrics, EVENTS, BYTES) > 0);
         assert_eq!(
-            metrics.counter(METRIC_NAMESPACE, COUNTER_SOURCE_EVENTS),
-            Some(150)
+            monitor_counter(metrics, RESULTS, ELEMENTS),
+            expected_q1_records
         );
-        assert!(
-            metrics
-                .counter(METRIC_NAMESPACE, COUNTER_SOURCE_BYTES)
-                .unwrap_or(0)
-                > 0
-        );
-        assert_eq!(
-            metrics.counter(METRIC_NAMESPACE, COUNTER_SINK_RECORDS),
-            Some(expected_q1_records)
-        );
-        assert!(
-            metrics
-                .counter(METRIC_NAMESPACE, COUNTER_SINK_BYTES)
-                .unwrap_or(0)
-                > 0
-        );
+        assert!(monitor_counter(metrics, RESULTS, BYTES) > 0);
+        for (prefix, metric) in [
+            (EVENTS, PROCESSING_TIME_MS),
+            (EVENTS, EVENT_TIMESTAMP_MS),
+            (RESULTS, PROCESSING_TIME_MS),
+            (RESULTS, EVENT_TIMESTAMP_MS),
+        ] {
+            let dist = metrics
+                .distribution(METRIC_NAMESPACE, &metric_name(prefix, metric))
+                .unwrap_or_else(|| panic!("missing distribution {prefix}.{metric}"));
+            assert!(
+                dist.count > 0 && dist.min <= dist.max,
+                "{prefix}.{metric}: {dist:?}"
+            );
+        }
     }
 
     Ok(())
 }
 
 #[tokio::test]
-async fn text_sink_writes_output_files_for_global_and_windowed_queries() -> beam::prelude::Result {
+async fn text_sink_writes_output_files_for_global_and_windowed_queries() -> Result {
     let dir = tempfile::tempdir()?;
     let output_path = dir.path().to_string_lossy().into_owned();
     let options = PipelineOptions::default();
@@ -111,15 +124,13 @@ async fn text_sink_writes_output_files_for_global_and_windowed_queries() -> beam
         let result = pipeline.run().await?;
         let metrics = result.metrics().expect("Prism reports pipeline metrics");
         assert_eq!(
-            metrics
-                .counter(METRIC_NAMESPACE, COUNTER_SINK_RECORDS)
-                .unwrap_or(0),
+            monitor_counter(metrics, RESULTS, ELEMENTS),
             expected_records as i64
         );
 
         let prefix = format!("{}-", query.slug());
         let written_lines: usize = std::fs::read_dir(dir.path())?
-            .filter_map(Result::ok)
+            .filter_map(std::result::Result::ok)
             .filter(|entry| {
                 entry
                     .file_name()
@@ -136,7 +147,7 @@ async fn text_sink_writes_output_files_for_global_and_windowed_queries() -> beam
 }
 
 #[tokio::test]
-async fn prism_smoke_suite_skips_query11_and_executes_other_queries() -> beam::prelude::Result {
+async fn prism_smoke_suite_passes_correctness_checks_and_skips_query11() -> Result {
     let options = PipelineOptions::default();
     let args = NexmarkArgs {
         suite: NexmarkSuite::Smoke,
@@ -149,6 +160,7 @@ async fn prism_smoke_suite_skips_query11_and_executes_other_queries() -> beam::p
         max_log_events: Some(20),
         side_input_row_count: Some(16),
         num_key_buckets: Some(8),
+        assert_correctness: true,
         ..NexmarkArgs::default()
     };
 
@@ -156,24 +168,89 @@ async fn prism_smoke_suite_skips_query11_and_executes_other_queries() -> beam::p
     assert_eq!(summaries.len(), NexmarkQueryName::ALL.len());
 
     for summary in &summaries {
-        if summary.query == NexmarkQueryName::UserSessions {
-            assert_eq!(
-                summary.outcome,
-                NexmarkRunOutcome::Skipped {
-                    reason: "apache/beam#31438"
-                }
-            );
-        } else {
-            match summary.outcome {
-                NexmarkRunOutcome::Executed { source_events, .. } => {
-                    assert_eq!(source_events, 60, "unexpected count on {}", summary.query);
-                }
-                NexmarkRunOutcome::Skipped { reason } => {
-                    panic!("unexpected skip on {}: {reason}", summary.query);
-                }
+        match (&summary.outcome, summary.query) {
+            (NexmarkRunOutcome::Skipped { reason }, NexmarkQueryName::UserSessions) => {
+                assert_eq!(*reason, "apache/beam#31438");
             }
+            (NexmarkRunOutcome::Executed(perf), _) => {
+                assert_eq!(perf.num_events, Some(60), "events of {}", summary.query);
+            }
+            (outcome, query) => panic!("unexpected outcome on {query}: {outcome:?}"),
         }
     }
 
     Ok(())
+}
+
+#[tokio::test]
+async fn run_reports_perf_from_monitor_metrics() -> Result {
+    let options = PipelineOptions::default();
+    let args = NexmarkArgs {
+        query: Some(NexmarkQueryName::HotItems),
+        sink_type: Some(SinkType::CountOnly),
+        num_events: Some(1_000),
+        num_event_generators: Some(2),
+        window_size_sec: Some(4),
+        window_period_sec: Some(2),
+        assert_correctness: true,
+        log_results: true,
+        ..NexmarkArgs::default()
+    };
+
+    let summaries = run_nexmark(&options, &args).await?;
+    let [summary] = summaries.as_slice() else {
+        panic!("expected one summary, got {summaries:?}");
+    };
+    let NexmarkRunOutcome::Executed(perf) = summary.outcome else {
+        panic!("expected an executed run, got {:?}", summary.outcome);
+    };
+    let config = args.resolve_configs().remove(0);
+    assert_eq!(perf.num_events, Some(1_000));
+    assert_eq!(perf.num_results, Some(models::query5(&config).len() as i64));
+    assert!(perf.runtime_sec.is_some_and(|secs| secs > 0.0), "{perf:?}");
+    assert!(
+        perf.events_per_sec.is_some_and(|rate| rate > 0.0),
+        "{perf:?}"
+    );
+    assert!(
+        perf.event_bytes_per_sec.is_some_and(|rate| rate > 0.0),
+        "{perf:?}"
+    );
+    assert!(
+        perf.startup_delay_sec.is_some_and(|secs| secs >= 0.0),
+        "{perf:?}"
+    );
+    assert!(
+        perf.processing_delay_sec.is_some_and(|secs| secs >= 0.0),
+        "{perf:?}"
+    );
+    assert!(
+        perf.time_dilation.is_some_and(|ratio| ratio > 0.0),
+        "{perf:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn correctness_check_fails_the_job_on_a_wrong_model() {
+    let config = NexmarkConfig {
+        query: Some(NexmarkQueryName::Selection),
+        num_events: 600,
+        num_event_generators: 2,
+        auction_skip: 5,
+        ..NexmarkConfig::default()
+    };
+    let wrong_model = models::query2(&NexmarkConfig {
+        auction_skip: 7,
+        ..config
+    });
+    assert_ne!(wrong_model, models::query2(&config));
+
+    let p = TestPipeline::new();
+    let out = p
+        .apply("ReadEvents", BoundedEventSource::new(&config))
+        .apply("Query2", Query2::from_config(&config));
+    assert_timestamped("Query2WrongModel", &out, wrong_model);
+    let err = p.run().await.expect_err("a wrong model fails the job");
+    assert!(err.to_string().contains("Query2WrongModel"), "{err}");
 }
