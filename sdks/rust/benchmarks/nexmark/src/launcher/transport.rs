@@ -131,15 +131,8 @@ pub(super) fn read_kafka_events(
         KafkaRead::with_expansion_service,
     );
     let rows = pipeline.try_apply("ReadKafkaEvents", read)?;
-    Ok(
-        decode_rows(&rows, "DecodeKafkaEvents", kafka::payload_bytes).par_do_fn(
-            "EventTimeFromData",
-            |event: Event, ctx| {
-                let timestamp = event.date_time();
-                ctx.output(event).at(timestamp).emit()
-            },
-        ),
-    )
+    let events = decode_rows(&rows, "DecodeKafkaEvents", kafka::payload_bytes);
+    Ok(with_event_time_from_data(&events))
 }
 
 /// Publishes `events` to `--pubsub_topic`, with the ID and, unless
@@ -275,19 +268,38 @@ fn decode_rows(
     name: &str,
     payload: fn(&Row) -> Option<&[u8]>,
 ) -> PCollection<Event> {
+    decode_each(rows, name, move |row: Row| {
+        payload(&row)
+            .ok_or_else(|| "the message has no payload".to_owned())
+            .and_then(|bytes| decode_event(bytes).map_err(|err| err.to_string()))
+    })
+}
+
+/// Decodes each element to an [`Event`]. An element that does not decode counts in
+/// [`DECODE_ERRORS`] and is dropped, so one stray record does not stop the job.
+pub(super) fn decode_each<I, F>(input: &PCollection<I>, name: &str, decode: F) -> PCollection<Event>
+where
+    I: DefaultCoder + Send + Sync + 'static,
+    F: Fn(I) -> Result<Event, String> + Send + Sync + 'static,
+{
     static FIRST_ERROR: Once = Once::new();
     let errors = Metrics::counter(METRIC_NAMESPACE, DECODE_ERRORS);
-    rows.flat_map(name, move |row: Row| {
-        let decoded = payload(&row)
-            .ok_or_else(|| "the message has no payload".to_owned())
-            .and_then(|bytes| decode_event(bytes).map_err(|err| err.to_string()));
-        decoded
+    input.flat_map(name, move |element: I| {
+        decode(element)
             .inspect_err(|reason| {
                 errors.inc();
                 FIRST_ERROR.call_once(|| {
-                    tracing::warn!("dropping a message that is not a Nexmark event: {reason}");
+                    tracing::warn!("dropping a record that is not a Nexmark event: {reason}");
                 });
             })
             .ok()
+    })
+}
+
+/// Gives each event its own `date_time` as timestamp, for sources without event time.
+pub(super) fn with_event_time_from_data(events: &PCollection<Event>) -> PCollection<Event> {
+    events.par_do_fn("EventTimeFromData", |event: Event, ctx| {
+        let timestamp = event.date_time();
+        ctx.output(event).at(timestamp).emit()
     })
 }

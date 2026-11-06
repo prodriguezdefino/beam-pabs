@@ -21,6 +21,7 @@ mod coders;
 mod config;
 mod launcher;
 mod perf;
+mod rows;
 mod stop;
 mod transport;
 mod watch;

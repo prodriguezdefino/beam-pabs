@@ -31,6 +31,7 @@ use beam::windowing::{
 };
 
 use super::NexmarkArgs;
+use super::avro::{read_avro_events, with_coder_strategy, write_avro_events};
 use super::error::LauncherError;
 use super::monitor::{EVENTS, Monitor, RESULTS};
 use super::transport::{
@@ -60,11 +61,11 @@ pub fn is_prism_runner(runner: &str) -> bool {
 
 /// Assembles a complete [`Pipeline`] for one resolved [`NexmarkConfig`].
 ///
-/// The event [`Monitor`] follows the source and the result [`Monitor`] precedes the sink.
-/// With a Pub/Sub or Kafka source, `PUBLISH_ONLY` gives the publisher graph: generator,
-/// monitor and topic, with no query. `SUBSCRIBE_ONLY` and `COMBINED` give the query graph that
-/// reads the topic; [`run_nexmark`](super::run_nexmark) builds the `COMBINED` publisher
-/// separately.
+/// The [`CoderStrategy`](crate::config::CoderStrategy) and the event [`Monitor`] follow the
+/// source, and the result [`Monitor`] precedes the sink. With a Pub/Sub or Kafka source,
+/// `PUBLISH_ONLY` gives the publisher graph: generator, monitor and topic, with no query.
+/// `SUBSCRIBE_ONLY` and `COMBINED` give the query graph that reads the topic;
+/// [`run_nexmark`](super::run_nexmark) builds the `COMBINED` publisher separately.
 pub fn build_nexmark_pipeline(
     options: &PipelineOptions,
     args: &NexmarkArgs,
@@ -75,49 +76,72 @@ pub fn build_nexmark_pipeline(
         .as_deref()
         .map(str::trim)
         .filter(|path| !path.is_empty());
-    if config.sink_type == SinkType::Text && output_path.is_none() {
-        return Err(LauncherError::MissingOutputPath);
+    let needs_output_path = match config.sink_type {
+        SinkType::Text => Some("--sink_type=TEXT"),
+        SinkType::Avro => Some("--sink_type=AVRO"),
+        SinkType::CountOnly | SinkType::Devnull | SinkType::Pubsub | SinkType::Kafka => None,
+    };
+    if let (Some(needed_by), None) = (needs_output_path, output_path) {
+        return Err(missing_output_path(needed_by));
     }
 
     let pipeline = Pipeline::create(options);
-    let monitor = Monitor::new(EVENTS).with_logging(args.log_events);
-    let tail = QueryTail {
-        options,
-        args,
-        config,
-        query: config.query.unwrap_or(NexmarkQueryName::Passthrough),
-        output_path,
-    };
-    match (config.source_type, config.pubsub_mode, options.streaming) {
-        (SourceType::Direct, _, _) => {
-            let events = generated_events(&pipeline, options, config);
-            add_query(&events.apply("MonitorEvents", monitor), &tail)?;
-        }
-        (SourceType::Pubsub, PubsubMode::PublishOnly, _) => {
-            let events =
-                generated_events(&pipeline, options, config).apply("MonitorEvents", monitor);
-            write_pubsub_events(&events, args, config)?;
-        }
-        (SourceType::Kafka, PubsubMode::PublishOnly, _) => {
-            let events =
-                generated_events(&pipeline, options, config).apply("MonitorEvents", monitor);
-            write_kafka_events(&events, args)?;
+    let source = config.source_type;
+    let mode = config.pubsub_mode;
+    let events = match (source, mode, options.streaming) {
+        (SourceType::Direct, _, _)
+        | (SourceType::Pubsub | SourceType::Kafka, PubsubMode::PublishOnly, _) => {
+            generated_events(&pipeline, options, config)
         }
         (
-            source @ (SourceType::Pubsub | SourceType::Kafka),
+            SourceType::Pubsub | SourceType::Kafka,
             PubsubMode::Combined | PubsubMode::SubscribeOnly,
             false,
         ) => return Err(LauncherError::NeedsStreaming(source)),
         (SourceType::Pubsub, PubsubMode::Combined | PubsubMode::SubscribeOnly, true) => {
-            let events = read_pubsub_events(&pipeline, args, config)?;
-            add_query(&events.apply("MonitorEvents", monitor), &tail)?;
+            read_pubsub_events(&pipeline, args, config)?
         }
         (SourceType::Kafka, PubsubMode::Combined | PubsubMode::SubscribeOnly, true) => {
-            let events = read_kafka_events(&pipeline, args)?;
-            add_query(&events.apply("MonitorEvents", monitor), &tail)?;
+            read_kafka_events(&pipeline, args)?
         }
-    }
+        (SourceType::Avro, _, _) => read_avro_events(&pipeline, args)?,
+    };
+    let events = with_coder_strategy(events, config.coder_strategy).apply(
+        "MonitorEvents",
+        Monitor::new(EVENTS).with_logging(args.log_events),
+    );
+
+    match (source, mode) {
+        (SourceType::Pubsub, PubsubMode::PublishOnly) => write_pubsub_events(&events, args, config),
+        (SourceType::Kafka, PubsubMode::PublishOnly) => write_kafka_events(&events, args),
+        (SourceType::Direct | SourceType::Avro, _)
+        | (
+            SourceType::Pubsub | SourceType::Kafka,
+            PubsubMode::Combined | PubsubMode::SubscribeOnly,
+        ) => {
+            if let (SinkType::Avro, Some(path)) = (config.sink_type, output_path) {
+                write_avro_events(&events, path, config, options.streaming);
+            }
+            add_query(
+                &events,
+                &QueryTail {
+                    options,
+                    args,
+                    config,
+                    query: config.query.unwrap_or(NexmarkQueryName::Passthrough),
+                    output_path,
+                },
+            )
+        }
+    }?;
     Ok(pipeline)
+}
+
+fn missing_output_path(needed_by: &'static str) -> LauncherError {
+    LauncherError::MissingFlag {
+        flag: "--output_path",
+        needed_by,
+    }
 }
 
 /// Events from the generator: unbounded in streaming mode, bounded otherwise.
@@ -281,7 +305,9 @@ impl QueryTail<'_> {
                 });
             }
             SinkType::Text => {
-                let base = self.output_path.ok_or(LauncherError::MissingOutputPath)?;
+                let base = self
+                    .output_path
+                    .ok_or_else(|| missing_output_path("--sink_type=TEXT"))?;
                 let prefix = format!("{}/{}", base.trim_end_matches('/'), self.query.slug());
                 let formatted = output.map("FormatSinkText", |elem: T| format!("{elem:?}"));
                 let rewindowed = match (self.options.streaming, is_globally_windowed(&formatted)) {
@@ -307,6 +333,8 @@ impl QueryTail<'_> {
             }
             SinkType::Pubsub => write_pubsub_results(output, self.args, self.config)?,
             SinkType::Kafka => write_kafka_results(output, self.args)?,
+            // The Avro sink writes the input events, after the source, and discards results.
+            SinkType::Avro => {}
         }
         Ok(())
     }

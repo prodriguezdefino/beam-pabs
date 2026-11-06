@@ -20,6 +20,7 @@
 //! CLI argument parsing, pipeline assembly, monitoring, and summary reporting for Nexmark runs.
 
 mod args;
+mod avro;
 mod error;
 mod monitor;
 mod perf;
@@ -30,6 +31,7 @@ mod transport;
 mod watch;
 
 pub use self::args::NexmarkArgs;
+pub use self::avro::{AVRO_AUCTION_FILES, AVRO_BID_FILES, AVRO_EVENT_FILES, AVRO_PERSON_FILES};
 pub use self::error::LauncherError;
 pub use self::monitor::{
     BYTES, ELEMENTS, EVENT_TIMESTAMP_MS, EVENTS, METRIC_NAMESPACE, Monitor, PROCESSING_TIME_MS,

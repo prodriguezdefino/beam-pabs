@@ -21,6 +21,7 @@
 
 mod coders;
 mod results;
+mod rows;
 
 use std::cmp::Ordering;
 
@@ -37,6 +38,7 @@ pub use self::results::{
     AuctionBid, AuctionCount, AuctionPrice, BidsPerSession, CategoryPrice, Done, IdNameReserve,
     NameCityStateId, SellerPrice,
 };
+pub use self::rows::{AuctionRow, BidRow, EventRow, InvalidEventRow, PersonRow};
 
 /// Element with a deterministic byte-size estimate for throughput monitoring.
 pub trait KnownSize {

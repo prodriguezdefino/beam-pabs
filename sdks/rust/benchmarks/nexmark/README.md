@@ -26,8 +26,8 @@ the Apache Beam Rust SDK.
 
 - `src/config`: query identifiers, suite presets (`DEFAULT`, `SMOKE`, `STRESS`, `FULL_THROTTLE`),
   and rate curves (`SINE`, `SQUARE`).
-- `src/model`: `Person`, `Auction`, `Bid`, `Event`, query output types, byte-size estimates, and
-  binary coders.
+- `src/model`: `Person`, `Auction`, `Bid`, `Event`, their schema row forms, query output types,
+  byte-size estimates, and binary coders.
 - `src/generator`: deterministic 48-bit LCG event synthesis matching `java.util.Random`.
 - `src/source`: bounded and unbounded splittable DoFn sources over event ID ranges.
 - `src/queries`: 17 Nexmark query `PTransform` implementations plus the stateful `WinningBids`
@@ -88,7 +88,7 @@ Run all commands from the repository root with Gradle:
 Pass Nexmark flags directly or through `-PextraArgs="..."`:
 
 - `--suite=<DEFAULT|SMOKE|STRESS|FULL_THROTTLE>` and `--query=<0..16|NAME>`
-- `--sink_type=<COUNT_ONLY|DEVNULL|TEXT|PUBSUB|KAFKA>` and `--output_path=<dir-or-gs-uri>`
+- `--sink_type=<COUNT_ONLY|DEVNULL|TEXT|PUBSUB|KAFKA|AVRO>` and `--output_path=<dir-or-gs-uri>`
 - `--num_events=<n>`, `--num_event_generators=<n>`, `--is_rate_limited`, `--first_event_rate=<n>`,
   `--next_event_rate=<n>`, `--rate_shape=<SINE|SQUARE>`, `--rate_unit=<PER_SECOND|PER_MINUTE>`
 - `--window_size_sec=<n>`, `--window_period_sec=<n>`, `--session_gap_sec=<n>`, `--fanout=<n>`
@@ -100,7 +100,8 @@ Pass Nexmark flags directly or through `-PextraArgs="..."`:
 - `--log_events`, `--log_results`: log each event or result at the `info` level.
 - `--stream_timeout=<sec>` (default 240): longest streaming run after its first event.
 - `--cancel_streaming_job_after_finish`: cancel a finished streaming job instead of draining it.
-- `--source_type=<DIRECT|PUBSUB|KAFKA>` and the flags of
+- `--source_type=<DIRECT|PUBSUB|KAFKA|AVRO>`, `--input_path=<prefix>` ([Avro files](#avro-files)),
+  `--coder_strategy=<HAND|ROW>` ([coder strategies](#coder-strategies)), and the flags of
   [Pub/Sub and Kafka](#pubsub-and-kafka).
 
 ## Pub/Sub and Kafka
@@ -165,6 +166,35 @@ gcloud pubsub subscriptions create nexmark-events-sub --topic=nexmark-events --p
   --source_type=PUBSUB --pubsub_mode=SUBSCRIBE_ONLY \
   --pubsub_subscription=projects/my-project/subscriptions/nexmark-events-sub"
 ```
+
+## Avro Files
+
+`--sink_type=AVRO` writes the input events to Avro container files under `--output_path` and
+discards the query results, as the Java launcher does:
+
+| Files | Records |
+|---|---|
+| `<output_path>/event-SSSSS-of-NNNNN.avro` | All events, as `{newPerson, newAuction, bid}` with one field set |
+| `<output_path>/bid-*.avro`, `auction-*.avro`, `person-*.avro` | The bids, new auctions and new persons |
+
+`--source_type=AVRO --input_path=<output_path>/event` reads the files `<input_path>*.avro` back
+and gives each event its own `dateTime` as timestamp. It works in batch and streaming mode.
+
+- Field names are the camelCase names of the Java model (`emailAddress`, `initialBid`, ...).
+  Times (`dateTime`, `expires`) are `long` epoch milliseconds.
+- The files do not promise to be readable by the Java launcher, or Java files by this one:
+  Java derives its Avro schema by reflection.
+- In streaming mode each file holds one fixed window of `--window_size_sec`.
+- Java's `--generateEventFilePathPrefix` text dump of the events is not ported.
+
+## Coder Strategies
+
+`--coder_strategy=HAND` (default) moves every element with the hand-written binary coders of
+the model. `--coder_strategy=ROW` converts the events after the source to schema rows
+(`EventRow`), reshuffles them, so the runner moves them with `beam:coder:row:v1`, and converts
+them back. The queries keep the hand coders. This is narrower than the Java `AVRO` and `JAVA`
+strategies, which change the coder of every PCollection: in this SDK a Rust type has one
+coder, so a pipeline cannot switch the coder of the model types.
 
 ## Metrics and Summary Table
 

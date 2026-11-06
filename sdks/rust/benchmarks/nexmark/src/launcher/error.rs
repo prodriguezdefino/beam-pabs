@@ -30,8 +30,6 @@ use crate::config::SourceType;
 /// Failure modes encountered while configuring or running a Nexmark pipeline.
 #[derive(Debug)]
 pub enum LauncherError {
-    /// `SinkType::Text` was selected without providing `--output_path`.
-    MissingOutputPath,
     /// A flag that the selected source, sink or mode needs is missing or empty.
     MissingFlag {
         flag: &'static str,
@@ -57,9 +55,6 @@ pub enum LauncherError {
 impl fmt::Display for LauncherError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingOutputPath => {
-                f.write_str("--output_path is required when --sink_type=TEXT")
-            }
             Self::MissingFlag { flag, needed_by } => {
                 write!(f, "{flag} is required for {needed_by}")
             }
@@ -84,8 +79,7 @@ impl std::error::Error for LauncherError {
             Self::Expansion(err) => Some(err),
             Self::Options(err) => Some(err),
             Self::Runner(err) => Some(err),
-            Self::MissingOutputPath
-            | Self::MissingFlag { .. }
+            Self::MissingFlag { .. }
             | Self::NeedsStreaming(_)
             | Self::Unsuccessful(_)
             | Self::Correctness(_)

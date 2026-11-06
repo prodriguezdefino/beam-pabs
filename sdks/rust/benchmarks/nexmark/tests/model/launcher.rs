@@ -263,9 +263,26 @@ fn text_sink_without_output_path_returns_missing_output_path_error() {
     };
 
     let Err(err) = build_nexmark_pipeline(&options, &args, &config) else {
-        panic!("expected MissingOutputPath error");
+        panic!("expected a missing --output_path error");
     };
-    assert!(matches!(err, LauncherError::MissingOutputPath));
+    assert!(matches!(
+        err,
+        LauncherError::MissingFlag {
+            flag: "--output_path",
+            needed_by: "--sink_type=TEXT"
+        }
+    ));
+    let avro = NexmarkConfig {
+        sink_type: SinkType::Avro,
+        ..config
+    };
+    assert!(matches!(
+        build_nexmark_pipeline(&options, &args, &avro),
+        Err(LauncherError::MissingFlag {
+            flag: "--output_path",
+            needed_by: "--sink_type=AVRO"
+        })
+    ));
 }
 
 #[test]

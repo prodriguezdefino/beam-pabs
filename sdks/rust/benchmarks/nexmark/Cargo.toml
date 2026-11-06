@@ -53,7 +53,7 @@ name = "queries_streaming"
 path = "tests/queries_streaming/main.rs"
 
 [dependencies]
-beam = { workspace = true, features = ["prism", "dataflow", "gcp-gcs", "gcp-pubsub", "kafka", "testing"] }
+beam = { workspace = true, features = ["prism", "dataflow", "gcp-gcs", "gcp-pubsub", "kafka", "avro", "testing"] }
 clap = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true }

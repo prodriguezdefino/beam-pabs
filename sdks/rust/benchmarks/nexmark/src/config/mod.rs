@@ -44,6 +44,8 @@ pub enum SourceType {
     Pubsub,
     /// Exchange events through Apache Kafka, as [`PubsubMode`] tells.
     Kafka,
+    /// Read events from Avro files that `--sink_type=AVRO` wrote.
+    Avro,
 }
 
 impl FromStr for SourceType {
@@ -54,6 +56,7 @@ impl FromStr for SourceType {
             "DIRECT" => Ok(Self::Direct),
             "PUBSUB" => Ok(Self::Pubsub),
             "KAFKA" => Ok(Self::Kafka),
+            "AVRO" => Ok(Self::Avro),
             _ => Err(format!("unknown source type: {s}")),
         }
     }
@@ -74,6 +77,8 @@ pub enum SinkType {
     Pubsub,
     /// Write formatted results to an Apache Kafka topic.
     Kafka,
+    /// Write the input events to Avro files and discard the results.
+    Avro,
 }
 
 impl FromStr for SinkType {
@@ -86,6 +91,7 @@ impl FromStr for SinkType {
             "TEXT" => Ok(Self::Text),
             "PUBSUB" => Ok(Self::Pubsub),
             "KAFKA" => Ok(Self::Kafka),
+            "AVRO" => Ok(Self::Avro),
             _ => Err(format!("unknown sink type: {s}")),
         }
     }
@@ -117,6 +123,29 @@ impl FromStr for PubsubMode {
     }
 }
 
+/// Coders of the event stream.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CoderStrategy {
+    /// The hand-written binary coders of the model types.
+    #[default]
+    Hand,
+    /// The schema row coder, at a reshuffle after the source.
+    Row,
+}
+
+impl FromStr for CoderStrategy {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_uppercase().as_str() {
+            "HAND" => Ok(Self::Hand),
+            "ROW" => Ok(Self::Row),
+            _ => Err(format!("unknown coder strategy: {s}")),
+        }
+    }
+}
+
 /// Parameters for event synthesis and query execution.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NexmarkConfig {
@@ -126,6 +155,7 @@ pub struct NexmarkConfig {
     pub pubsub_mode: PubsubMode,
     /// Use the Pub/Sub publish time as event time instead of a timestamp attribute.
     pub use_pubsub_publish_time: bool,
+    pub coder_strategy: CoderStrategy,
     pub side_input_row_count: i32,
     pub session_gap_sec: i64,
     /// Total events to synthesize (`0` selects the largest count that fits byte estimates).
@@ -175,6 +205,7 @@ impl Default for NexmarkConfig {
             sink_type: SinkType::Devnull,
             pubsub_mode: PubsubMode::Combined,
             use_pubsub_publish_time: false,
+            coder_strategy: CoderStrategy::Hand,
             side_input_row_count: 500,
             session_gap_sec: 600,
             num_events: 100_000,

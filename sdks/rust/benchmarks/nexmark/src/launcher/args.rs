@@ -24,8 +24,8 @@ use clap::Args;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{
-    NexmarkConfig, NexmarkQueryName, NexmarkSuite, PubsubMode, RateShape, RateUnit, SinkType,
-    SourceType,
+    CoderStrategy, NexmarkConfig, NexmarkQueryName, NexmarkSuite, PubsubMode, RateShape, RateUnit,
+    SinkType, SourceType,
 };
 
 /// Command-line flags for selecting and tuning Nexmark benchmark runs.
@@ -213,6 +213,14 @@ pub struct NexmarkArgs {
     /// service.
     #[arg(long)]
     pub expansion_service: Option<String>,
+
+    /// File prefix of the Avro events for `--source_type=AVRO`; the files are `<prefix>*.avro`.
+    #[arg(long)]
+    pub input_path: Option<String>,
+
+    /// Coders of the event stream (`HAND` or `ROW`).
+    #[arg(long)]
+    pub coder_strategy: Option<CoderStrategy>,
 }
 
 impl Default for NexmarkArgs {
@@ -263,6 +271,8 @@ impl Default for NexmarkArgs {
             kafka_results_topic: None,
             bootstrap_servers: None,
             expansion_service: None,
+            input_path: None,
+            coder_strategy: None,
         }
     }
 }
@@ -318,6 +328,7 @@ impl NexmarkArgs {
             source_type: self.source_type.unwrap_or(base.source_type),
             sink_type: self.sink_type.unwrap_or(base.sink_type),
             pubsub_mode: self.pubsub_mode.unwrap_or(base.pubsub_mode),
+            coder_strategy: self.coder_strategy.unwrap_or(base.coder_strategy),
             use_pubsub_publish_time: self
                 .use_pubsub_publish_time
                 .unwrap_or(base.use_pubsub_publish_time),
