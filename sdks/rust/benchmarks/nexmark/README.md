@@ -88,7 +88,7 @@ Run all commands from the repository root with Gradle:
 Pass Nexmark flags directly or through `-PextraArgs="..."`:
 
 - `--suite=<DEFAULT|SMOKE|STRESS|FULL_THROTTLE>` and `--query=<0..16|NAME>`
-- `--sink_type=<COUNT_ONLY|DEVNULL|TEXT>` and `--output_path=<dir-or-gs-uri>`
+- `--sink_type=<COUNT_ONLY|DEVNULL|TEXT|PUBSUB|KAFKA>` and `--output_path=<dir-or-gs-uri>`
 - `--num_events=<n>`, `--num_event_generators=<n>`, `--is_rate_limited`, `--first_event_rate=<n>`,
   `--next_event_rate=<n>`, `--rate_shape=<SINE|SQUARE>`, `--rate_unit=<PER_SECOND|PER_MINUTE>`
 - `--window_size_sec=<n>`, `--window_period_sec=<n>`, `--session_gap_sec=<n>`, `--fanout=<n>`
@@ -100,6 +100,71 @@ Pass Nexmark flags directly or through `-PextraArgs="..."`:
 - `--log_events`, `--log_results`: log each event or result at the `info` level.
 - `--stream_timeout=<sec>` (default 240): longest streaming run after its first event.
 - `--cancel_streaming_job_after_finish`: cancel a finished streaming job instead of draining it.
+- `--source_type=<DIRECT|PUBSUB|KAFKA>` and the flags of
+  [Pub/Sub and Kafka](#pubsub-and-kafka).
+
+## Pub/Sub and Kafka
+
+With `--source_type=PUBSUB` or `KAFKA`, events travel through a topic. `--pubsub_mode` selects
+the side of the exchange, for Kafka too:
+
+| Mode | Jobs |
+|---|---|
+| `COMBINED` (default) | A publisher job (`<job_name>-publisher`) writes generated events to the topic. The query job reads them. The launcher cancels the publisher when the query run ends. |
+| `PUBLISH_ONLY` | Only the publisher job. The row shows the event figures. |
+| `SUBSCRIBE_ONLY` | Only the query job, on events that another process publishes. |
+
+| Flag | Used by |
+|---|---|
+| `--pubsub_topic=projects/<p>/topics/<t>` | Pub/Sub publisher |
+| `--pubsub_subscription=projects/<p>/subscriptions/<s>` | Pub/Sub query |
+| `--pubsub_results_topic=projects/<p>/topics/<t>` | `--sink_type=PUBSUB` |
+| `--use_pubsub_publish_time` | Event time from the publish time, not the `timestamp` attribute |
+| `--kafka_topic=<t>`, `--bootstrap_servers=<host:port,...>` | Kafka publisher and query |
+| `--kafka_results_topic=<t>` | `--sink_type=KAFKA` |
+| `--expansion_service=<host:port>` | Instead of the default Java expansion service |
+
+- A query job that reads a topic needs `--streaming`. `PUBLISH_ONLY` also runs in batch.
+- Events are the bytes of the Java Nexmark `Event.CODER`. Results are their text form, UTF-8.
+- The Pub/Sub publisher sets the `id` attribute and, unless `--use_pubsub_publish_time`, the
+  `timestamp` attribute, so event time equals generator time. With the publish time, also set
+  `--use_wallclock_event_time`.
+- The transforms are cross-language. The graph build needs Java and the expansion service.
+- The launcher does not create or delete topics or subscriptions. Create them before the run.
+  A missing name stops the launcher before it submits a job.
+
+Differences from the Java launcher:
+
+- Results go to `--pubsub_results_topic`. Java writes them to the event topic, where a
+  `COMBINED` query would read them back as events.
+- A message that is not an event increments the `nexmark/decode_errors` counter and is
+  dropped. Java fails the bundle. A `fatal` counter would make the streaming monitor cancel
+  the job.
+- The Kafka transforms carry no record timestamps, so each event read from Kafka gets its own
+  `date_time` as timestamp. Run Kafka with `--use_wallclock_event_time`, so the read watermark
+  and the event times agree. The reader starts at the earliest offset: use a new or empty
+  topic for each run.
+
+Dataflow recipe for query 5 through Pub/Sub:
+
+```bash
+gcloud pubsub topics create nexmark-events --project=my-project
+gcloud pubsub subscriptions create nexmark-events-sub --topic=nexmark-events --project=my-project
+
+# One launch runs both jobs.
+./gradlew :sdks:rust:nexmarkDataflow -Pquery=5 -Pstreaming -PextraArgs="--num_events=1000000 \
+  --source_type=PUBSUB --pubsub_mode=COMBINED \
+  --pubsub_topic=projects/my-project/topics/nexmark-events \
+  --pubsub_subscription=projects/my-project/subscriptions/nexmark-events-sub"
+
+# Or two launches: the publisher, then the query.
+./gradlew :sdks:rust:nexmarkDataflow -Pquery=5 -Pstreaming -PextraArgs="--num_events=1000000 \
+  --source_type=PUBSUB --pubsub_mode=PUBLISH_ONLY \
+  --pubsub_topic=projects/my-project/topics/nexmark-events"
+./gradlew :sdks:rust:nexmarkDataflow -Pquery=5 -Pstreaming -PextraArgs="--num_events=1000000 \
+  --source_type=PUBSUB --pubsub_mode=SUBSCRIBE_ONLY \
+  --pubsub_subscription=projects/my-project/subscriptions/nexmark-events-sub"
+```
 
 ## Metrics and Summary Table
 

@@ -26,7 +26,7 @@ use beam::metrics::{MetricKey, MetricPhase, MetricReading, MetricResults, Metric
 use beam::runners::{JobHandle, JobState, PipelineResult, RunnerError};
 use nexmark::launcher::{
     ELEMENTS, EVENTS, LauncherError, METRIC_NAMESPACE, MonitorTiming, StopReason, StopRules,
-    metric_name, monitor_streaming_job,
+    metric_name, monitor_streaming_job, with_publisher,
 };
 
 const TIMING: MonitorTiming = MonitorTiming {
@@ -243,4 +243,27 @@ async fn job_that_ends_by_itself_needs_no_stop() {
     assert_eq!(run.stop, StopReason::Finished);
     assert_eq!(run.snapshots.len(), 3);
     assert!(job.calls().is_empty());
+}
+
+#[tokio::test]
+async fn combined_run_cancels_the_publisher_when_the_query_ends() {
+    let publisher = ScriptedJob::new(&[0]);
+    let query = ScriptedJob {
+        ends_after: Some(2),
+        ..ScriptedJob::new(&[10, 100])
+    };
+    let run = with_publisher(&publisher, monitor(&query, RULES, false)).await;
+    assert_eq!(run.ok(), Some(StopReason::Finished));
+    assert_eq!(publisher.calls(), ["cancel"]);
+    assert!(query.calls().is_empty());
+
+    let failing_publisher = ScriptedJob::new(&[0]);
+    let fatal_query = ScriptedJob {
+        fatal: 1,
+        ..ScriptedJob::new(&[10])
+    };
+    let run = with_publisher(&failing_publisher, monitor(&fatal_query, RULES, false)).await;
+    assert!(run.is_err());
+    assert_eq!(failing_publisher.calls(), ["cancel"]);
+    assert_eq!(fatal_query.calls(), ["cancel"]);
 }

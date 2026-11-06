@@ -24,11 +24,12 @@ use beam::prelude::*;
 use beam::testing::passert;
 
 use super::NexmarkArgs;
+use super::error::LauncherError;
 use super::perf::{NexmarkPerf, ProgressSnapshot, steady_state_events_per_sec};
-use super::pipeline::{LauncherError, build_nexmark_pipeline, is_prism_runner};
+use super::pipeline::{build_nexmark_pipeline, is_prism_runner};
 use super::stop::{MonitorTiming, StopRules};
-use super::watch::{StopReason, StreamingRun, monitor_streaming_job};
-use crate::config::{NexmarkConfig, NexmarkQueryName};
+use super::watch::{StopReason, StreamingRun, monitor_streaming_job, with_publisher};
+use crate::config::{NexmarkConfig, NexmarkQueryName, PubsubMode, SourceType};
 
 const PRISM_QUERY11_SKIP_REASON: &str = "apache/beam#31438";
 
@@ -90,7 +91,22 @@ pub async fn run_nexmark(
         {
             run_options.job_name = Some(format!("{base_name}-{}", query.slug().replace('_', "-")));
         }
-        run_options.set(args.pin_query(query))?;
+        // A COMBINED run is two jobs. Pin each to its side, so its workers rebuild its graph.
+        let combined = matches!(
+            (config.source_type, config.pubsub_mode),
+            (SourceType::Pubsub | SourceType::Kafka, PubsubMode::Combined)
+        );
+        let query_args = match combined {
+            true => args
+                .pin_query(query)
+                .pin_pubsub_mode(PubsubMode::SubscribeOnly),
+            false => args.pin_query(query),
+        };
+        run_options.set(query_args)?;
+        let publisher = match combined {
+            true => Some(build_publisher(&run_options, args, query, &config)?),
+            false => None,
+        };
 
         let pipeline = build_nexmark_pipeline(&run_options, args, &config)?;
         // The graph holds a check only for a batch query with a model. Workers rebuild the
@@ -111,12 +127,13 @@ pub async fn run_nexmark(
             args,
             timing,
         };
-        let outcome =
-            execute(&pipeline, &run)
-                .await
-                .unwrap_or_else(|err| NexmarkRunOutcome::Failed {
-                    reason: err.to_string(),
-                });
+        let result = match &publisher {
+            Some(publisher) => execute_with_publisher(publisher, &pipeline, &run).await,
+            None => execute(&pipeline, &run).await,
+        };
+        let outcome = result.unwrap_or_else(|err| NexmarkRunOutcome::Failed {
+            reason: err.to_string(),
+        });
         summaries.push(QueryRunSummary { query, outcome });
     }
 
@@ -125,6 +142,40 @@ pub async fn run_nexmark(
     }
 
     Ok(summaries)
+}
+
+/// Builds the publisher job of a `COMBINED` run: the query options pinned to `PUBLISH_ONLY`,
+/// with `-publisher` after the job name.
+fn build_publisher(
+    query_options: &PipelineOptions,
+    args: &NexmarkArgs,
+    query: NexmarkQueryName,
+    config: &NexmarkConfig,
+) -> Result<Pipeline, LauncherError> {
+    let mut options = query_options.clone();
+    options.job_name = query_options
+        .job_name
+        .as_ref()
+        .map(|name| format!("{name}-publisher"));
+    let publisher_args = args
+        .pin_query(query)
+        .pin_pubsub_mode(PubsubMode::PublishOnly);
+    options.set(publisher_args)?;
+    let publisher_config = NexmarkConfig {
+        pubsub_mode: PubsubMode::PublishOnly,
+        ..*config
+    };
+    build_nexmark_pipeline(&options, args, &publisher_config)
+}
+
+/// Submits the `publisher` job, then runs `query` and cancels the publisher at its end.
+async fn execute_with_publisher(
+    publisher: &Pipeline,
+    query: &Pipeline,
+    run: &RunSettings<'_>,
+) -> Result<NexmarkRunOutcome, LauncherError> {
+    let publisher_job = publisher.submit().await?;
+    with_publisher(publisher_job.as_ref(), execute(query, run)).await
 }
 
 /// The settings of one query run that [`execute`] needs.

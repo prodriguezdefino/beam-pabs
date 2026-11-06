@@ -22,4 +22,5 @@ mod config;
 mod launcher;
 mod perf;
 mod stop;
+mod transport;
 mod watch;

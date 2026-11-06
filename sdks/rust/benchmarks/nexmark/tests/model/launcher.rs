@@ -19,7 +19,8 @@
 
 use beam::options::{PipelineOptions, WorkerOptions, try_parse_from};
 use nexmark::config::{
-    NexmarkConfig, NexmarkQueryName, NexmarkSuite, RateShape, RateUnit, SinkType, SourceType,
+    NexmarkConfig, NexmarkQueryName, NexmarkSuite, PubsubMode, RateShape, RateUnit, SinkType,
+    SourceType,
 };
 use nexmark::launcher::{
     LauncherError, NexmarkArgs, NexmarkPerf, NexmarkRunOutcome, QueryRunSummary, StopReason,
@@ -74,6 +75,15 @@ fn parses_nexmark_and_dataflow_flags_without_collision() {
         "--log_results",
         "--stream_timeout=90",
         "--cancel_streaming_job_after_finish",
+        "--pubsub_mode=SUBSCRIBE_ONLY",
+        "--pubsub_topic=projects/p/topics/t",
+        "--pubsub_subscription=projects/p/subscriptions/s",
+        "--pubsub_results_topic=projects/p/topics/r",
+        "--use_pubsub_publish_time",
+        "--kafka_topic=events",
+        "--kafka_results_topic=results",
+        "--bootstrap_servers=broker:9092",
+        "--expansion_service=localhost:8097",
     ])
     .expect("valid Nexmark and Dataflow CLI flags");
 
@@ -121,6 +131,23 @@ fn parses_nexmark_and_dataflow_flags_without_collision() {
     assert_eq!(args.stream_timeout, Some(90));
     assert!(args.cancel_streaming_job_after_finish);
     assert_eq!(args.resolve_configs()[0].stream_timeout, 90);
+    assert_eq!(args.pubsub_mode, Some(PubsubMode::SubscribeOnly));
+    assert_eq!(args.pubsub_topic.as_deref(), Some("projects/p/topics/t"));
+    assert_eq!(
+        args.pubsub_subscription.as_deref(),
+        Some("projects/p/subscriptions/s")
+    );
+    assert_eq!(
+        args.pubsub_results_topic.as_deref(),
+        Some("projects/p/topics/r")
+    );
+    assert_eq!(args.kafka_topic.as_deref(), Some("events"));
+    assert_eq!(args.kafka_results_topic.as_deref(), Some("results"));
+    assert_eq!(args.bootstrap_servers.as_deref(), Some("broker:9092"));
+    assert_eq!(args.expansion_service.as_deref(), Some("localhost:8097"));
+    let config = args.resolve_configs().remove(0);
+    assert_eq!(config.pubsub_mode, PubsubMode::SubscribeOnly);
+    assert!(config.use_pubsub_publish_time);
 }
 
 #[test]
@@ -135,6 +162,11 @@ fn correctness_and_logging_flags_default_to_false() {
     assert!(!defaults.assert_correctness && !defaults.log_events && !defaults.log_results);
     assert!(!defaults.cancel_streaming_job_after_finish);
     assert_eq!(defaults.resolve_configs()[0].stream_timeout, 240);
+    assert_eq!(
+        defaults.resolve_configs()[0].pubsub_mode,
+        PubsubMode::Combined
+    );
+    assert!(!defaults.resolve_configs()[0].use_pubsub_publish_time);
 }
 
 #[test]

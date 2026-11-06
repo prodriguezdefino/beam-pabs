@@ -24,7 +24,8 @@ use clap::Args;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{
-    NexmarkConfig, NexmarkQueryName, NexmarkSuite, RateShape, RateUnit, SinkType, SourceType,
+    NexmarkConfig, NexmarkQueryName, NexmarkSuite, PubsubMode, RateShape, RateUnit, SinkType,
+    SourceType,
 };
 
 /// Command-line flags for selecting and tuning Nexmark benchmark runs.
@@ -175,6 +176,43 @@ pub struct NexmarkArgs {
     /// Cancel a finished streaming job instead of draining it.
     #[arg(long)]
     pub cancel_streaming_job_after_finish: bool,
+
+    /// Side of the Pub/Sub or Kafka event exchange (`COMBINED`, `PUBLISH_ONLY`, `SUBSCRIBE_ONLY`).
+    #[arg(long)]
+    pub pubsub_mode: Option<PubsubMode>,
+
+    /// Topic for events, as `projects/<project>/topics/<topic>`.
+    #[arg(long)]
+    pub pubsub_topic: Option<String>,
+
+    /// Subscription to read events from, as `projects/<project>/subscriptions/<name>`.
+    #[arg(long)]
+    pub pubsub_subscription: Option<String>,
+
+    /// Topic for query results with `--sink_type=PUBSUB`, as `projects/<project>/topics/<topic>`.
+    #[arg(long)]
+    pub pubsub_results_topic: Option<String>,
+
+    /// Use the Pub/Sub publish time as event time instead of a timestamp attribute.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    pub use_pubsub_publish_time: Option<bool>,
+
+    /// Kafka topic for events.
+    #[arg(long)]
+    pub kafka_topic: Option<String>,
+
+    /// Kafka topic for query results with `--sink_type=KAFKA`.
+    #[arg(long)]
+    pub kafka_results_topic: Option<String>,
+
+    /// Kafka bootstrap servers, as `host:port[,host:port...]`.
+    #[arg(long)]
+    pub bootstrap_servers: Option<String>,
+
+    /// Expansion service for the Pub/Sub and Kafka transforms, instead of the default Java
+    /// service.
+    #[arg(long)]
+    pub expansion_service: Option<String>,
 }
 
 impl Default for NexmarkArgs {
@@ -216,6 +254,15 @@ impl Default for NexmarkArgs {
             log_results: false,
             stream_timeout: None,
             cancel_streaming_job_after_finish: false,
+            pubsub_mode: None,
+            pubsub_topic: None,
+            pubsub_subscription: None,
+            pubsub_results_topic: None,
+            use_pubsub_publish_time: None,
+            kafka_topic: None,
+            kafka_results_topic: None,
+            bootstrap_servers: None,
+            expansion_service: None,
         }
     }
 }
@@ -257,11 +304,23 @@ impl NexmarkArgs {
         }
     }
 
+    /// Clones these arguments with `mode`, so the workers of a job build the side that it runs.
+    pub fn pin_pubsub_mode(&self, mode: PubsubMode) -> Self {
+        Self {
+            pubsub_mode: Some(mode),
+            ..self.clone()
+        }
+    }
+
     fn apply_overrides(&self, base: NexmarkConfig) -> NexmarkConfig {
         NexmarkConfig {
             query: self.query.or(base.query),
             source_type: self.source_type.unwrap_or(base.source_type),
             sink_type: self.sink_type.unwrap_or(base.sink_type),
+            pubsub_mode: self.pubsub_mode.unwrap_or(base.pubsub_mode),
+            use_pubsub_publish_time: self
+                .use_pubsub_publish_time
+                .unwrap_or(base.use_pubsub_publish_time),
             side_input_row_count: self
                 .side_input_row_count
                 .unwrap_or(base.side_input_row_count),

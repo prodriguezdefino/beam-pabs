@@ -24,8 +24,8 @@ use std::time::Instant as WallInstant;
 use beam::metrics::{MetricFilter, MetricResult, MetricResults};
 use beam::runners::{JobHandle, JobState, PipelineResult, RunnerError};
 
+use super::error::LauncherError;
 use super::perf::{NexmarkPerf, ProgressSnapshot};
-use super::pipeline::LauncherError;
 use super::stop::{Decision, MonitorState, MonitorTiming, Observation, StopRules, decide};
 
 /// Why a streaming run that did not fail stopped.
@@ -43,6 +43,21 @@ pub struct StreamingRun {
     pub metrics: MetricResults,
     pub stop: StopReason,
     pub snapshots: Vec<ProgressSnapshot>,
+}
+
+/// Runs `query` to its end, then cancels `publisher`, the publisher job of a `COMBINED` run.
+///
+/// The publisher writes until it stops, so it is cancelled whatever the outcome of `query`.
+/// A failed cancel is logged and does not change that outcome.
+pub async fn with_publisher<T>(publisher: &dyn JobHandle, query: impl Future<Output = T>) -> T {
+    let outcome = query.await;
+    if let Err(err) = publisher.cancel().await {
+        tracing::warn!(
+            job = publisher.job_id(),
+            "cannot cancel the publisher job: {err}"
+        );
+    }
+    outcome
 }
 
 /// Polls `job` every `timing.perf_delay` until it ends or a stop rule fires.

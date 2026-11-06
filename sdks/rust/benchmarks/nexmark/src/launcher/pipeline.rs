@@ -19,23 +19,27 @@
 
 //! Pipeline graph assembly for Nexmark sources, monitors, queries, checks, and sinks.
 
-use std::fmt::{self, Debug};
+use std::fmt::Debug;
 use std::time::Duration;
 
 use beam::coders::DefaultCoder;
 use beam::io::file::textio;
-use beam::options::{OptionsError, PipelineOptions};
+use beam::options::PipelineOptions;
 use beam::prelude::*;
-use beam::runners::{JobState, RunnerError};
 use beam::windowing::{
     AccumulationMode, FixedWindows, GlobalWindows, Trigger, WindowInto, is_globally_windowed,
 };
 
 use super::NexmarkArgs;
+use super::error::LauncherError;
 use super::monitor::{EVENTS, Monitor, RESULTS};
-use crate::config::{NexmarkConfig, NexmarkQueryName, SinkType, SourceType};
+use super::transport::{
+    read_kafka_events, read_pubsub_events, write_kafka_events, write_kafka_results,
+    write_pubsub_events, write_pubsub_results,
+};
+use crate::config::{NexmarkConfig, NexmarkQueryName, PubsubMode, SinkType, SourceType};
 use crate::correctness::{assert_final_seller_prices, assert_timestamped};
-use crate::model::KnownSize;
+use crate::model::{Event, KnownSize};
 use crate::models;
 use crate::queries::{
     BoundedSideInputJoin, Query0, Query1, Query2, Query3, Query4, Query5, Query6, Query7, Query8,
@@ -46,63 +50,6 @@ use crate::source::{BoundedEventSource, UnboundedEventSource};
 /// Name of the `--assert_correctness` check. A pipeline holds at most one.
 const CORRECTNESS_CHECK: &str = "AssertCorrectness";
 
-/// Failure modes encountered while configuring or running a Nexmark pipeline.
-#[derive(Debug)]
-pub enum LauncherError {
-    /// `SinkType::Text` was selected without providing `--output_path`.
-    MissingOutputPath,
-    /// Updating or snapshotting `PipelineOptions` failed.
-    Options(OptionsError),
-    /// Runner execution failed.
-    Runner(RunnerError),
-    /// The job ended in a state other than `DONE` or `DRAINED`.
-    Unsuccessful(JobState),
-    /// A `--assert_correctness` check did not run or did not pass.
-    Correctness(String),
-    /// The streaming monitor cancelled the job because of fatal errors or no progress.
-    Stopped(String),
-}
-
-impl fmt::Display for LauncherError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingOutputPath => {
-                f.write_str("--output_path is required when --sink_type=TEXT")
-            }
-            Self::Options(err) => write!(f, "pipeline options error: {err}"),
-            Self::Runner(err) => write!(f, "pipeline execution error: {err}"),
-            Self::Unsuccessful(state) => write!(f, "job ended in state {state}"),
-            Self::Correctness(reason) => write!(f, "correctness check failed: {reason}"),
-            Self::Stopped(reason) => write!(f, "streaming job cancelled: {reason}"),
-        }
-    }
-}
-
-impl std::error::Error for LauncherError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Options(err) => Some(err),
-            Self::Runner(err) => Some(err),
-            Self::MissingOutputPath
-            | Self::Unsuccessful(_)
-            | Self::Correctness(_)
-            | Self::Stopped(_) => None,
-        }
-    }
-}
-
-impl From<OptionsError> for LauncherError {
-    fn from(err: OptionsError) -> Self {
-        Self::Options(err)
-    }
-}
-
-impl From<RunnerError> for LauncherError {
-    fn from(err: RunnerError) -> Self {
-        Self::Runner(err)
-    }
-}
-
 /// Checks whether `--runner` selects the local Prism runner.
 pub fn is_prism_runner(runner: &str) -> bool {
     let trimmed = runner.trim();
@@ -111,9 +58,13 @@ pub fn is_prism_runner(runner: &str) -> bool {
         || trimmed.eq_ignore_ascii_case("prismrunner")
 }
 
-/// Assembles a complete source-to-sink [`Pipeline`] for one resolved [`NexmarkConfig`].
+/// Assembles a complete [`Pipeline`] for one resolved [`NexmarkConfig`].
 ///
 /// The event [`Monitor`] follows the source and the result [`Monitor`] precedes the sink.
+/// With a Pub/Sub or Kafka source, `PUBLISH_ONLY` gives the publisher graph: generator,
+/// monitor and topic, with no query. `SUBSCRIBE_ONLY` and `COMBINED` give the query graph that
+/// reads the topic; [`run_nexmark`](super::run_nexmark) builds the `COMBINED` publisher
+/// separately.
 pub fn build_nexmark_pipeline(
     options: &PipelineOptions,
     args: &NexmarkArgs,
@@ -128,28 +79,68 @@ pub fn build_nexmark_pipeline(
         return Err(LauncherError::MissingOutputPath);
     }
 
-    let query = config.query.unwrap_or(NexmarkQueryName::Passthrough);
     let pipeline = Pipeline::create(options);
-    let raw_events = match (config.source_type, options.streaming) {
-        (SourceType::Direct, true) => {
-            pipeline.apply("ReadUnboundedEvents", UnboundedEventSource::new(config))
-        }
-        (SourceType::Direct, false) => {
-            pipeline.apply("ReadBoundedEvents", BoundedEventSource::new(config))
-        }
-    };
-    let events = raw_events.apply(
-        "MonitorEvents",
-        Monitor::new(EVENTS).with_logging(args.log_events),
-    );
-
+    let monitor = Monitor::new(EVENTS).with_logging(args.log_events);
     let tail = QueryTail {
         options,
         args,
         config,
-        query,
+        query: config.query.unwrap_or(NexmarkQueryName::Passthrough),
         output_path,
     };
+    match (config.source_type, config.pubsub_mode, options.streaming) {
+        (SourceType::Direct, _, _) => {
+            let events = generated_events(&pipeline, options, config);
+            add_query(&events.apply("MonitorEvents", monitor), &tail)?;
+        }
+        (SourceType::Pubsub, PubsubMode::PublishOnly, _) => {
+            let events =
+                generated_events(&pipeline, options, config).apply("MonitorEvents", monitor);
+            write_pubsub_events(&events, args, config)?;
+        }
+        (SourceType::Kafka, PubsubMode::PublishOnly, _) => {
+            let events =
+                generated_events(&pipeline, options, config).apply("MonitorEvents", monitor);
+            write_kafka_events(&events, args)?;
+        }
+        (
+            source @ (SourceType::Pubsub | SourceType::Kafka),
+            PubsubMode::Combined | PubsubMode::SubscribeOnly,
+            false,
+        ) => return Err(LauncherError::NeedsStreaming(source)),
+        (SourceType::Pubsub, PubsubMode::Combined | PubsubMode::SubscribeOnly, true) => {
+            let events = read_pubsub_events(&pipeline, args, config)?;
+            add_query(&events.apply("MonitorEvents", monitor), &tail)?;
+        }
+        (SourceType::Kafka, PubsubMode::Combined | PubsubMode::SubscribeOnly, true) => {
+            let events = read_kafka_events(&pipeline, args)?;
+            add_query(&events.apply("MonitorEvents", monitor), &tail)?;
+        }
+    }
+    Ok(pipeline)
+}
+
+/// Events from the generator: unbounded in streaming mode, bounded otherwise.
+fn generated_events(
+    pipeline: &Pipeline,
+    options: &PipelineOptions,
+    config: &NexmarkConfig,
+) -> PCollection<Event> {
+    match options.streaming {
+        true => pipeline.apply("ReadUnboundedEvents", UnboundedEventSource::new(config)),
+        false => pipeline.apply("ReadBoundedEvents", BoundedEventSource::new(config)),
+    }
+}
+
+/// Adds the selected query, its correctness check, the result monitor and the sink.
+fn add_query(events: &PCollection<Event>, tail: &QueryTail<'_>) -> Result<(), LauncherError> {
+    let QueryTail {
+        args,
+        config,
+        query,
+        output_path,
+        ..
+    } = *tail;
     match query {
         NexmarkQueryName::Passthrough => tail.finish(
             &events.apply("Query0", Query0),
@@ -235,9 +226,7 @@ pub fn build_nexmark_pipeline(
                 );
             }),
         ),
-    }?;
-
-    Ok(pipeline)
+    }
 }
 
 /// Adds the `--assert_correctness` check of one query to its output.
@@ -245,6 +234,7 @@ type ModelCheck<'a, T> = &'a dyn Fn(&PCollection<T>);
 
 /// Settings that the steps after a query need: the correctness check, the result monitor
 /// and the sink.
+#[derive(Clone, Copy)]
 struct QueryTail<'a> {
     options: &'a PipelineOptions,
     args: &'a NexmarkArgs,
@@ -315,6 +305,8 @@ impl QueryTail<'_> {
                     false => rewindowed.apply("WriteTextSink", write),
                 };
             }
+            SinkType::Pubsub => write_pubsub_results(output, self.args, self.config)?,
+            SinkType::Kafka => write_kafka_results(output, self.args)?,
         }
         Ok(())
     }

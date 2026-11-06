@@ -448,9 +448,11 @@ name = "apache-beam-nexmark"
 version = "2.79.0-SNAPSHOT"
 dependencies = [
  "apache-beam",
+ "apache-beam-test-utils",
  "async-trait",
  "clap",
  "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",

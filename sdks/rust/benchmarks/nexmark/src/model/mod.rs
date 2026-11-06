@@ -130,6 +130,16 @@ pub enum Event {
 }
 
 impl Event {
+    /// Event time that the generator wrote into the inner event. It equals the timestamp of
+    /// the element that the generator emitted.
+    pub fn date_time(&self) -> Instant {
+        match self {
+            Self::Person(p) => p.date_time,
+            Self::Auction(a) => a.date_time,
+            Self::Bid(b) => b.date_time,
+        }
+    }
+
     /// Returns the inner event's `extra` payload.
     pub fn extra(&self) -> &str {
         match self {

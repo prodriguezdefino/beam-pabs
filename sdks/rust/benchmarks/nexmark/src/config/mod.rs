@@ -40,6 +40,10 @@ pub enum SourceType {
     /// Synthesize events directly in the pipeline.
     #[default]
     Direct,
+    /// Exchange events through Cloud Pub/Sub, as [`PubsubMode`] tells.
+    Pubsub,
+    /// Exchange events through Apache Kafka, as [`PubsubMode`] tells.
+    Kafka,
 }
 
 impl FromStr for SourceType {
@@ -48,6 +52,8 @@ impl FromStr for SourceType {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_uppercase().as_str() {
             "DIRECT" => Ok(Self::Direct),
+            "PUBSUB" => Ok(Self::Pubsub),
+            "KAFKA" => Ok(Self::Kafka),
             _ => Err(format!("unknown source type: {s}")),
         }
     }
@@ -64,6 +70,10 @@ pub enum SinkType {
     Devnull,
     /// Write formatted results to text files.
     Text,
+    /// Publish formatted results to a Cloud Pub/Sub topic.
+    Pubsub,
+    /// Write formatted results to an Apache Kafka topic.
+    Kafka,
 }
 
 impl FromStr for SinkType {
@@ -74,7 +84,35 @@ impl FromStr for SinkType {
             "COUNT_ONLY" => Ok(Self::CountOnly),
             "DEVNULL" => Ok(Self::Devnull),
             "TEXT" => Ok(Self::Text),
+            "PUBSUB" => Ok(Self::Pubsub),
+            "KAFKA" => Ok(Self::Kafka),
             _ => Err(format!("unknown sink type: {s}")),
+        }
+    }
+}
+
+/// Which side of a Pub/Sub or Kafka event exchange a run does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum PubsubMode {
+    /// One job publishes the events and a second job runs the query on them.
+    #[default]
+    Combined,
+    /// Publish generated events and run no query.
+    PublishOnly,
+    /// Run the query on events that another process publishes.
+    SubscribeOnly,
+}
+
+impl FromStr for PubsubMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_uppercase().as_str() {
+            "COMBINED" => Ok(Self::Combined),
+            "PUBLISH_ONLY" => Ok(Self::PublishOnly),
+            "SUBSCRIBE_ONLY" => Ok(Self::SubscribeOnly),
+            _ => Err(format!("unknown Pub/Sub mode: {s}")),
         }
     }
 }
@@ -85,6 +123,9 @@ pub struct NexmarkConfig {
     pub query: Option<NexmarkQueryName>,
     pub source_type: SourceType,
     pub sink_type: SinkType,
+    pub pubsub_mode: PubsubMode,
+    /// Use the Pub/Sub publish time as event time instead of a timestamp attribute.
+    pub use_pubsub_publish_time: bool,
     pub side_input_row_count: i32,
     pub session_gap_sec: i64,
     /// Total events to synthesize (`0` selects the largest count that fits byte estimates).
@@ -132,6 +173,8 @@ impl Default for NexmarkConfig {
             query: None,
             source_type: SourceType::Direct,
             sink_type: SinkType::Devnull,
+            pubsub_mode: PubsubMode::Combined,
+            use_pubsub_publish_time: false,
             side_input_row_count: 500,
             session_gap_sec: 600,
             num_events: 100_000,
