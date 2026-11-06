@@ -188,7 +188,7 @@ def is_test(sdk, rel, path):
     name = path.name
     if sdk == "rust":
         parts = rel.split("/")
-        if any(p in ("tests", "benches", "runner-tests", "test-utils") for p in parts):
+        if any(p in ("tests", "benches", "runner-tests", "test-utils", "benchmarks") for p in parts):
             return True
         return name in ("tests.rs", "test.rs") or name.endswith("_tests.rs") or name.startswith("test_")
     if sdk == "go":
@@ -307,7 +307,7 @@ def _rust_split(path):
     """(prod, test) lines of a Rust file over the whole tree; test crates count as test."""
     text = Path(path).read_text(errors="ignore")
     if (re.search(r"/(tests|benches)/", path) or "/runner-tests/" in path
-            or "/test-utils/" in path or "/testing/" in path):
+            or "/test-utils/" in path or "/testing/" in path or "/benchmarks/" in path):
         return 0, code_line_count(text, ("//",))
     lines = text.split("\n")
     prod = test = 0
