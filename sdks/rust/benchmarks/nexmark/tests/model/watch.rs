@@ -43,6 +43,7 @@ const RULES: StopRules = StopRules {
     stuck_terminate: Duration::from_secs(3600),
     stream_timeout: Duration::from_secs(3600),
     expected_events: Some(100),
+    running_time: None,
 };
 
 /// A job whose event count follows `events`, one entry per poll, then keeps the last entry.
@@ -266,4 +267,20 @@ async fn combined_run_cancels_the_publisher_when_the_query_ends() {
     assert!(run.is_err());
     assert_eq!(failing_publisher.calls(), ["cancel"]);
     assert_eq!(fatal_query.calls(), ["cancel"]);
+}
+
+#[tokio::test]
+async fn running_time_cancels_the_job_as_a_complete_run() {
+    let growing: Vec<i64> = (1..=10_000).collect();
+    let job = ScriptedJob::new(&growing);
+    let rules = StopRules {
+        expected_events: None,
+        ..RULES
+    }
+    .with_running_time(Some(Duration::from_millis(30)));
+    assert_eq!(
+        monitor(&job, rules, false).await.ok(),
+        Some(StopReason::RunningTimeReached)
+    );
+    assert_eq!(job.calls(), ["cancel"]);
 }

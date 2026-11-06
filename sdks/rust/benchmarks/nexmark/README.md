@@ -34,6 +34,7 @@ the Apache Beam Rust SDK.
   join.
 - `src/models`: pure in-memory reference models for deterministic correctness checks.
 - `src/correctness.rs`: in-pipeline checks that compare query output with a model.
+- `src/load.rs`: the `CpuDelay` and `DiskBusy` load steps that run before a query.
 - `src/launcher` and `src/main.rs`: CLI flag parsing, pipeline assembly, perf monitors,
   and summary reporting.
 
@@ -103,6 +104,74 @@ Pass Nexmark flags directly or through `-PextraArgs="..."`:
 - `--source_type=<DIRECT|PUBSUB|KAFKA|AVRO>`, `--input_path=<prefix>` ([Avro files](#avro-files)),
   `--coder_strategy=<HAND|ROW>` ([coder strategies](#coder-strategies)), and the flags of
   [Pub/Sub and Kafka](#pubsub-and-kafka).
+- `--cpu_delay_ms=<n>`, `--disk_busy_bytes=<n>`: [load steps](#load-steps) before each query.
+- `--running_time_minutes=<n>`, `--preload_seconds=<n>`: [run-time limit](#run-time-limit).
+- `--side_input_type=<DIRECT|CSV>`, `--side_input_url=<prefix>`, `--side_input_num_shards=<n>`:
+  [side-input table](#side-input-table) of the two side-input joins.
+- `--skip_queries=<list>`, `--nexmark_parallel=<n>`: [suite runs](#suite-runs).
+- `--export_summary_to_bigquery`, `--bigquery_table=<project:dataset.table>`:
+  [BigQuery summary](#bigquery-summary).
+
+## Load Steps
+
+As in the Java launcher, two optional steps run between `MonitorEvents` and the query:
+
+- `--cpu_delay_ms=<n>` (`CpuDelay`): each event keeps one core busy with hash searches for `n`
+  milliseconds of wall time.
+- `--disk_busy_bytes=<n>` (`DiskBusy`): all events get one key, and each event writes `n`
+  bytes to a value state, in writes of at most 16 MiB.
+
+The default of both is 0, which leaves the step out of the graph.
+
+## Run-Time Limit
+
+`--running_time_minutes=<n>` cancels a job that still runs `n` minutes after its submission,
+less `--preload_seconds`. This is how the Java launcher uses the two flags. The limit applies
+to batch and streaming jobs and comes before the other streaming stop rules. The row shows
+`OK (running time)` with the figures of the final metrics. `--preload_seconds` does not change
+event time.
+
+## Side-Input Table
+
+The two side-input joins look up `bidder % side_input_row_count` in a table of `(id, label)`
+rows, where each label is the decimal id.
+
+- `--side_input_type=DIRECT` (default) builds the table in the query pipeline.
+- `--side_input_type=CSV` reads it from the text files `<side_input_url>*`, one `id,label`
+  line each. Before the first query, the launcher runs a batch job that writes the table
+  into `--side_input_num_shards` files (default 3). The table has the rows of the largest join
+  of the suite, so it covers each join. The launcher does not delete the files.
+
+Java has these fields in its configuration, but not as launcher flags. The flags are a Rust
+extension.
+
+## Suite Runs
+
+- `--skip_queries=3,HOT_ITEMS` leaves out the listed queries, by number or name. Their rows
+  show `SKIPPED (--skip_queries)`.
+- `--nexmark_parallel=<n>` (default 1) runs up to `n` queries at the same time. The table keeps
+  the suite order. Each job still gets the query after its job name.
+
+## BigQuery Summary
+
+With `--export_summary_to_bigquery`, the launcher runs one more batch job after the suite. The
+job appends one row for each query to `--bigquery_table` through the cross-language BigQuery
+write (`CREATE_IF_NEEDED`, `WRITE_APPEND`) and honours `--expansion_service`.
+
+| Column | Value |
+|---|---|
+| `timestamp` | Start of the suite run (`TIMESTAMP`) |
+| `runId` | The job name, or `nexmark`, then the start time in epoch milliseconds |
+| `queryNumber`, `queryName` | The query |
+| `mode`, `runner` | `batch` or `streaming`, and `--runner` |
+| `status`, `reason` | The status of the summary table, and the failure or skip reason |
+| `config` | The resolved configuration of the query as JSON |
+| `runtimeSec`, `numEvents`, `eventsPerSec`, `eventBytesPerSec`, `numResults`, `resultsPerSec`, `resultBytesPerSec`, `startupDelaySec`, `processingDelaySec`, `timeDilation` | The figures, empty for a query that did not run |
+
+Skipped and failed queries get a row too, so failures stay in the table history. Java has
+removed its BigQuery export. The columns `timestamp`, `runtimeSec`, `eventsPerSec` and
+`numResults` match its last version, which wrote one table for each query. The other figures
+use the JSON names of Java's `NexmarkPerf`.
 
 ## Pub/Sub and Kafka
 
@@ -225,6 +294,7 @@ A batch job runs to its end. A streaming job is polled every 15 seconds, and the
 | All `--num_events` passed and the counts did not change for 1 minute. | Drain, or cancel if the runner cannot drain or with `--cancel_streaming_job_after_finish`. | `OK` |
 | The counts did not change for 1 hour (a warning after 10 minutes). | Cancel. | `FAILED` |
 | `--stream_timeout` seconds passed since the first event. | Cancel. | `TIMEOUT` |
+| The [run-time limit](#run-time-limit) passed. This rule comes first. | Cancel. | `OK (running time)` |
 
 With at least 9 polls over at least 2 minutes, `Events(/sec)` is the steady-state rate: a
 least-squares fit over the middle third of the polls. Prism ends a finite streaming job by

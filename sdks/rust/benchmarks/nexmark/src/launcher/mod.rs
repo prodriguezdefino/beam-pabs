@@ -21,17 +21,21 @@
 
 mod args;
 mod avro;
+mod bigquery;
 mod error;
 mod monitor;
 mod perf;
 mod pipeline;
 mod report;
+mod run;
+mod side_input;
 mod stop;
 mod transport;
 mod watch;
 
 pub use self::args::NexmarkArgs;
 pub use self::avro::{AVRO_AUCTION_FILES, AVRO_BID_FILES, AVRO_EVENT_FILES, AVRO_PERSON_FILES};
+pub use self::bigquery::{RunInfo, SummaryRow, build_summary_pipeline, summary_rows};
 pub use self::error::LauncherError;
 pub use self::monitor::{
     BYTES, ELEMENTS, EVENT_TIMESTAMP_MS, EVENTS, METRIC_NAMESPACE, Monitor, PROCESSING_TIME_MS,
@@ -40,7 +44,10 @@ pub use self::monitor::{
 pub use self::perf::{NexmarkPerf, ProgressSnapshot, steady_state_events_per_sec};
 pub use self::pipeline::{build_nexmark_pipeline, is_prism_runner};
 pub use self::report::{NexmarkRunOutcome, QueryRunSummary, format_summary_table, run_nexmark};
-pub use self::stop::{Decision, MonitorState, MonitorTiming, Observation, StopRules, decide};
+pub use self::side_input::build_side_input_pipeline;
+pub use self::stop::{
+    Decision, MonitorState, MonitorTiming, Observation, StopRules, decide, running_time_limit,
+};
 pub use self::transport::{
     DECODE_ERRORS, PUBSUB_ID_ATTRIBUTE, PUBSUB_TIMESTAMP_ATTRIBUTE, decode_event, encode_event,
 };

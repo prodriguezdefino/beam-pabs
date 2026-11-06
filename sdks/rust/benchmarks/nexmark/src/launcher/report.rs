@@ -21,17 +21,17 @@
 
 use beam::options::PipelineOptions;
 use beam::prelude::*;
-use beam::testing::passert;
+use futures::StreamExt;
 
 use super::NexmarkArgs;
+use super::bigquery::export_summary;
 use super::error::LauncherError;
-use super::perf::{NexmarkPerf, ProgressSnapshot, steady_state_events_per_sec};
-use super::pipeline::{build_nexmark_pipeline, is_prism_runner};
-use super::stop::{MonitorTiming, StopRules};
-use super::watch::{StopReason, StreamingRun, monitor_streaming_job, with_publisher};
-use crate::config::{NexmarkConfig, NexmarkQueryName, PubsubMode, SourceType};
-
-const PRISM_QUERY11_SKIP_REASON: &str = "apache/beam#31438";
+use super::perf::{NexmarkPerf, ProgressSnapshot};
+use super::run::SuiteRun;
+use super::side_input::write_side_input;
+use super::stop::MonitorTiming;
+use super::watch::StopReason;
+use crate::config::{NexmarkConfig, NexmarkQueryName};
 
 /// Execution outcome recorded for one query in a suite run.
 #[derive(Clone, Debug, PartialEq)]
@@ -49,198 +49,89 @@ pub enum NexmarkRunOutcome {
     Skipped { reason: &'static str },
 }
 
+impl NexmarkRunOutcome {
+    /// Short status for the summary table and the BigQuery summary.
+    pub fn status(&self) -> &'static str {
+        match self {
+            Self::Executed { stop, .. } => match stop {
+                StopReason::Finished => "OK",
+                StopReason::TimedOut => "TIMEOUT",
+                StopReason::RunningTimeReached => "OK (running time)",
+            },
+            Self::Failed { .. } => "FAILED",
+            Self::Skipped { .. } => "SKIPPED",
+        }
+    }
+
+    /// Why the query failed or did not run.
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            Self::Executed { .. } => None,
+            Self::Failed { reason } => Some(reason),
+            Self::Skipped { reason } => Some(reason),
+        }
+    }
+
+    /// Figures of an executed run. Other outcomes give no figures.
+    pub fn perf(&self) -> NexmarkPerf {
+        match self {
+            Self::Executed { perf, .. } => *perf,
+            Self::Failed { .. } | Self::Skipped { .. } => NexmarkPerf::default(),
+        }
+    }
+}
+
 /// Outcome of a single query run.
 #[derive(Clone, Debug, PartialEq)]
 pub struct QueryRunSummary {
     pub query: NexmarkQueryName,
+    /// The resolved configuration of the run.
+    pub config: NexmarkConfig,
     pub outcome: NexmarkRunOutcome,
 }
 
 /// Executes every query resolved from `args` and prints a summary table on the driver.
 ///
-/// A failed job gives a [`NexmarkRunOutcome::Failed`] row, and the suite continues. `timing`
-/// controls the polling and the stop rules of streaming jobs.
+/// A failed job gives a [`NexmarkRunOutcome::Failed`] row, and the suite continues. Up to
+/// `--nexmark_parallel` queries run at the same time; the rows keep the suite order. `timing`
+/// controls the polling and the stop rules of streaming jobs. On the driver, the launcher
+/// first writes the `CSV` side-input table and at the end exports the summary to BigQuery,
+/// when the flags ask for it.
 pub async fn run_nexmark(
     options: &PipelineOptions,
     args: &NexmarkArgs,
     timing: &MonitorTiming,
 ) -> Result<Vec<QueryRunSummary>, LauncherError> {
+    let started_ms = Instant::now().as_millis();
     let configs = args.resolve_configs();
-    let multi_query = configs.len() > 1;
-    let skip_prism_q11 = args.query.is_none() && is_prism_runner(&options.runner);
-    let mut summaries = Vec::with_capacity(configs.len());
-
-    for config in configs {
-        let query = config.query.unwrap_or(NexmarkQueryName::Passthrough);
-        if skip_prism_q11 && query == NexmarkQueryName::UserSessions {
-            summaries.push(QueryRunSummary {
-                query,
-                outcome: NexmarkRunOutcome::Skipped {
-                    reason: PRISM_QUERY11_SKIP_REASON,
-                },
-            });
-            continue;
-        }
-
-        // Pin the active query in `PipelineOptions` before creating the pipeline so
-        // remote workers booting from `OptionsSnapshot` build only this query's graph.
-        let mut run_options = options.clone();
-        if multi_query
-            && !run_options.harness.is_worker()
-            && let Some(base_name) = &options.job_name
-        {
-            run_options.job_name = Some(format!("{base_name}-{}", query.slug().replace('_', "-")));
-        }
-        // A COMBINED run is two jobs. Pin each to its side, so its workers rebuild its graph.
-        let combined = matches!(
-            (config.source_type, config.pubsub_mode),
-            (SourceType::Pubsub | SourceType::Kafka, PubsubMode::Combined)
-        );
-        let query_args = match combined {
-            true => args
-                .pin_query(query)
-                .pin_pubsub_mode(PubsubMode::SubscribeOnly),
-            false => args.pin_query(query),
-        };
-        run_options.set(query_args)?;
-        let publisher = match combined {
-            true => Some(build_publisher(&run_options, args, query, &config)?),
-            false => None,
-        };
-
-        let pipeline = build_nexmark_pipeline(&run_options, args, &config)?;
-        // The graph holds a check only for a batch query with a model. Workers rebuild the
-        // graph, so log here, on the driver, and not during the build.
-        if args.assert_correctness
-            && !options.harness.is_worker()
-            && passert::count_assertions(&pipeline) == 0
-        {
-            let reason = match options.streaming {
-                true => "streaming mode",
-                false => "no reference model",
-            };
-            tracing::info!(%query, "skipping --assert_correctness: {reason}");
-        }
-        let run = RunSettings {
-            streaming: options.streaming,
-            config: &config,
-            args,
-            timing,
-        };
-        let result = match &publisher {
-            Some(publisher) => execute_with_publisher(publisher, &pipeline, &run).await,
-            None => execute(&pipeline, &run).await,
-        };
-        let outcome = result.unwrap_or_else(|err| NexmarkRunOutcome::Failed {
-            reason: err.to_string(),
-        });
-        summaries.push(QueryRunSummary { query, outcome });
+    let driver = !options.harness.is_worker();
+    if driver {
+        write_side_input(options, args, &configs).await?;
     }
+    let suite = SuiteRun {
+        options,
+        args,
+        timing,
+        multi_query: configs.len() > 1,
+    };
+    // A slot frees when any query ends, so one slow query does not hold back the others.
+    let suite = &suite;
+    let mut runs: Vec<(usize, QueryRunSummary)> =
+        futures::stream::iter(configs.into_iter().enumerate())
+            .map(|(position, config)| async move { (position, suite.run_query(config).await) })
+            .buffer_unordered(args.nexmark_parallel.max(1))
+            .collect()
+            .await;
+    runs.sort_unstable_by_key(|(position, _)| *position);
+    let summaries: Vec<QueryRunSummary> = runs.into_iter().map(|(_, summary)| summary).collect();
 
-    if !options.harness.is_worker() {
+    if driver {
         println!("{}", format_summary_table(&summaries));
+        if args.export_summary_to_bigquery {
+            export_summary(options, args, &summaries, started_ms).await?;
+        }
     }
-
     Ok(summaries)
-}
-
-/// Builds the publisher job of a `COMBINED` run: the query options pinned to `PUBLISH_ONLY`,
-/// with `-publisher` after the job name.
-fn build_publisher(
-    query_options: &PipelineOptions,
-    args: &NexmarkArgs,
-    query: NexmarkQueryName,
-    config: &NexmarkConfig,
-) -> Result<Pipeline, LauncherError> {
-    let mut options = query_options.clone();
-    options.job_name = query_options
-        .job_name
-        .as_ref()
-        .map(|name| format!("{name}-publisher"));
-    let publisher_args = args
-        .pin_query(query)
-        .pin_pubsub_mode(PubsubMode::PublishOnly);
-    options.set(publisher_args)?;
-    let publisher_config = NexmarkConfig {
-        pubsub_mode: PubsubMode::PublishOnly,
-        ..*config
-    };
-    build_nexmark_pipeline(&options, args, &publisher_config)
-}
-
-/// Submits the `publisher` job, then runs `query` and cancels the publisher at its end.
-async fn execute_with_publisher(
-    publisher: &Pipeline,
-    query: &Pipeline,
-    run: &RunSettings<'_>,
-) -> Result<NexmarkRunOutcome, LauncherError> {
-    let publisher_job = publisher.submit().await?;
-    with_publisher(publisher_job.as_ref(), execute(query, run)).await
-}
-
-/// The settings of one query run that [`execute`] needs.
-struct RunSettings<'a> {
-    streaming: bool,
-    config: &'a NexmarkConfig,
-    args: &'a NexmarkArgs,
-    timing: &'a MonitorTiming,
-}
-
-/// Submits `pipeline`, waits for or monitors the job, and computes its performance.
-async fn execute(
-    pipeline: &Pipeline,
-    run: &RunSettings<'_>,
-) -> Result<NexmarkRunOutcome, LauncherError> {
-    let submit_ms = Instant::now().as_millis();
-    let job = pipeline.submit().await?;
-    let StreamingRun {
-        metrics,
-        stop,
-        snapshots,
-    } = match run.streaming {
-        true => {
-            let rules = StopRules::new(run.timing, run.config);
-            let cancel = run.args.cancel_streaming_job_after_finish;
-            monitor_streaming_job(job.as_ref(), run.timing, rules, cancel, submit_ms).await?
-        }
-        false => {
-            let result = job.wait_until_finish(None).await?;
-            if !result.state.is_successful() {
-                return Err(LauncherError::Unsuccessful(result.state));
-            }
-            // A check whose input never closes does not fail the job, so require each check
-            // to pass.
-            let assertions = passert::assertion_names(pipeline);
-            if !assertions.is_empty() {
-                passert::verify_assertions(&result, &assertions)
-                    .map_err(LauncherError::Correctness)?;
-            }
-            StreamingRun {
-                metrics: result.metrics.unwrap_or_default(),
-                stop: StopReason::Finished,
-                snapshots: Vec::new(),
-            }
-        }
-    };
-    let perf = NexmarkPerf::from_metrics(&metrics, submit_ms);
-    let perf = match steady_state_events_per_sec(&snapshots, run.timing.min_steady_window) {
-        Some(rate) => {
-            tracing::info!(
-                "revising events/sec from {:?} to the steady-state {rate:.1}",
-                perf.events_per_sec
-            );
-            NexmarkPerf {
-                events_per_sec: Some(rate),
-                ..perf
-            }
-        }
-        None => perf,
-    };
-    Ok(NexmarkRunOutcome::Executed {
-        perf,
-        stop,
-        snapshots,
-    })
 }
 
 /// Formats query run summaries into a fixed-width ASCII table.
@@ -262,16 +153,14 @@ pub fn format_summary_table(summaries: &[QueryRunSummary]) -> String {
     );
     let separator = "-".repeat(header.len());
     let rows = summaries.iter().map(|summary| {
-        let (status, perf) = match &summary.outcome {
-            NexmarkRunOutcome::Executed { perf, stop, .. } => match stop {
-                StopReason::Finished => ("OK".to_owned(), *perf),
-                StopReason::TimedOut => ("TIMEOUT".to_owned(), *perf),
-            },
-            NexmarkRunOutcome::Failed { .. } => ("FAILED".to_owned(), NexmarkPerf::default()),
-            NexmarkRunOutcome::Skipped { reason } => {
-                (format!("SKIPPED ({reason})"), NexmarkPerf::default())
+        let outcome = &summary.outcome;
+        let status = match outcome {
+            NexmarkRunOutcome::Skipped { reason } => format!("{} ({reason})", outcome.status()),
+            NexmarkRunOutcome::Executed { .. } | NexmarkRunOutcome::Failed { .. } => {
+                outcome.status().to_owned()
             }
         };
+        let perf = outcome.perf();
         format!(
             "{:>5}  {:<31}  {status:<27}  {:>12}  {:>12}  {:>17}  {:>9}  {:>12}  {:>12}  {:>21}",
             summary.query.number(),

@@ -34,12 +34,14 @@ use super::NexmarkArgs;
 use super::avro::{read_avro_events, with_coder_strategy, write_avro_events};
 use super::error::LauncherError;
 use super::monitor::{EVENTS, Monitor, RESULTS};
+use super::side_input::side_input_of;
 use super::transport::{
     read_kafka_events, read_pubsub_events, write_kafka_events, write_kafka_results,
     write_pubsub_events, write_pubsub_results,
 };
 use crate::config::{NexmarkConfig, NexmarkQueryName, PubsubMode, SinkType, SourceType};
 use crate::correctness::{assert_final_seller_prices, assert_timestamped};
+use crate::load::{CpuDelay, DiskBusy};
 use crate::model::{Event, KnownSize};
 use crate::models;
 use crate::queries::{
@@ -123,7 +125,7 @@ pub fn build_nexmark_pipeline(
                 write_avro_events(&events, path, config, options.streaming);
             }
             add_query(
-                &events,
+                &with_load(events, config),
                 &QueryTail {
                     options,
                     args,
@@ -153,6 +155,18 @@ fn generated_events(
     match options.streaming {
         true => pipeline.apply("ReadUnboundedEvents", UnboundedEventSource::new(config)),
         false => pipeline.apply("ReadBoundedEvents", BoundedEventSource::new(config)),
+    }
+}
+
+/// Adds the `--cpu_delay_ms` and `--disk_busy_bytes` steps that Java runs before each query.
+fn with_load(events: PCollection<Event>, config: &NexmarkConfig) -> PCollection<Event> {
+    let events = match config.cpu_delay_ms > 0 {
+        true => events.apply("CpuDelay", CpuDelay::new(config.cpu_delay_ms)),
+        false => events,
+    };
+    match config.disk_busy_bytes > 0 {
+        true => events.apply("DiskBusy", DiskBusy::new(config.disk_busy_bytes)),
+        false => events,
     }
 }
 
@@ -227,7 +241,8 @@ fn add_query(events: &PCollection<Event>, tail: &QueryTail<'_>) -> Result<(), La
         NexmarkQueryName::BoundedSideInputJoin => tail.finish(
             &events.apply(
                 "BoundedSideInputJoin",
-                BoundedSideInputJoin::from_config(config),
+                BoundedSideInputJoin::from_config(config)
+                    .with_side_input(side_input_of(config, args)?),
             ),
             Some(&|out| {
                 assert_timestamped(
@@ -240,7 +255,8 @@ fn add_query(events: &PCollection<Event>, tail: &QueryTail<'_>) -> Result<(), La
         NexmarkQueryName::SessionSideInputJoin => tail.finish(
             &events.apply(
                 "SessionSideInputJoin",
-                SessionSideInputJoin::from_config(config),
+                SessionSideInputJoin::from_config(config)
+                    .with_side_input(side_input_of(config, args)?),
             ),
             Some(&|out| {
                 assert_timestamped(

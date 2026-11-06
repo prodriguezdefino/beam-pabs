@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{
     CoderStrategy, NexmarkConfig, NexmarkQueryName, NexmarkSuite, PubsubMode, RateShape, RateUnit,
-    SinkType, SourceType,
+    SideInputType, SinkType, SourceType,
 };
 
 /// Command-line flags for selecting and tuning Nexmark benchmark runs.
@@ -221,6 +221,50 @@ pub struct NexmarkArgs {
     /// Coders of the event stream (`HAND` or `ROW`).
     #[arg(long)]
     pub coder_strategy: Option<CoderStrategy>,
+
+    /// Source of the side-input join table (`DIRECT` or `CSV`).
+    #[arg(long)]
+    pub side_input_type: Option<SideInputType>,
+
+    /// File prefix of the `CSV` side-input table; the files are `<prefix>*`.
+    #[arg(long)]
+    pub side_input_url: Option<String>,
+
+    /// Number of text files in the `CSV` side-input table.
+    #[arg(long)]
+    pub side_input_num_shards: Option<i32>,
+
+    /// Milliseconds of CPU work for each event before the query.
+    #[arg(long)]
+    pub cpu_delay_ms: Option<i64>,
+
+    /// Bytes written to keyed state for each event before the query.
+    #[arg(long)]
+    pub disk_busy_bytes: Option<i64>,
+
+    /// Seconds that the run-time limit subtracts from `--running_time_minutes`.
+    #[arg(long)]
+    pub preload_seconds: Option<i32>,
+
+    /// Minutes after submission when the launcher cancels a job that still runs.
+    #[arg(long)]
+    pub running_time_minutes: Option<i64>,
+
+    /// Queries to leave out, as numbers or names separated by commas.
+    #[arg(long, value_delimiter = ',')]
+    pub skip_queries: Vec<NexmarkQueryName>,
+
+    /// Number of queries that run at the same time.
+    #[arg(long, default_value_t = 1)]
+    pub nexmark_parallel: usize,
+
+    /// Write one summary row for each query to `--bigquery_table` after the suite.
+    #[arg(long)]
+    pub export_summary_to_bigquery: bool,
+
+    /// Summary table, as `<project>:<dataset>.<table>`.
+    #[arg(long)]
+    pub bigquery_table: Option<String>,
 }
 
 impl Default for NexmarkArgs {
@@ -273,6 +317,17 @@ impl Default for NexmarkArgs {
             expansion_service: None,
             input_path: None,
             coder_strategy: None,
+            side_input_type: None,
+            side_input_url: None,
+            side_input_num_shards: None,
+            cpu_delay_ms: None,
+            disk_busy_bytes: None,
+            preload_seconds: None,
+            running_time_minutes: None,
+            skip_queries: Vec::new(),
+            nexmark_parallel: 1,
+            export_summary_to_bigquery: false,
+            bigquery_table: None,
         }
     }
 }
@@ -329,6 +384,13 @@ impl NexmarkArgs {
             sink_type: self.sink_type.unwrap_or(base.sink_type),
             pubsub_mode: self.pubsub_mode.unwrap_or(base.pubsub_mode),
             coder_strategy: self.coder_strategy.unwrap_or(base.coder_strategy),
+            side_input_type: self.side_input_type.unwrap_or(base.side_input_type),
+            side_input_num_shards: self
+                .side_input_num_shards
+                .unwrap_or(base.side_input_num_shards),
+            cpu_delay_ms: self.cpu_delay_ms.unwrap_or(base.cpu_delay_ms),
+            disk_busy_bytes: self.disk_busy_bytes.unwrap_or(base.disk_busy_bytes),
+            preload_seconds: self.preload_seconds.unwrap_or(base.preload_seconds),
             use_pubsub_publish_time: self
                 .use_pubsub_publish_time
                 .unwrap_or(base.use_pubsub_publish_time),

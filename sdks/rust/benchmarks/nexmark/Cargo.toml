@@ -53,15 +53,17 @@ name = "queries_streaming"
 path = "tests/queries_streaming/main.rs"
 
 [dependencies]
-beam = { workspace = true, features = ["prism", "dataflow", "gcp-gcs", "gcp-pubsub", "kafka", "avro", "testing"] }
+beam = { workspace = true, features = ["prism", "dataflow", "gcp-gcs", "gcp-pubsub", "gcp-bigquery", "kafka", "avro", "testing"] }
+chrono = { workspace = true }
 clap = { workspace = true }
+futures = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }
-serde_json = { workspace = true }
 testutils = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }

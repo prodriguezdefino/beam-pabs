@@ -36,6 +36,7 @@ mod query7;
 mod query8;
 mod query9;
 mod session_side_input_join;
+pub(crate) mod side_input;
 pub(crate) mod winning_bids;
 
 use beam::prelude::*;
@@ -57,6 +58,7 @@ pub use self::query12::Query12;
 pub use self::query13::Query13;
 pub use self::query14::Query14;
 pub use self::session_side_input_join::SessionSideInputJoin;
+pub use self::side_input::SideInput;
 pub use self::winning_bids::{WinningBids, expected_auction_duration_ms};
 use crate::model::{Auction, Bid, Event, Person};
 
@@ -79,12 +81,4 @@ pub(crate) fn just_persons(events: &PCollection<Event>) -> PCollection<Person> {
         Event::Person(person) => Some(person),
         Event::Auction(_) | Event::Bid(_) => None,
     })
-}
-
-pub(crate) fn side_input_rows(pipeline: &Pipeline, row_count: i32) -> PCollection<(i64, String)> {
-    let count = i64::from(row_count.max(1));
-    pipeline.apply(
-        "SideInput",
-        Create::new((0..count).map(|id| (id, id.to_string()))),
-    )
 }

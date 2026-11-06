@@ -23,15 +23,17 @@ use std::time::Duration;
 
 use beam::prelude::*;
 
-use super::{just_bids, side_input_rows};
+use super::just_bids;
+use super::side_input::{SideInput, side_input_rows};
 use crate::config::NexmarkConfig;
 use crate::model::{Bid, Event};
 
 /// Groups [`Bid`] events into per-bidder sessions and enriches `extra` with side-input and session bounds.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct SessionSideInputJoin {
     side_input_row_count: i32,
     session_gap_sec: i64,
+    side_input: SideInput,
 }
 
 impl SessionSideInputJoin {
@@ -40,12 +42,19 @@ impl SessionSideInputJoin {
         Self {
             side_input_row_count: side_input_row_count.max(1),
             session_gap_sec: session_gap_sec.max(1),
+            side_input: SideInput::Direct,
         }
     }
 
     /// Creates a session side-input join configured from `config`.
     pub fn from_config(config: &NexmarkConfig) -> Self {
         Self::new(config.side_input_row_count, config.session_gap_sec)
+    }
+
+    /// Reads the lookup table from `side_input` instead of building it in the pipeline.
+    pub fn with_side_input(mut self, side_input: SideInput) -> Self {
+        self.side_input = side_input;
+        self
     }
 }
 
@@ -55,7 +64,11 @@ impl PTransform<PCollection<Event>> for SessionSideInputJoin {
     fn expand(&self, input: &PCollection<Event>) -> PCollection<Bid> {
         let row_count = i64::from(self.side_input_row_count);
         let gap = Duration::from_secs(u64::try_from(self.session_gap_sec).unwrap_or(1));
-        let side_input = side_input_rows(input.pipeline(), self.side_input_row_count);
+        let side_input = side_input_rows(
+            input.pipeline(),
+            self.side_input_row_count,
+            &self.side_input,
+        );
 
         just_bids(input)
             .key_by("ByBidder", |bid| bid.bidder)

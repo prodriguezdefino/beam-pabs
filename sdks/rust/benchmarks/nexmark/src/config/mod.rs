@@ -146,6 +146,29 @@ impl FromStr for CoderStrategy {
     }
 }
 
+/// Where the side-input join queries read their lookup table from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SideInputType {
+    /// Build the table in the query pipeline.
+    #[default]
+    Direct,
+    /// Read the table from sharded `id,label` text files that the launcher writes first.
+    Csv,
+}
+
+impl FromStr for SideInputType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_uppercase().as_str() {
+            "DIRECT" => Ok(Self::Direct),
+            "CSV" => Ok(Self::Csv),
+            _ => Err(format!("unknown side input type: {s}")),
+        }
+    }
+}
+
 /// Parameters for event synthesis and query execution.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NexmarkConfig {
@@ -156,8 +179,17 @@ pub struct NexmarkConfig {
     /// Use the Pub/Sub publish time as event time instead of a timestamp attribute.
     pub use_pubsub_publish_time: bool,
     pub coder_strategy: CoderStrategy,
+    pub side_input_type: SideInputType,
     pub side_input_row_count: i32,
+    /// Text files of the [`SideInputType::Csv`] table.
+    pub side_input_num_shards: i32,
     pub session_gap_sec: i64,
+    /// Milliseconds of CPU work for each event before the query.
+    pub cpu_delay_ms: i64,
+    /// Bytes written to keyed state for each event before the query.
+    pub disk_busy_bytes: i64,
+    /// Seconds that the run-time limit subtracts from `--running_time_minutes`.
+    pub preload_seconds: i32,
     /// Total events to synthesize (`0` selects the largest count that fits byte estimates).
     pub num_events: i64,
     pub num_event_generators: i32,
@@ -206,8 +238,13 @@ impl Default for NexmarkConfig {
             pubsub_mode: PubsubMode::Combined,
             use_pubsub_publish_time: false,
             coder_strategy: CoderStrategy::Hand,
+            side_input_type: SideInputType::Direct,
             side_input_row_count: 500,
+            side_input_num_shards: 3,
             session_gap_sec: 600,
+            cpu_delay_ms: 0,
+            disk_busy_bytes: 0,
+            preload_seconds: 0,
             num_events: 100_000,
             num_event_generators: 100,
             rate_shape: RateShape::Sine,

@@ -20,7 +20,9 @@
 use std::time::Duration;
 
 use nexmark::config::NexmarkConfig;
-use nexmark::launcher::{Decision, MonitorState, MonitorTiming, Observation, StopRules, decide};
+use nexmark::launcher::{
+    Decision, MonitorState, MonitorTiming, Observation, StopRules, decide, running_time_limit,
+};
 
 const fn secs(n: u64) -> Duration {
     Duration::from_secs(n)
@@ -32,6 +34,7 @@ const RULES: StopRules = StopRules {
     stuck_terminate: secs(120),
     stream_timeout: secs(300),
     expected_events: Some(100),
+    running_time: None,
 };
 
 fn observation(at: u64, events: Option<i64>) -> Observation {
@@ -153,5 +156,40 @@ fn fatal_errors_win_over_every_other_rule() {
     assert_eq!(
         decide_after(RULES, &[observation(1, Some(100)), fatal]),
         Decision::Fatal { count: 3 }
+    );
+}
+
+#[test]
+fn running_time_limit_subtracts_the_preload() {
+    assert_eq!(running_time_limit(None, 30), None);
+    assert_eq!(running_time_limit(Some(2), 0), Some(secs(120)));
+    assert_eq!(running_time_limit(Some(2), 30), Some(secs(90)));
+    assert_eq!(running_time_limit(Some(1), 600), Some(Duration::ZERO));
+}
+
+#[test]
+fn running_time_ends_the_run_before_any_other_rule() {
+    let rules = RULES.with_running_time(Some(secs(100)));
+    let fatal = Observation {
+        fatal: 3,
+        ..observation(101, Some(10))
+    };
+    assert_eq!(
+        decide_after(rules, &[observation(5, Some(10)), fatal]),
+        Decision::RunningTimeReached
+    );
+    assert_eq!(
+        decide_after(
+            rules,
+            &[observation(5, Some(10)), observation(100, Some(20))]
+        ),
+        Decision::Continue
+    );
+    assert_eq!(
+        decide_after(
+            RULES,
+            &[observation(5, Some(10)), observation(101, Some(20))]
+        ),
+        Decision::Continue
     );
 }

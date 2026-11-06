@@ -28,13 +28,15 @@ use super::error::LauncherError;
 use super::perf::{NexmarkPerf, ProgressSnapshot};
 use super::stop::{Decision, MonitorState, MonitorTiming, Observation, StopRules, decide};
 
-/// Why a streaming run that did not fail stopped.
+/// Why a run that did not fail stopped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StopReason {
     /// The job ended, or all expected events passed and the job went quiet.
     Finished,
     /// The run reached `stream_timeout`, so the launcher cancelled the job.
     TimedOut,
+    /// The run reached `--running_time_minutes`, so the launcher cancelled the job.
+    RunningTimeReached,
 }
 
 /// Final metrics and the poll history of a streaming run.
@@ -116,6 +118,11 @@ pub async fn monitor_streaming_job(
         state = state.observe(&observation);
         let stop = match decide(&state, &observation) {
             Decision::Continue => None,
+            Decision::RunningTimeReached => {
+                tracing::info!("job reached --running_time_minutes; cancelling it");
+                job.cancel().await?;
+                Some(StopReason::RunningTimeReached)
+            }
             Decision::Warn { quiet } => {
                 tracing::warn!("streaming job made no progress for {} s", quiet.as_secs());
                 None
@@ -155,6 +162,21 @@ pub async fn monitor_streaming_job(
             return finished(result, metrics, snapshots);
         }
     }
+}
+
+/// Cancels a job that reached `--running_time_minutes` and reads its final metrics.
+pub(super) async fn cancel_at_running_time(
+    job: &dyn JobHandle,
+    timing: &MonitorTiming,
+) -> Result<StreamingRun, LauncherError> {
+    tracing::info!("job reached --running_time_minutes; cancelling it");
+    job.cancel().await?;
+    let last = job.metrics().await.unwrap_or_default();
+    Ok(StreamingRun {
+        metrics: final_metrics(job, timing, last).await,
+        stop: StopReason::RunningTimeReached,
+        snapshots: Vec::new(),
+    })
 }
 
 /// Waits up to `perf_delay` for the job to end. Gives its result when it ended in that time.

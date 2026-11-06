@@ -19,9 +19,11 @@
 
 mod coders;
 mod config;
+mod knobs;
 mod launcher;
 mod perf;
 mod rows;
 mod stop;
+mod summary;
 mod transport;
 mod watch;

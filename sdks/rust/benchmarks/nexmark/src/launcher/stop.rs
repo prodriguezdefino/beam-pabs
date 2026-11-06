@@ -60,6 +60,8 @@ pub struct StopRules {
     pub stream_timeout: Duration,
     /// Events in the whole input, or `None` for an endless input.
     pub expected_events: Option<i64>,
+    /// Time after the submission when the run ends, from [`running_time_limit`].
+    pub running_time: Option<Duration>,
 }
 
 impl StopRules {
@@ -71,8 +73,29 @@ impl StopRules {
             stuck_terminate: timing.stuck_terminate,
             stream_timeout: Duration::from_secs(u64::try_from(config.stream_timeout).unwrap_or(0)),
             expected_events: (config.num_events > 0).then_some(config.num_events),
+            running_time: None,
         }
     }
+
+    /// Ends the run `running_time` after the submission.
+    pub fn with_running_time(self, running_time: Option<Duration>) -> Self {
+        Self {
+            running_time,
+            ..self
+        }
+    }
+}
+
+/// Run-time limit of a job: `minutes` less `preload_seconds`, or `None` without `minutes`.
+///
+/// A limit below zero gives zero, so the first poll ends the run.
+pub fn running_time_limit(minutes: Option<i64>, preload_seconds: i32) -> Option<Duration> {
+    minutes.map(|minutes| {
+        let secs = minutes
+            .saturating_mul(60)
+            .saturating_sub(i64::from(preload_seconds));
+        Duration::from_secs(u64::try_from(secs).unwrap_or(0))
+    })
 }
 
 /// One read of the job metrics. `at` is the time since the job submission.
@@ -135,6 +158,8 @@ impl MonitorState {
 pub enum Decision {
     /// Poll again.
     Continue,
+    /// The run reached its run-time limit: cancel the job, the run is complete.
+    RunningTimeReached,
     /// Log that the counts did not change for `quiet`, then poll again.
     Warn { quiet: Duration },
     /// All expected events passed and the job is quiet: stop the job, the run is complete.
@@ -148,8 +173,16 @@ pub enum Decision {
 }
 
 /// Applies the stop rules, in priority order, to `observation` after it is added to `state`.
+///
+/// The run-time limit comes first: Java ends the test at that time and checks nothing else.
 pub fn decide(state: &MonitorState, observation: &Observation) -> Decision {
     let rules = &state.rules;
+    if rules
+        .running_time
+        .is_some_and(|limit| observation.at > limit)
+    {
+        return Decision::RunningTimeReached;
+    }
     let quiet = observation.at.saturating_sub(state.last_activity);
     let all_events = rules
         .expected_events

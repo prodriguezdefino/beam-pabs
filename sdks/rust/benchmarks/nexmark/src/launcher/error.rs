@@ -50,6 +50,8 @@ pub enum LauncherError {
     Correctness(String),
     /// The streaming monitor cancelled the job because of fatal errors or no progress.
     Stopped(String),
+    /// The rows of the BigQuery summary could not be built.
+    Summary(String),
 }
 
 impl fmt::Display for LauncherError {
@@ -69,6 +71,7 @@ impl fmt::Display for LauncherError {
             Self::Unsuccessful(state) => write!(f, "job ended in state {state}"),
             Self::Correctness(reason) => write!(f, "correctness check failed: {reason}"),
             Self::Stopped(reason) => write!(f, "streaming job cancelled: {reason}"),
+            Self::Summary(reason) => write!(f, "cannot build the BigQuery summary: {reason}"),
         }
     }
 }
@@ -83,7 +86,8 @@ impl std::error::Error for LauncherError {
             | Self::NeedsStreaming(_)
             | Self::Unsuccessful(_)
             | Self::Correctness(_)
-            | Self::Stopped(_) => None,
+            | Self::Stopped(_)
+            | Self::Summary(_) => None,
         }
     }
 }

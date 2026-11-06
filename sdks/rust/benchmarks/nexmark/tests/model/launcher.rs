@@ -308,6 +308,7 @@ fn prism_runner_detection_and_summary_table_formatting() {
     let summaries = vec![
         QueryRunSummary {
             query: NexmarkQueryName::Passthrough,
+            config: NexmarkConfig::default(),
             outcome: NexmarkRunOutcome::Executed {
                 perf,
                 stop: StopReason::Finished,
@@ -316,6 +317,7 @@ fn prism_runner_detection_and_summary_table_formatting() {
         },
         QueryRunSummary {
             query: NexmarkQueryName::CurrencyConversion,
+            config: NexmarkConfig::default(),
             outcome: NexmarkRunOutcome::Executed {
                 perf,
                 stop: StopReason::TimedOut,
@@ -324,12 +326,14 @@ fn prism_runner_detection_and_summary_table_formatting() {
         },
         QueryRunSummary {
             query: NexmarkQueryName::Selection,
+            config: NexmarkConfig::default(),
             outcome: NexmarkRunOutcome::Failed {
                 reason: "PAssert 'AssertCorrectness' failed".to_owned(),
             },
         },
         QueryRunSummary {
             query: NexmarkQueryName::UserSessions,
+            config: NexmarkConfig::default(),
             outcome: NexmarkRunOutcome::Skipped {
                 reason: "apache/beam#31438",
             },

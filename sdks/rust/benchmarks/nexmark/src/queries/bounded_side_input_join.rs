@@ -21,14 +21,16 @@
 
 use beam::prelude::*;
 
-use super::{just_bids, side_input_rows};
+use super::just_bids;
+use super::side_input::{SideInput, side_input_rows};
 use crate::config::NexmarkConfig;
 use crate::model::{Bid, Event};
 
 /// Enriches each [`Bid`] `extra` field from a bounded `(id, label)` multimap side input.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct BoundedSideInputJoin {
     side_input_row_count: i32,
+    side_input: SideInput,
 }
 
 impl BoundedSideInputJoin {
@@ -36,12 +38,19 @@ impl BoundedSideInputJoin {
     pub fn new(side_input_row_count: i32) -> Self {
         Self {
             side_input_row_count: side_input_row_count.max(1),
+            side_input: SideInput::Direct,
         }
     }
 
     /// Creates a bounded side-input join configured from `config`.
     pub fn from_config(config: &NexmarkConfig) -> Self {
         Self::new(config.side_input_row_count)
+    }
+
+    /// Reads the lookup table from `side_input` instead of building it in the pipeline.
+    pub fn with_side_input(mut self, side_input: SideInput) -> Self {
+        self.side_input = side_input;
+        self
     }
 }
 
@@ -50,7 +59,11 @@ impl PTransform<PCollection<Event>> for BoundedSideInputJoin {
 
     fn expand(&self, input: &PCollection<Event>) -> PCollection<Bid> {
         let row_count = i64::from(self.side_input_row_count);
-        let side_input = side_input_rows(input.pipeline(), self.side_input_row_count);
+        let side_input = side_input_rows(
+            input.pipeline(),
+            self.side_input_row_count,
+            &self.side_input,
+        );
 
         just_bids(input).map_with_side_inputs(
             "JoinToFiles",
