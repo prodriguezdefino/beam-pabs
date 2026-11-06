@@ -117,6 +117,29 @@ impl NexmarkQueryName {
         }
     }
 
+    /// Lowercase path component for output files and job suffixes.
+    pub const fn slug(self) -> &'static str {
+        match self {
+            Self::Passthrough => "query0",
+            Self::CurrencyConversion => "query1",
+            Self::Selection => "query2",
+            Self::LocalItemSuggestion => "query3",
+            Self::AveragePriceForCategory => "query4",
+            Self::HotItems => "query5",
+            Self::AverageSellingPriceBySeller => "query6",
+            Self::HighestBid => "query7",
+            Self::MonitorNewUsers => "query8",
+            Self::WinningBids => "query9",
+            Self::LogToShardedFiles => "query10",
+            Self::UserSessions => "query11",
+            Self::ProcessingTimeWindows => "query12",
+            Self::PortabilityBatch => "query13",
+            Self::Reshuffle => "query14",
+            Self::BoundedSideInputJoin => "bounded_side_input_join",
+            Self::SessionSideInputJoin => "session_side_input_join",
+        }
+    }
+
     /// Looks up a query by its numeric identifier.
     pub fn from_number(number: i32) -> Option<Self> {
         Self::ALL.iter().copied().find(|q| q.number() == number)
@@ -160,6 +183,16 @@ pub enum NexmarkSuite {
 }
 
 impl NexmarkSuite {
+    /// Uppercase preset identifier.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "DEFAULT",
+            Self::Smoke => "SMOKE",
+            Self::Stress => "STRESS",
+            Self::FullThrottle => "FULL_THROTTLE",
+        }
+    }
+
     /// Builds the baseline configurations in this suite.
     pub fn configs(self) -> Vec<NexmarkConfig> {
         match self {
@@ -168,6 +201,12 @@ impl NexmarkSuite {
             Self::Stress => smoke_configs(100),
             Self::FullThrottle => smoke_configs(10_000),
         }
+    }
+}
+
+impl fmt::Display for NexmarkSuite {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 

@@ -21,6 +21,7 @@
 
 pub mod config;
 pub mod generator;
+pub mod launcher;
 pub mod model;
 pub mod models;
 pub mod queries;

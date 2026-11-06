@@ -224,6 +224,169 @@ registerRustBenchmark(
     counter: 'line_count',
 )
 
+def nexmarkCliFlags = { Closure resolve ->
+  def flags = []
+  def suite = resolve('suite')?.toString()
+  if (suite) flags << "--suite=${suite}"
+  def query = resolve('query')?.toString()
+  if (query != null && !query.isEmpty()) flags << "--query=${query}"
+  if (isSet('streaming')) flags << '--streaming'
+  flags.addAll((resolve('extraArgs') ?: '').toString().tokenize(' '))
+  flags
+}
+
+tasks.register('nexmarkPrism', Exec) {
+  group = 'Application'
+  description = 'Run the Nexmark benchmark suite on the local Prism Runner ' +
+      '([-Psuite=SMOKE] [-Pquery=0] [-Pstreaming] [-Pdocker] [-PextraArgs=<flags>])'
+  workingDir rustDir
+  dependsOn 'fetchPrism'
+
+  def dockerMode = project.findProperty('docker').with { it instanceof CharSequence && it.toString() != 'false' }
+  if (dockerMode && !suppliedWorkerBinary('nexmark')) {
+    dependsOn 'buildNexmarkWorker'
+  }
+
+  doFirst {
+    def resolve = propsFor('nexmark')
+    def defaultEnv = "${project.docker_image_default_repo_root}/${project.docker_image_default_repo_prefix}rust_sdk:${beamSdkVersion}".toString()
+    def envConfig = dockerMode ? resolve('environmentConfig', null, defaultEnv) : null
+    def supplied = suppliedWorkerBinary('nexmark')
+    def workerFlag = !dockerMode ? []
+        : supplied == 'none' ? []
+        : supplied ? ["--worker_binary=${supplied}"]
+        : ["--worker_binary=${workerBinaryFor('nexmark', workerArch).absolutePath}"]
+    def gcpArgs = portableGcpArgs(resolve)
+    def cmd = [
+      'cargo', 'run', '--release', '-p', 'apache-beam-nexmark', '--bin', 'nexmark', '--',
+      '--runner=PrismRunner',
+      *(dockerMode
+          ? ['--environment_type=DOCKER', "--environment_config=${envConfig}"] + workerFlag
+          : ['--environment_type=LOOPBACK']),
+      *gcpArgs,
+      *nexmarkCliFlags(resolve),
+    ].collect { it.toString() }
+
+    environment launchEnvironment()
+    commandLine cmd
+  }
+}
+
+tasks.register('nexmarkDataflow', Exec) {
+  group = 'Application'
+  description = 'Run the Nexmark benchmark suite on Google Cloud Dataflow ' +
+      '([-Psuite=DEFAULT] [-Pquery=0] [-Pstreaming] [-PextraArgs=<flags>])'
+  workingDir rustDir
+  if (!suppliedWorkerBinary('nexmark')) {
+    dependsOn 'buildNexmarkWorker'
+  }
+
+  doFirst {
+    def resolve = propsFor('nexmark')
+    def gcpProject = gcpProjectFrom(resolve)
+    def gcpRegion = resolve('gcpRegion', 'GCP_REGION', 'us-central1')
+    def gcpTempLocation = resolve('gcpTempLocation', 'GCP_TEMP_LOCATION')
+    def sdkContainerImage = resolve('sdkContainerImage', 'SDK_CONTAINER_IMAGE')
+
+    if (!gcpProject || !gcpTempLocation) {
+      throw new GradleException("Missing required GCP parameters for 'nexmark'!\n" +
+          'Provide -PgcpProject=<project> and -PgcpTempLocation=gs://<bucket>/tmp on the CLI ' +
+          'or in sdks/rust/.local/sdk.properties (globally or under example.nexmark.*).')
+    }
+
+    def supplied = suppliedWorkerBinary('nexmark')
+    def workerBinPath = supplied == 'none' ? null
+        : supplied ?: workerBinaryFor('nexmark', workerArch).absolutePath
+
+    def args = [
+      '--runner=DataflowRunner',
+      "--project=${gcpProject}",
+      "--region=${gcpRegion}",
+      "--temp_location=${gcpTempLocation}",
+    ]
+    if (workerBinPath) args << "--worker_binary=${workerBinPath}"
+    if (sdkContainerImage) args << "--sdk_container_image=${sdkContainerImage}"
+
+    [
+      [prop: 'subnetwork',                env: 'SUBNETWORK',               flag: 'subnetwork'],
+      [prop: 'network',                   env: 'NETWORK',                  flag: 'network'],
+      [prop: 'serviceAccountEmail',       env: 'SERVICE_ACCOUNT_EMAIL',    flag: 'service_account_email'],
+      [prop: 'numWorkers',                env: 'NUM_WORKERS',              flag: 'num_workers'],
+      [prop: 'maxNumWorkers',             env: 'MAX_NUM_WORKERS',          flag: 'max_num_workers'],
+      [prop: 'autoscalingAlgorithm',      env: 'AUTOSCALING_ALGORITHM',    flag: 'autoscaling_algorithm'],
+      [prop: 'workerMachineType',         env: 'WORKER_MACHINE_TYPE',      flag: 'worker_machine_type'],
+      [prop: 'diskSizeGb',                env: 'DISK_SIZE_GB',             flag: 'disk_size_gb'],
+      [prop: 'workerDiskType',            env: 'WORKER_DISK_TYPE',         flag: 'worker_disk_type'],
+      [prop: 'dataflowServiceOptions',    env: 'DATAFLOW_SERVICE_OPTIONS', flag: 'dataflow_service_options'],
+      [prop: 'experiments',               env: 'EXPERIMENTS',              flag: 'experiments'],
+      [prop: 'numberOfWorkerHarnessThreads', env: 'WORKER_HARNESS_THREADS', flag: 'number_of_worker_harness_threads'],
+      [prop: 'usePublicIps',              env: 'USE_PUBLIC_IPS',           flag: 'use_public_ips'],
+      [prop: 'sdkHarnessContainerImageOverrides', env: 'SDK_HARNESS_CONTAINER_IMAGE_OVERRIDES', flag: 'sdk_harness_container_image_overrides'],
+    ].each { opt ->
+      def val = resolve(opt.prop, opt.env)
+      if (val != null && !val.toString().isEmpty()) {
+        args << "--${opt.flag}=${val}"
+      }
+    }
+
+    args.addAll(nexmarkCliFlags(resolve))
+
+    environment launchEnvironment()
+    commandLine(['cargo', 'run', '--release', '-p', 'apache-beam-nexmark', '--bin', 'nexmark', '--'] +
+        args.collect { it.toString() })
+  }
+}
+
+tasks.register('nexmarkBenchmark') {
+  group = 'Verification'
+  description = 'Run a Nexmark query on Dataflow for some rounds and report its CPU and throughput metrics ' +
+      '([-Pquery=0] [-PnumEvents=1000000] [-Pstreaming] [-Pruns=3] [-Pbaseline=<git ref>] ' +
+      '[-PcompareTo=<results.json>] [-PnumWorkers=1] [-PmaxNumWorkers=10] ' +
+      '[-PworkerMachineType=n2-standard-4] [-PminCpuPlatform=<platform>] ' +
+      '[-PextraArgs=<pipeline flags>] [-PdryRun])'
+
+  doLast {
+    def query = (project.findProperty('query') ?: '0').toString()
+    def numEvents = (project.findProperty('numEvents') ?: '1000000').toString()
+    def streaming = isSet('streaming')
+    def workers = (project.findProperty('numWorkers') ?: '1').toString()
+    def maxWorkers = (project.findProperty('maxNumWorkers') ?: '10').toString()
+    def machine = (project.findProperty('workerMachineType') ?: 'n2-standard-4').toString()
+    def minCpu = project.findProperty('minCpuPlatform')?.toString()
+    def experiments = ([project.findProperty('experiments')?.toString()] +
+        (minCpu ? ["min_cpu_platform=${minCpu}"] : [])).findAll { it }.join(',')
+    def props = ["-Pquery=${query}", "-PnumWorkers=${workers}", "-PmaxNumWorkers=${maxWorkers}",
+                 "-PworkerMachineType=${machine}"] +
+        (streaming ? ['-Pstreaming'] : []) +
+        (experiments ? ["-Pexperiments=${experiments}"] : []) +
+        passthrough(dataflowPassthrough)
+    def extraArgs = ["--num_events=${numEvents}", project.findProperty('extraArgs')].findAll { it }.join(' ')
+    def mode = streaming ? 'streaming' : 'batch'
+    def summary = "Nexmark query ${query} (${mode}), ${numEvents} events, ${machine}, " +
+        "${workers} to ${maxWorkers} workers" + (minCpu ? ", minimum CPU platform ${minCpu}" : '') + '.'
+
+    gitRefVariants { List<Map> checkouts ->
+      def variants = checkouts.collect { Map checkout ->
+        def flags = { List<String> first -> (first + (extraArgs ? [extraArgs] : [])).join(' ') }
+        def task = { List<String> first ->
+          (["${checkout.root}/gradlew", '--console=plain', ':sdks:rust:nexmarkDataflow'] +
+              props + ["-PextraArgs=${flags(first)}"])*.toString()
+        }
+        [label: checkout.label, describe: checkout.describe, cwd: checkout.root,
+         prepare: task(["--dataflow_job_file={out_dir}/${checkout.label}-prepare-job.json".toString()]),
+         argv: task(['--job_name={job_name}', '--labels={labels}'])]
+      }
+      runDataflowBenchmark([
+          task: 'nexmarkBenchmark',
+          describe: summary,
+          countOutput: 'RecordSourceMetrics',
+          countName: 'events',
+          counter: 'source_events',
+      ], variants)
+    }
+  }
+}
+
 tasks.register('profileCompare') {
   group = 'Verification'
   description = 'Profile a Rust example on Prism for some rounds (profilePrism, worker profile, CPU mode) ' +

@@ -31,6 +31,11 @@ path = "src/lib.rs"
 test = false
 doctest = false
 
+[[bin]]
+name = "nexmark"
+path = "src/main.rs"
+test = false
+
 [[test]]
 name = "model"
 path = "tests/model/main.rs"
@@ -48,8 +53,10 @@ name = "queries_streaming"
 path = "tests/queries_streaming/main.rs"
 
 [dependencies]
-beam = { workspace = true }
+beam = { workspace = true, features = ["prism", "dataflow", "gcp-gcs"] }
+clap = { workspace = true }
 serde = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
 beam = { workspace = true, features = ["testing"] }

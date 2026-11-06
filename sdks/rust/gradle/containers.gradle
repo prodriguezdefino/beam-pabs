@@ -165,6 +165,21 @@ tasks.register('buildRunnerTestsWorker') {
   }
 }
 
+tasks.register('buildNexmarkWorker') {
+  group = 'Build'
+  description = 'Build Linux worker binary for Nexmark container/Dataflow execution (-PexampleArch=amd64)'
+  onlyIf { !suppliedWorkerBinary('nexmark') }
+  inputs.files rustWorkspaceTree
+  inputs.property('arch', workerArch)
+  inputs.property('sdkVersion', beamSdkVersion)
+  inputs.property('targetCpu', project.findProperty('workerTargetCpu') ?: 'default')
+  outputs.file workerBinaryFor('nexmark', workerArch)
+
+  doLast {
+    compileWorkers(['nexmark'], workerArch, beamSdkVersion, ['nexmark': 'apache-beam-nexmark'])
+  }
+}
+
 tasks.register('docker') {
   group = 'Build'
   description = 'Build the Rust SDK base container image (apache/beam_rust_sdk)'
