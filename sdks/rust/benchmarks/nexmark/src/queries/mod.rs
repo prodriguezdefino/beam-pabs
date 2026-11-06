@@ -28,10 +28,14 @@ mod query13;
 mod query14;
 mod query2;
 pub(crate) mod query3;
+mod query4;
 mod query5;
+pub(crate) mod query6;
 mod query7;
 mod query8;
+mod query9;
 mod session_side_input_join;
+pub(crate) mod winning_bids;
 
 use beam::prelude::*;
 
@@ -40,14 +44,18 @@ pub use self::query0::Query0;
 pub use self::query1::Query1;
 pub use self::query2::Query2;
 pub use self::query3::Query3;
+pub use self::query4::Query4;
 pub use self::query5::Query5;
+pub use self::query6::Query6;
 pub use self::query7::Query7;
 pub use self::query8::Query8;
+pub use self::query9::Query9;
 pub use self::query11::Query11;
 pub use self::query12::Query12;
 pub use self::query13::Query13;
 pub use self::query14::Query14;
 pub use self::session_side_input_join::SessionSideInputJoin;
+pub use self::winning_bids::{WinningBids, expected_auction_duration_ms};
 use crate::model::{Auction, Bid, Event, Person};
 
 pub(crate) fn just_bids(events: &PCollection<Event>) -> PCollection<Bid> {

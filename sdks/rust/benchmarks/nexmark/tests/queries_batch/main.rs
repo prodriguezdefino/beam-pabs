@@ -22,6 +22,7 @@
 mod stateless;
 mod utility_and_side_inputs;
 mod windowed;
+mod winning_bids;
 
 use std::collections::BTreeMap;
 use std::fmt::Debug;
