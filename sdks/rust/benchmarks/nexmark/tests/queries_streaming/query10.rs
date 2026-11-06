@@ -72,6 +72,26 @@ fn decode_log_directory(dir: &Path) -> (Vec<String>, Vec<String>, Vec<Event>) {
     (index_files, log_files, events)
 }
 
+/// Fails when an INDEX line names a LOG file that does not exist.
+fn assert_index_references_exist(dir: &Path, index_files: &[String]) {
+    let referenced_logs: BTreeSet<String> = index_files
+        .iter()
+        .flat_map(|idx_name| {
+            let content = fs::read_to_string(dir.join(idx_name)).expect("read INDEX file");
+            content
+                .lines()
+                .filter_map(|line| line.split_whitespace().nth(4).map(str::to_owned))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    for path in &referenced_logs {
+        assert!(
+            Path::new(path).exists(),
+            "INDEX referenced missing LOG file {path}"
+        );
+    }
+}
+
 fn check_done_markers(actual: &[Done]) -> Result {
     if actual.is_empty() {
         return Err("expected at least one Done output from Query10".into());
@@ -118,9 +138,8 @@ async fn query10_writes_sharded_logs_and_indices_for_on_time_stream()
 
     let result = p.run().await?;
     let metrics = result.metrics().expect("Prism reports pipeline metrics");
-    assert_eq!(metrics.counter("Query10", "onTimeCounter"), Some(240));
+    // No exact counts: prism/internal/jobservices/metrics.go contributeMetrics can drop updates.
     assert_eq!(metrics.counter("Query10", "actuallyLateEvent"), None);
-    assert_eq!(metrics.counter("Query10", "writtenRecords"), Some(240));
     assert!(metrics.counter("Query10", "savedFile").unwrap_or(0) > 0);
     assert!(metrics.counter("Query10", "indexed").unwrap_or(0) > 0);
     assert_eq!(metrics.counter("Query10", "ERROR_unexpectedLatePane"), None);
@@ -135,24 +154,7 @@ async fn query10_writes_sharded_logs_and_indices_for_on_time_stream()
     let (index_files, log_files, mut decoded_events) = decode_log_directory(temp_dir.path());
     assert!(!index_files.is_empty(), "expected INDEX-* files on disk");
     assert!(!log_files.is_empty(), "expected LOG-* files on disk");
-
-    let referenced_logs: BTreeSet<String> = index_files
-        .iter()
-        .flat_map(|idx_name| {
-            let content =
-                fs::read_to_string(temp_dir.path().join(idx_name)).expect("read INDEX file");
-            content
-                .lines()
-                .filter_map(|line| line.split_whitespace().nth(4).map(str::to_owned))
-                .collect::<Vec<_>>()
-        })
-        .collect();
-    for path in &referenced_logs {
-        assert!(
-            Path::new(path).exists(),
-            "INDEX referenced missing LOG file {path}"
-        );
-    }
+    assert_index_references_exist(temp_dir.path(), &index_files);
 
     let mut expected_events: Vec<Event> = models::query0(&config)
         .into_iter()
@@ -197,28 +199,17 @@ async fn query10_archives_delayed_late_events_and_early_count_panes()
         );
     passert::that("Query10DelayedDone", &done).satisfies(check_done_markers);
 
-    let result = p.run().await?;
-    let metrics = result.metrics().expect("Prism reports pipeline metrics");
-    let late_events = metrics.counter("Query10", "actuallyLateEvent").unwrap_or(0);
-    let on_time_events = metrics.counter("Query10", "onTimeCounter").unwrap_or(0);
-    let written = metrics.counter("Query10", "writtenRecords");
-    let early_shards = metrics.counter("Query10", "earlyShard");
-    let on_time_shards = metrics.counter("Query10", "onTimeShard");
-    let late_shards = metrics.counter("Query10", "lateShard");
-    assert!(
-        late_events > 0,
-        "expected delayed stream to record actuallyLateEvent > 0"
-    );
-    assert_eq!(on_time_events + late_events, 240);
-    assert_eq!(
-        written,
-        Some(240),
-        "on_time={on_time_events} late={late_events} early_shards={early_shards:?} on_time_shards={on_time_shards:?} late_shards={late_shards:?}"
-    );
+    // Counts come from the files: prism/internal/jobservices/metrics.go contributeMetrics can drop updates.
+    p.run().await?;
 
     let (index_files, log_files, decoded_events) = decode_log_directory(temp_dir.path());
-    assert!(!index_files.is_empty());
-    assert!(!log_files.is_empty());
+    assert!(!index_files.is_empty(), "expected INDEX-* files on disk");
+    assert!(!log_files.is_empty(), "expected LOG-* files on disk");
+    assert_index_references_exist(temp_dir.path(), &index_files);
+    assert!(
+        decoded_events.iter().any(|ev| ev.has_annotation("LATE")),
+        "expected the delayed stream to write LATE events"
+    );
 
     let mut stripped_actual: Vec<Event> = decoded_events
         .into_iter()
