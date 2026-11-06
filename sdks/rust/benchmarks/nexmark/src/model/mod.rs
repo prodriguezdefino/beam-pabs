@@ -32,6 +32,7 @@ pub use self::coders::{
     BidsPerSessionCoder, CategoryPriceCoder, DoneCoder, EventCoder, IdNameReserveCoder,
     NameCityStateIdCoder, PersonCoder, SellerPriceCoder,
 };
+pub(crate) use self::coders::{decode_framed, encode_framed};
 pub use self::results::{
     AuctionBid, AuctionCount, AuctionPrice, BidsPerSession, CategoryPrice, Done, IdNameReserve,
     NameCityStateId, SellerPrice,

@@ -43,12 +43,17 @@ path = "tests/generator/main.rs"
 name = "queries_batch"
 path = "tests/queries_batch/main.rs"
 
+[[test]]
+name = "queries_streaming"
+path = "tests/queries_streaming/main.rs"
+
 [dependencies]
 beam = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]
 beam = { workspace = true, features = ["testing"] }
+tempfile = { workspace = true }
 tokio = { workspace = true }
 
 [lints]

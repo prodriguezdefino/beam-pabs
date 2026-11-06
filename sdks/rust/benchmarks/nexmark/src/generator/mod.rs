@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 
 pub use self::config::GeneratorConfig;
 pub use self::java_random::JavaRandom;
+pub(crate) use self::strings::next_long;
 use crate::model::Event;
 
 const AUCTION_END_REM: i64 =

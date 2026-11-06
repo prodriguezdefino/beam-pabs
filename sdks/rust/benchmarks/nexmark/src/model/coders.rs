@@ -137,7 +137,7 @@ fn take_bytes<'a>(reader: &mut &'a [u8], len: usize, label: &str) -> Result<&'a 
     Ok(head)
 }
 
-fn encode_framed(
+pub(crate) fn encode_framed(
     writer: &mut Vec<u8>,
     context: Context,
     encode_raw: impl FnOnce(&mut Vec<u8>) -> Result<(), CoderError>,
@@ -162,7 +162,7 @@ fn encode_framed(
     }
 }
 
-fn decode_framed<T>(
+pub(crate) fn decode_framed<T>(
     reader: &mut &[u8],
     context: Context,
     decode_raw: impl FnOnce(&mut &[u8]) -> Result<T, CoderError>,

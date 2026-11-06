@@ -27,6 +27,7 @@ use beam::transforms::sdf::{
 };
 use serde::{Deserialize, Serialize};
 
+use super::generator_segments;
 use crate::config::NexmarkConfig;
 use crate::generator::{Generator, GeneratorConfig};
 use crate::model::Event;
@@ -69,20 +70,6 @@ struct BoundedGeneratorFn {
     num_generators: usize,
 }
 
-impl BoundedGeneratorFn {
-    /// Yields `(global_start, global_end, first_event_id, sub_max_events)` per generator split.
-    fn segments(&self) -> impl Iterator<Item = (i64, i64, i64, i64)> + use<> {
-        self.root
-            .split_bounds(self.num_generators)
-            .scan(0_i64, |seg_start, (first_id, sub_max)| {
-                let start = *seg_start;
-                let end = start + sub_max;
-                *seg_start = end;
-                Some((start, end, first_id, sub_max))
-            })
-    }
-}
-
 impl SplittableDoFn for BoundedGeneratorFn {
     type In = Vec<u8>;
     type Out = Event;
@@ -102,8 +89,7 @@ impl SplittableDoFn for BoundedGeneratorFn {
         _element: &Self::In,
         restriction: &Self::Restriction,
     ) -> Vec<Self::Restriction> {
-        let splits: Vec<OffsetRange> = self
-            .segments()
+        let splits: Vec<OffsetRange> = generator_segments(&self.root, self.num_generators)
             .filter_map(|(seg_start, seg_end, _, _)| {
                 let start = restriction.start.max(seg_start);
                 let end = restriction.end.min(seg_end);
@@ -137,7 +123,9 @@ impl SplittableDoFn for BoundedGeneratorFn {
             return Ok(ProcessContinuation::Stop);
         }
 
-        for (seg_start, seg_end, first_id, sub_max) in self.segments() {
+        for (seg_start, seg_end, first_id, sub_max) in
+            generator_segments(&self.root, self.num_generators)
+        {
             if range.start >= seg_end {
                 continue;
             }

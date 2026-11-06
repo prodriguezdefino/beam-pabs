@@ -20,5 +20,26 @@
 //! Bounded and unbounded synthetic event sources for Nexmark pipelines.
 
 mod bounded;
+mod restriction;
+mod unbounded;
 
 pub use self::bounded::BoundedEventSource;
+pub use self::restriction::{
+    GeneratorRestriction, GeneratorRestrictionCoder, GeneratorRestrictionTracker,
+};
+pub use self::unbounded::UnboundedEventSource;
+use crate::generator::GeneratorConfig;
+
+/// Yields `(global_start, global_end, first_event_id, sub_max_events)` per generator split.
+pub(crate) fn generator_segments(
+    root: &GeneratorConfig,
+    num_generators: usize,
+) -> impl Iterator<Item = (i64, i64, i64, i64)> + use<> {
+    root.split_bounds(num_generators)
+        .scan(0_i64, |seg_start, (first_id, sub_max)| {
+            let start = *seg_start;
+            let end = start + sub_max;
+            *seg_start = end;
+            Some((start, end, first_id, sub_max))
+        })
+}

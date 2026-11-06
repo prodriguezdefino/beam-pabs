@@ -95,6 +95,15 @@ pub struct Done {
     pub message: String,
 }
 
+impl Done {
+    /// Builds a completion marker from a status description.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
 impl KnownSize for Done {
     fn estimated_size_bytes(&self) -> u64 {
         self.message.len() as u64

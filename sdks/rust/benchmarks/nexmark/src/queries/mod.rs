@@ -22,6 +22,7 @@
 mod bounded_side_input_join;
 mod query0;
 pub(crate) mod query1;
+mod query10;
 mod query11;
 mod query12;
 mod query13;
@@ -50,6 +51,7 @@ pub use self::query6::Query6;
 pub use self::query7::Query7;
 pub use self::query8::Query8;
 pub use self::query9::Query9;
+pub use self::query10::Query10;
 pub use self::query11::Query11;
 pub use self::query12::Query12;
 pub use self::query13::Query13;
