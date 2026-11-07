@@ -19,7 +19,7 @@
 
 //! Streaming Prism integration tests for `Query10` sharded log and index file archival.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
@@ -90,6 +90,33 @@ fn assert_index_references_exist(dir: &Path, index_files: &[String]) {
             "INDEX referenced missing LOG file {path}"
         );
     }
+}
+
+/// Maps each encoded event to the shard in the name of its LOG file.
+fn event_shards(dir: &Path) -> BTreeMap<Vec<u8>, String> {
+    let mut shards = BTreeMap::new();
+    for entry in fs::read_dir(dir).expect("read Query10 output dir") {
+        let entry = entry.expect("dir entry");
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("LOG-") {
+            continue;
+        }
+        let start = name.find("shard-").expect("shard in LOG file name");
+        let shard = name[start..start + "shard-00000-of-00000".len()].to_owned();
+        let bytes = fs::read(entry.path()).expect("read LOG file");
+        let mut reader = bytes.as_slice();
+        while !reader.is_empty() {
+            let event = EventCoder
+                .decode(&mut reader, Context::Nested)
+                .expect("decode Event from LOG file");
+            let previous = shards.insert(event_sort_key(&event), shard.clone());
+            assert!(
+                previous.is_none_or(|p| p == shard),
+                "event written to two shards"
+            );
+        }
+    }
+    shards
 }
 
 fn check_done_markers(actual: &[Done]) -> Result {
@@ -255,5 +282,57 @@ async fn query10_without_output_path_emits_done_without_writing_files()
     assert_eq!(metrics.counter("Query10", "writtenRecords"), None);
     assert!(metrics.counter("Query10", "savedFile").unwrap_or(0) > 0);
     assert!(metrics.counter("Query10", "indexed").unwrap_or(0) > 0);
+    Ok(())
+}
+
+async fn run_query10_into(
+    dir: &Path,
+    config: &NexmarkConfig,
+) -> std::result::Result<(), TestPipelineError> {
+    let p = streaming_pipeline();
+    let done = p
+        .apply(
+            "ReadUnbounded",
+            UnboundedEventSource::new(config).with_batch_size(30),
+        )
+        .apply(
+            "Query10",
+            Query10::from_config(config)
+                .with_output_path(Some(dir.to_string_lossy().into_owned()))
+                .with_max_num_workers(2),
+        );
+    passert::that("Query10DoneMarkers", &done).satisfies(check_done_markers);
+    p.run().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn query10_assigns_each_event_the_same_shard_in_every_run()
+-> std::result::Result<(), TestPipelineError> {
+    let config = NexmarkConfig {
+        query: Some(NexmarkQueryName::LogToShardedFiles),
+        num_events: 200,
+        num_event_generators: 1,
+        first_event_rate: 100,
+        next_event_rate: 100,
+        window_size_sec: 1,
+        max_log_events: 1000,
+        ..base_streaming_config()
+    };
+    let first_dir = tempfile::tempdir().expect("create temp dir");
+    let second_dir = tempfile::tempdir().expect("create temp dir");
+    run_query10_into(first_dir.path(), &config).await?;
+    run_query10_into(second_dir.path(), &config).await?;
+
+    let first = event_shards(first_dir.path());
+    let second = event_shards(second_dir.path());
+    assert_eq!(first.len(), 200);
+    assert_eq!(first, second);
+    let used: BTreeSet<&String> = first.values().collect();
+    assert_eq!(
+        used.len(),
+        10,
+        "expected the 200 events to use all 10 shards, used {used:?}"
+    );
     Ok(())
 }

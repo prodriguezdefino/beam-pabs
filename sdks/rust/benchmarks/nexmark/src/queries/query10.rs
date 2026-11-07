@@ -29,6 +29,7 @@ use beam::coders::{
 use beam::io::file::write_bytes;
 use beam::prelude::*;
 use beam::transforms::Windowed;
+use serde::{Deserialize, Serialize};
 
 use crate::config::NexmarkConfig;
 use crate::model::{Done, Event, EventCoder, decode_framed, encode_framed};
@@ -204,6 +205,101 @@ fn hash_value<T: Hash>(value: &T) -> u64 {
     hasher.finish()
 }
 
+/// Stable hash of the fixed-size fields of `event`. The strings do not change the shard.
+fn shard_hash(event: &Event) -> u64 {
+    match event {
+        Event::Person(p) => mix_words(&[0, p.id, p.date_time.as_millis()]),
+        Event::Auction(a) => mix_words(&[
+            1,
+            a.id,
+            a.initial_bid,
+            a.reserve,
+            a.date_time.as_millis(),
+            a.expires.as_millis(),
+            a.seller,
+            a.category,
+        ]),
+        Event::Bid(b) => mix_words(&[2, b.auction, b.bidder, b.price, b.date_time.as_millis()]),
+    }
+}
+
+/// Combines 64-bit words, then applies the MurmurHash3 finalizer so that all bits change the
+/// shard.
+fn mix_words(words: &[i64]) -> u64 {
+    const MULTIPLIER: u64 = 0x517c_c1b7_2722_0a95;
+    let h = words.iter().fold(FnvHasher::OFFSET_BASIS, |acc, &w| {
+        (acc.rotate_left(5) ^ (w as u64)).wrapping_mul(MULTIPLIER)
+    });
+    let h = (h ^ (h >> 33)).wrapping_mul(0xff51_afd7_ed55_8ccd);
+    let h = (h ^ (h >> 33)).wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+    h ^ (h >> 33)
+}
+
+fn shard_name(shard_num: usize, num_shards: usize) -> String {
+    format!("shard-{shard_num:05}-of-{num_shards:05}")
+}
+
+fn late_event_counter() -> Counter {
+    Metrics::counter("Query10", "actuallyLateEvent")
+}
+
+fn on_time_counter() -> Counter {
+    Metrics::counter("Query10", "onTimeCounter")
+}
+
+/// Keys each event by its log shard. `setup` builds the shard names one time.
+#[derive(Clone, Debug, Serialize, Deserialize, Register)]
+struct ShardEventsFn {
+    num_shards: usize,
+    #[serde(skip)]
+    shard_names: Vec<String>,
+    #[serde(skip, default = "late_event_counter")]
+    late_events: Counter,
+    #[serde(skip, default = "on_time_counter")]
+    on_time_events: Counter,
+}
+
+impl ShardEventsFn {
+    fn new(num_shards: usize) -> Self {
+        Self {
+            num_shards: num_shards.max(1),
+            shard_names: Vec::new(),
+            late_events: late_event_counter(),
+            on_time_events: on_time_counter(),
+        }
+    }
+}
+
+impl DoFn for ShardEventsFn {
+    type In = Event;
+    type Out = (String, Event);
+
+    fn setup(&mut self) -> Result {
+        self.shard_names = (0..self.num_shards)
+            .map(|shard_num| shard_name(shard_num, self.num_shards))
+            .collect();
+        Ok(())
+    }
+
+    fn process_element(
+        &mut self,
+        event: Self::In,
+        ctx: &mut ProcessContext<'_, Self::Out>,
+    ) -> Result {
+        if event.has_annotation("LATE") {
+            self.late_events.inc();
+        } else {
+            self.on_time_events.inc();
+        }
+        let shard_num = (shard_hash(&event) % self.num_shards as u64) as usize;
+        let shard = match self.shard_names.get(shard_num) {
+            Some(name) => name.clone(),
+            None => shard_name(shard_num, self.num_shards),
+        };
+        ctx.emit((shard, event))
+    }
+}
+
 fn timing_short_tag(timing: Timing) -> &'static str {
     match timing {
         Timing::Early => "E",
@@ -234,16 +330,7 @@ impl PTransform<PCollection<Event>> for Query10 {
         let index_prefix = self.output_path.clone();
 
         input
-            .par_do_fn("ShardEvents", move |event: Event, ctx| {
-                if event.has_annotation("LATE") {
-                    Metrics::counter("Query10", "actuallyLateEvent").inc();
-                } else {
-                    Metrics::counter("Query10", "onTimeCounter").inc();
-                }
-                let shard_num = (hash_value(&event) as usize) % num_log_shards;
-                let shard = format!("shard-{shard_num:05}-of-{num_log_shards:05}");
-                ctx.emit((shard, event))
-            })
+            .par_do("ShardEvents", ShardEventsFn::new(num_log_shards))
             .apply(
                 "WindowEvents",
                 WindowInto::new(FixedWindows::of(window_size))
