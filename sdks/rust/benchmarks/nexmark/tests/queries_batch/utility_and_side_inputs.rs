@@ -19,6 +19,9 @@
 
 //! Batch Prism tests for `Query11`–`Query14`, `BoundedSideInputJoin`, and `SessionSideInputJoin`.
 
+use std::time::Duration;
+
+use beam::model::pipeline as proto;
 use beam::prelude::*;
 use beam::testing::{TestPipeline, TestPipelineError, passert};
 use nexmark::config::{NexmarkConfig, NexmarkQueryName};
@@ -97,6 +100,128 @@ async fn query11_conserves_per_bidder_counts() -> std::result::Result<(), TestPi
         .satisfies(move |actual| check_session_totals(actual, &expected_totals));
     p.run().await?;
     Ok(())
+}
+
+/// Returns the windowing strategy of the single output of the transform whose unique
+/// name ends with `suffix`.
+fn output_strategy_of<'a>(
+    components: &'a proto::Components,
+    suffix: &str,
+) -> &'a proto::WindowingStrategy {
+    let transform = components
+        .transforms
+        .values()
+        .find(|t| t.unique_name.ends_with(suffix))
+        .unwrap_or_else(|| panic!("no transform ends with {suffix}"));
+    let pcoll_id = transform
+        .outputs
+        .values()
+        .next()
+        .unwrap_or_else(|| panic!("{suffix} has no output"));
+    let pcoll = &components.pcollections[pcoll_id];
+    &components.windowing_strategies[&pcoll.windowing_strategy_id]
+}
+
+/// Checks the Query12 windowing strategy proto fields:
+/// global windows, discarding panes, end-of-window output time, emit-if-nonempty closing,
+/// fire-always on-time behavior, zero allowed lateness and one window for each element.
+fn check_query12_strategy(
+    components: &proto::Components,
+    strategy: &proto::WindowingStrategy,
+    trigger: &Trigger,
+) {
+    let window_fn = strategy.window_fn.as_ref().expect("window_fn is set");
+    assert_eq!(window_fn.urn, "beam:window_fn:global_windows:v1");
+    assert!(window_fn.payload.is_empty());
+    assert_eq!(
+        components.coders[&strategy.window_coder_id]
+            .spec
+            .as_ref()
+            .map(|spec| spec.urn.as_str()),
+        Some("beam:coder:global_window:v1")
+    );
+    assert_eq!(
+        strategy.merge_status,
+        proto::merge_status::Enum::NonMerging as i32
+    );
+    let actual = strategy
+        .trigger
+        .as_ref()
+        .map(|t| Trigger::try_from(t).expect("trigger decodes"));
+    assert_eq!(actual.as_ref(), Some(trigger));
+    assert_eq!(
+        strategy.accumulation_mode,
+        proto::accumulation_mode::Enum::Discarding as i32
+    );
+    assert_eq!(
+        strategy.output_time,
+        proto::output_time::Enum::EndOfWindow as i32
+    );
+    assert_eq!(
+        strategy.closing_behavior,
+        proto::closing_behavior::Enum::EmitIfNonempty as i32
+    );
+    assert_eq!(
+        strategy.on_time_behavior,
+        proto::on_time_behavior::Enum::FireAlways as i32
+    );
+    assert_eq!(strategy.allowed_lateness, 0);
+    assert!(strategy.assigns_to_one_window);
+}
+
+#[test]
+fn query12_windowing_strategy_proto_fields() {
+    let config = NexmarkConfig {
+        query: Some(NexmarkQueryName::ProcessingTimeWindows),
+        num_events: 100,
+        window_size_sec: 10,
+        ..NexmarkConfig::default()
+    };
+    let p = Pipeline::new();
+    let _out = p
+        .apply("ReadEvents", BoundedEventSource::new(&config))
+        .apply("Query12", Query12::from_config(&config));
+    p.validate().expect("Query12 pipeline graph must validate");
+    let components = p
+        .to_proto()
+        .components
+        .expect("validated pipeline has components");
+
+    let window_into = output_strategy_of(&components, "Query12/WindowProcessingTime");
+    let delay_10s = proto::Trigger {
+        trigger: Some(proto::trigger::Trigger::Repeat(Box::new(
+            proto::trigger::Repeat {
+                subtrigger: Some(Box::new(proto::Trigger {
+                    trigger: Some(proto::trigger::Trigger::AfterProcessingTime(
+                        proto::trigger::AfterProcessingTime {
+                            timestamp_transforms: vec![proto::TimestampTransform {
+                                timestamp_transform: Some(
+                                    proto::timestamp_transform::TimestampTransform::Delay(
+                                        proto::timestamp_transform::Delay {
+                                            delay_millis: 10_000,
+                                        },
+                                    ),
+                                ),
+                            }],
+                        },
+                    )),
+                })),
+            },
+        ))),
+    };
+    assert_eq!(window_into.trigger.as_ref(), Some(&delay_10s));
+    check_query12_strategy(
+        &components,
+        window_into,
+        &Trigger::repeatedly(Trigger::after_processing_time(Duration::from_secs(10))),
+    );
+
+    let grouped = output_strategy_of(&components, "Query12/CountPerBidder/Sum/GroupByKey");
+    check_query12_strategy(
+        &components,
+        grouped,
+        &Trigger::repeatedly(Trigger::AfterSynchronizedProcessingTime),
+    );
 }
 
 #[tokio::test]
