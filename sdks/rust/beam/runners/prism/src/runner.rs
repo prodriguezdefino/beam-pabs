@@ -29,24 +29,26 @@ use tokio_stream::{Stream, StreamExt};
 use tracing::{debug, info, warn};
 
 use beam::internals::PipelineInternals;
-use beam::metrics::MetricResults;
 use beam::options::{PipelineOptions, PortableOptions, WorkerOptions, resolve_container_image};
 use beam::pipeline::{
     DockerEnvironment, Pipeline, URN_ARTIFACT_TYPE_FILE, URN_ENV_DOCKER, URN_ENV_EXTERNAL,
     URN_RUST_ARTIFACT_ROLE_WORKER_BINARY,
 };
-use beam::runners::{JobState, PipelineResult, PipelineRunner, RunnerError, RunnerRegistration};
+use beam::runners::{
+    JobHandle, JobState, PipelineResult, PipelineRunner, RunnerError, RunnerRegistration,
+};
 use harness::grpc;
 use model::job_management::job_service_client::JobServiceClient;
 use model::job_management::{
-    GetJobMetricsRequest, JobMessagesRequest, JobMessagesResponse, PrepareJobRequest,
-    RunJobRequest, job_message::MessageImportance, job_messages_response, job_state,
+    JobMessagesResponse, PrepareJobRequest, RunJobRequest, job_message::MessageImportance,
+    job_messages_response, job_state,
 };
 use model::pipeline::{
     ApiServiceDescriptor, ArtifactFilePayload, ArtifactInformation, Components, DockerPayload,
     Environment, ExternalPayload, PTransform,
 };
 
+use crate::job::PrismJob;
 use crate::server::PrismServer;
 use crate::staging::{declares_dependencies, localize_deferred_dependencies, stage_artifacts};
 use crate::worker_pool::WorkerPool;
@@ -522,23 +524,34 @@ impl PipelineRunner for PrismRunner {
     async fn run(&self, pipeline: &Pipeline) -> Result<PipelineResult, RunnerError> {
         self.execute(pipeline).await.map_err(RunnerError::execution)
     }
+
+    async fn submit(&self, pipeline: &Pipeline) -> Result<Box<dyn JobHandle>, RunnerError> {
+        let job = self.start(pipeline).await.map_err(RunnerError::execution)?;
+        Ok(Box::new(job))
+    }
 }
 
 impl PrismRunner {
     /// Runs `pipeline`, reporting failures with this runner's own error type.
     async fn execute(&self, pipeline: &Pipeline) -> Result<PipelineResult, PrismRunnerError> {
+        let result = self.start(pipeline).await?.finish().await?;
+        if result.state == JobState::Cancelled {
+            return Err(PrismRunnerError::JobCancelled(result.job_id));
+        }
+        Ok(result)
+    }
+
+    /// Submits `pipeline` to Prism and returns the running job.
+    async fn start(&self, pipeline: &Pipeline) -> Result<PrismJob, PrismRunnerError> {
         // Resolved first: it reads only the options, so a misconfigured launch fails
         // before Prism is spawned, or downloaded on a first run.
         let docker_environment = docker_environment_for(&self.options)?;
 
-        let _server_guard;
-        let job_endpoint = match &self.options.endpoint {
-            Some(ep) => grpc::with_scheme(ep),
+        let (job_endpoint, server) = match &self.options.endpoint {
+            Some(ep) => (grpc::with_scheme(ep), None),
             None => {
                 let server = PrismServer::start_or_connect(None).await?;
-                let ep = server.endpoint().to_string();
-                _server_guard = Some(server);
-                ep
+                (server.endpoint().to_string(), Some(server))
             }
         };
 
@@ -640,35 +653,6 @@ impl PrismRunner {
         let job_id = run_resp.job_id;
         info!("Submitted job '{}' to Prism on {}", job_id, job_endpoint);
 
-        let outcome = follow_job(&job_id, || {
-            let mut client = job_client.clone();
-            let request = JobMessagesRequest {
-                job_id: job_id.clone(),
-            };
-            async move {
-                client
-                    .get_message_stream(request)
-                    .await
-                    .map(tonic::Response::into_inner)
-            }
-        })
-        .await;
-
-        if let Some(mut pool) = worker_pool_opt {
-            pool.stop().await;
-        }
-        let mut res = outcome?;
-        if res.state == JobState::Done
-            && let Ok(metrics_resp) = job_client
-                .get_job_metrics(GetJobMetricsRequest { job_id })
-                .await
-            && let Some(metric_results) = metrics_resp.into_inner().metrics
-        {
-            res.metrics = Some(MetricResults::from_monitoring_infos(
-                &metric_results.attempted,
-                &metric_results.committed,
-            ));
-        }
-        Ok(res)
+        Ok(PrismJob::new(job_id, job_client, worker_pool_opt, server))
     }
 }

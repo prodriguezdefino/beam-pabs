@@ -22,8 +22,8 @@ use std::collections::HashMap;
 use dataflow::{
     ClientError, DataflowApiClient, HttpDataflowClient, JOB_STATE_CANCELLED, JOB_STATE_DONE,
     JOB_STATE_DRAINED, JOB_STATE_FAILED, JOB_STATE_PENDING, JOB_STATE_QUEUED, JOB_STATE_RUNNING,
-    JOB_STATE_UNKNOWN, JOB_STATE_UPDATED, JobMessageItem, JobMetricsResponse, MAX_REQUEST_ATTEMPTS,
-    MessageCursor, is_successful_state, is_terminal_state,
+    JOB_STATE_UNKNOWN, JOB_STATE_UPDATED, JobMessageItem, JobMetricsResponse, JobState,
+    MAX_REQUEST_ATTEMPTS, MessageCursor, is_successful_state, is_terminal_state,
 };
 use dataflow::{
     DataflowEnvironment, DataflowJob, SdkOptionsPayload, SdkPipelineOptions, UserAgent, Version,
@@ -402,6 +402,28 @@ async fn a_busy_api_gets_the_request_again() {
     let client = HttpDataflowClient::with_endpoint_and_token(server.uri(), None::<String>);
     let job = client.get_job("p", "r", "j").await.unwrap();
     assert_eq!(job.current_state, "JOB_STATE_RUNNING");
+}
+
+#[tokio::test]
+async fn a_state_change_accepts_an_answer_without_the_job() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{RETRY_JOBS}/j")))
+        .and(body_partial_json(
+            json!({"requestedState": "JOB_STATE_DRAINED"}),
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"currentState": "JOB_STATE_RUNNING"})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = HttpDataflowClient::with_endpoint_and_token(server.uri(), None::<String>);
+    client
+        .update_job("p", "r", "j", JobState::Drained)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]

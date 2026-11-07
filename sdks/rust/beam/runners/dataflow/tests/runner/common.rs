@@ -240,7 +240,7 @@ impl DataflowApiClient for MockDataflowClient {
         _region: &str,
         job_id: &str,
         requested_state: JobState,
-    ) -> Result<JobResponse, ClientError> {
+    ) -> Result<(), ClientError> {
         self.update_requests
             .lock()
             .unwrap()
@@ -252,14 +252,13 @@ impl DataflowApiClient for MockDataflowClient {
             other => other,
         };
         self.set_job_state(job_id, reached.as_str());
-        let mut guard = self.jobs.lock().expect("mock client state lock poisoned");
-        guard
-            .iter_mut()
-            .find(|j| j.id == job_id)
-            .cloned()
-            .ok_or_else(|| ClientError::Api {
+        let guard = self.jobs.lock().expect("mock client state lock poisoned");
+        match guard.iter().any(|j| j.id == job_id) {
+            true => Ok(()),
+            false => Err(ClientError::Api {
                 status: 404,
                 message: format!("Job {job_id} not found"),
-            })
+            }),
+        }
     }
 }
