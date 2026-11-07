@@ -182,6 +182,8 @@ async fn query10_archives_delayed_late_events_and_early_count_panes()
         max_log_events: 8,
         occasional_delay_sec: 3,
         prob_delayed_event: 0.25,
+        // Only a paced source holds events back.
+        is_rate_limited: true,
         ..base_streaming_config()
     };
 

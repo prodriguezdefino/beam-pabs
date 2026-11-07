@@ -303,3 +303,8 @@ itself, so on Prism the job usually ends before the drain rule applies.
 The unbounded source reports its backlog in estimated bytes: the unclaimed events at the
 average event size plus the size of the held-back late events. Its restriction size and its
 progress use this unit.
+
+As in Java, the unbounded source holds events back (`--prob_delayed_event`,
+`--occasional_delay_sec`) only with `--is_rate_limited`. One call of the source emits up to
+10,000 events or runs up to 10 seconds before it checkpoints, the bounds that the Dataflow Java
+worker gives a splittable DoFn.

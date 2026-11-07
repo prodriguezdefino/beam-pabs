@@ -113,6 +113,30 @@ async fn streaming_stateless_and_stateful_queries_match_models()
     .await
 }
 
+/// SMOKE Query 5 with its default delayed-event settings. An unpaced source must not hold
+/// events back, or the first window loses late bids and ties (10 results instead of 12).
+/// Small calls make the source report its watermark often, so held-back events turn late.
+#[tokio::test]
+async fn streaming_query5_with_default_delays_matches_batch_model()
+-> std::result::Result<(), TestPipelineError> {
+    let config = NexmarkConfig {
+        query: Some(NexmarkQueryName::HotItems),
+        num_events: 100_000,
+        ..NexmarkConfig::default()
+    };
+    assert!(config.prob_delayed_event > 0.0 && !config.is_rate_limited);
+    let expected = models::query5(&config);
+    assert_eq!(expected.len(), 12);
+    assert_streaming_query_matches_model(
+        "Query5Smoke",
+        &config,
+        128,
+        Query5::from_config(&config),
+        expected,
+    )
+    .await
+}
+
 #[tokio::test]
 async fn streaming_windowed_queries_match_models() -> std::result::Result<(), TestPipelineError> {
     let q5_cfg = NexmarkConfig {

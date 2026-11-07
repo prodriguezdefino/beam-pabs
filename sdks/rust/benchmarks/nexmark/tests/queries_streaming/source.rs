@@ -223,6 +223,8 @@ async fn unbounded_source_injects_deterministic_late_annotations_and_conserves_e
         next_event_rate: 50,
         occasional_delay_sec: 3,
         prob_delayed_event: 0.25,
+        // Only a paced source holds events back.
+        is_rate_limited: true,
         ..base_streaming_config()
     };
     let expected_stripped = models::query0(&config);
@@ -275,6 +277,26 @@ async fn unbounded_source_paces_rate_limited_stream() -> std::result::Result<(),
         UnboundedEventSource::new(&config).with_batch_size(5),
     ));
     passert::that("RateLimitedSourceMatchesModel", &stamped).contains_in_any_order(expected);
+    p.run().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn unpaced_source_holds_no_events_back() -> std::result::Result<(), TestPipelineError> {
+    let config = NexmarkConfig {
+        num_events: 500,
+        num_event_generators: 2,
+        occasional_delay_sec: 3,
+        prob_delayed_event: 0.5,
+        ..base_streaming_config()
+    };
+    let p = streaming_pipeline();
+    let stamped = stamp(&p.apply(
+        "ReadUnpaced",
+        UnboundedEventSource::new(&config).with_batch_size(50),
+    ));
+    passert::that("UnpacedSourceMatchesModel", &stamped)
+        .contains_in_any_order(models::query0(&config));
     p.run().await?;
     Ok(())
 }

@@ -19,7 +19,7 @@
 
 //! Unbounded streaming [`Event`] source with watermark tracking, rate pacing, and late events.
 
-use std::time::Duration;
+use std::time::{Duration, Instant as WallInstant};
 
 use beam::prelude::*;
 use beam::transforms::Impulse;
@@ -37,7 +37,12 @@ use crate::generator::{
 };
 use crate::model::Event;
 
-const DEFAULT_BATCH_SIZE: usize = 128;
+/// Most events that one call emits before it checkpoints, the bound that the Dataflow Java worker
+/// gives a splittable DoFn. Each checkpoint costs a reschedule of the residual, about one second
+/// on Dataflow streaming, so a small bound caps the source throughput.
+const DEFAULT_BATCH_SIZE: usize = 10_000;
+/// Longest wall time of one call before it checkpoints, as in the Dataflow Java worker.
+const MAX_CALL_DURATION: Duration = Duration::from_secs(10);
 
 fn delay_seed(event_id: i64) -> i64 {
     let mut z = (event_id as u64).wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -68,7 +73,7 @@ impl UnboundedEventSource {
         }
     }
 
-    /// Sets the maximum number of events emitted per bundle before self-checkpointing.
+    /// Sets the maximum number of events emitted per call before self-checkpointing.
     pub fn with_batch_size(mut self, batch_size: usize) -> Self {
         self.batch_size = batch_size.max(1);
         self
@@ -119,9 +124,11 @@ impl UnboundedGeneratorFn {
             })
     }
 
+    /// Delay of a held-back event. As in Java, only a rate-limited source holds events back:
+    /// without pacing, events have no wall-clock order that a delay can change.
     fn sample_delay_ms(&self, event_id: i64) -> Option<i64> {
         let cfg = &self.root.configuration;
-        if cfg.prob_delayed_event <= 0.0 || cfg.occasional_delay_sec <= 0 {
+        if !self.is_rate_limited || cfg.prob_delayed_event <= 0.0 || cfg.occasional_delay_sec <= 0 {
             return None;
         }
         let mut rng = JavaRandom::new(delay_seed(event_id));
@@ -218,9 +225,10 @@ impl SplittableDoFn for UnboundedGeneratorFn {
         }
 
         let wallclock_base_ms = tracker.tracker.wallclock_base_ms(current_wallclock_ms);
+        let call_start = WallInstant::now();
         let mut emitted = 0_usize;
 
-        while emitted < self.batch_size {
+        while emitted < self.batch_size && call_start.elapsed() < MAX_CALL_DURATION {
             let (pos, end, offset_stopped) = tracker.tracker.offset_bounds();
             let candidate = (!offset_stopped && pos < end)
                 .then(|| self.event_at(pos, wallclock_base_ms))
