@@ -19,10 +19,12 @@
 
 //! Async driver that polls a streaming job and applies the stop rules of [`decide`].
 
-use std::time::Instant as WallInstant;
+use std::time::{Duration, Instant as WallInstant};
 
 use beam::metrics::{MetricFilter, MetricResult, MetricResults};
 use beam::runners::{JobHandle, JobState, PipelineResult, RunnerError};
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 use super::error::LauncherError;
 use super::perf::{NexmarkPerf, ProgressSnapshot};
@@ -39,12 +41,99 @@ pub enum StopReason {
     RunningTimeReached,
 }
 
+/// Longest time that [`StoppedJobs`] waits for a stopped job to end.
+const END_WAIT: Duration = Duration::from_secs(10 * 60);
+
 /// Final metrics and the poll history of a streaming run.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StreamingRun {
     pub metrics: MetricResults,
     pub stop: StopReason,
     pub snapshots: Vec<ProgressSnapshot>,
+    /// The launcher asked the job to stop and did not wait for its end. Give the job to
+    /// [`StoppedJobs::watch`].
+    pub ends_in_background: bool,
+}
+
+/// Jobs that the launcher asked to stop. A background task waits for each one to end.
+///
+/// The end state of a job is only logged: it never changes the summary row of its run.
+#[derive(Debug)]
+pub struct StoppedJobs {
+    tx: Option<mpsc::UnboundedSender<JoinHandle<()>>>,
+    rx: mpsc::UnboundedReceiver<JoinHandle<()>>,
+}
+
+impl Default for StoppedJobs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StoppedJobs {
+    pub fn new() -> Self {
+        let (tx, rx) = mpsc::unbounded_channel();
+        Self { tx: Some(tx), rx }
+    }
+
+    /// Waits in the background, at most 10 minutes, for `job` to end, and logs its end state.
+    pub fn watch(&self, job: Box<dyn JobHandle>) {
+        if let Some(tx) = &self.tx {
+            let task = tokio::spawn(async move { log_end(job.as_ref()).await });
+            let _ = tx.send(task);
+        }
+    }
+
+    /// Waits for the end of the background task of each watched job.
+    pub async fn wait_all(mut self) {
+        self.tx = None;
+        while let Some(task) = self.rx.recv().await {
+            if let Err(err) = task.await {
+                tracing::warn!("the wait for a stopped job did not complete: {err}");
+            }
+        }
+    }
+}
+
+impl Drop for StoppedJobs {
+    fn drop(&mut self) {
+        while let Ok(task) = self.rx.try_recv() {
+            task.abort();
+        }
+    }
+}
+
+/// Waits up to [`END_WAIT`] for a stopped job to end and logs how it ended.
+async fn log_end(job: &dyn JobHandle) {
+    let job_id = job.job_id();
+    match job.wait_until_finish(Some(END_WAIT)).await {
+        Ok(result) => match result.state {
+            JobState::Done | JobState::Drained | JobState::Cancelled => {
+                tracing::info!(job = job_id, "stopped job ended in state {}", result.state);
+            }
+            JobState::Failed | JobState::Updated => {
+                tracing::warn!(job = job_id, "stopped job ended in state {}", result.state);
+            }
+            JobState::Unknown
+            | JobState::Stopped
+            | JobState::Running
+            | JobState::Draining
+            | JobState::Starting
+            | JobState::Cancelling
+            | JobState::Pending
+            | JobState::Queued => {
+                tracing::warn!(
+                    job = job_id,
+                    "stopped job is still in state {}",
+                    result.state
+                );
+            }
+        },
+        Err(err) => tracing::warn!(
+            job = job_id,
+            "cannot read the end of the stopped job: {err}"
+        ),
+    }
 }
 
 /// Runs `query` to its end, then cancels `publisher`, the publisher job of a `COMBINED` run.
@@ -66,8 +155,10 @@ pub async fn with_publisher<T>(publisher: &dyn JobHandle, query: impl Future<Out
 ///
 /// The wait between two polls stops as soon as the job ends.
 ///
-/// When all expected events passed, the job is drained. It is cancelled when
-/// `cancel_after_finish` is true or the runner cannot drain. `submit_ms` is the wall-clock
+/// When all expected events passed, the job is drained, and the run ends with the metrics of
+/// the last poll, without a wait for the job to end ([`StreamingRun::ends_in_background`]).
+/// The job is cancelled instead when `cancel_after_finish` is true or the runner cannot drain.
+/// A job that already drains gets no second drain request. `submit_ms` is the wall-clock
 /// submission time in milliseconds since the Unix epoch.
 ///
 /// # Errors
@@ -129,8 +220,14 @@ pub async fn monitor_streaming_job(
             }
             Decision::Done => {
                 tracing::info!("streaming job processed all events and went quiet; stopping it");
-                stop_finished_job(job, cancel_after_finish).await?;
-                Some(StopReason::Finished)
+                stop_finished_job(job, cancel_after_finish, job_state).await?;
+                // The counts did not change for `done_delay`, so the last poll is final.
+                return Ok(StreamingRun {
+                    metrics,
+                    stop: StopReason::Finished,
+                    snapshots,
+                    ends_in_background: true,
+                });
             }
             Decision::TimedOut => {
                 tracing::info!("streaming job reached --stream_timeout; cancelling it");
@@ -156,6 +253,7 @@ pub async fn monitor_streaming_job(
                 metrics: final_metrics(job, timing, metrics).await,
                 stop,
                 snapshots,
+                ends_in_background: false,
             });
         }
         if let Some(result) = wait_for_end(job, timing).await? {
@@ -176,6 +274,7 @@ pub(super) async fn cancel_at_running_time(
         metrics: final_metrics(job, timing, last).await,
         stop: StopReason::RunningTimeReached,
         snapshots: Vec::new(),
+        ends_in_background: false,
     })
 }
 
@@ -199,16 +298,38 @@ fn finished(
             metrics: result.metrics.unwrap_or(last),
             stop: StopReason::Finished,
             snapshots,
+            ends_in_background: false,
         }),
         false => Err(LauncherError::Unsuccessful(result.state)),
     }
 }
 
-/// Drains the job, or cancels it when asked to or when the runner cannot drain.
-async fn stop_finished_job(job: &dyn JobHandle, cancel: bool) -> Result<(), RunnerError> {
-    match cancel {
-        true => job.cancel().await,
-        false => match job.drain().await {
+/// Drains the job, or cancels it when asked to or when the runner cannot drain. A job in
+/// `state` `DRAINING` or `CANCELLING` already stops by itself, so it gets no drain request.
+async fn stop_finished_job(
+    job: &dyn JobHandle,
+    cancel: bool,
+    state: JobState,
+) -> Result<(), RunnerError> {
+    if cancel {
+        return job.cancel().await;
+    }
+    match state {
+        JobState::Draining | JobState::Cancelling => {
+            tracing::info!("the streaming job already stops in state {state}");
+            Ok(())
+        }
+        JobState::Unknown
+        | JobState::Stopped
+        | JobState::Running
+        | JobState::Done
+        | JobState::Failed
+        | JobState::Cancelled
+        | JobState::Updated
+        | JobState::Drained
+        | JobState::Starting
+        | JobState::Pending
+        | JobState::Queued => match job.drain().await {
             Err(RunnerError::Unsupported { runner, .. }) => {
                 tracing::info!("the {runner} runner cannot drain; cancelling the job");
                 job.cancel().await

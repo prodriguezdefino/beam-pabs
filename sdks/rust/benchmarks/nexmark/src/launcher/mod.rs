@@ -51,4 +51,6 @@ pub use self::stop::{
 pub use self::transport::{
     DECODE_ERRORS, PUBSUB_ID_ATTRIBUTE, PUBSUB_TIMESTAMP_ATTRIBUTE, decode_event, encode_event,
 };
-pub use self::watch::{StopReason, StreamingRun, monitor_streaming_job, with_publisher};
+pub use self::watch::{
+    StopReason, StoppedJobs, StreamingRun, monitor_streaming_job, with_publisher,
+};

@@ -30,7 +30,7 @@ use super::perf::{NexmarkPerf, ProgressSnapshot};
 use super::run::SuiteRun;
 use super::side_input::write_side_input;
 use super::stop::MonitorTiming;
-use super::watch::StopReason;
+use super::watch::{StopReason, StoppedJobs};
 use crate::config::{NexmarkConfig, NexmarkQueryName};
 
 /// Execution outcome recorded for one query in a suite run.
@@ -94,9 +94,10 @@ pub struct QueryRunSummary {
 ///
 /// A failed job gives a [`NexmarkRunOutcome::Failed`] row, and the suite continues. Up to
 /// `--nexmark_parallel` queries run at the same time; the rows keep the suite order. `timing`
-/// controls the polling and the stop rules of streaming jobs. On the driver, the launcher
-/// first writes the `CSV` side-input table and at the end exports the summary to BigQuery,
-/// when the flags ask for it.
+/// controls the polling and the stop rules of streaming jobs. A streaming job that the done
+/// rule stops ends in the background; the launcher waits for all of them before it returns.
+/// On the driver, the launcher first writes the `CSV` side-input table and at the end exports
+/// the summary to BigQuery, when the flags ask for it.
 pub async fn run_nexmark(
     options: &PipelineOptions,
     args: &NexmarkArgs,
@@ -108,11 +109,13 @@ pub async fn run_nexmark(
     if driver {
         write_side_input(options, args, &configs).await?;
     }
+    let stopped = StoppedJobs::new();
     let suite = SuiteRun {
         options,
         args,
         timing,
         multi_query: configs.len() > 1,
+        stopped: &stopped,
     };
     // A slot frees when any query ends, so one slow query does not hold back the others.
     let suite = &suite;
@@ -127,9 +130,12 @@ pub async fn run_nexmark(
 
     if driver {
         println!("{}", format_summary_table(&summaries));
-        if args.export_summary_to_bigquery {
-            export_summary(options, args, &summaries, started_ms).await?;
-        }
+    }
+    // The jobs that the stop rules stopped end in the background. Wait for them before the
+    // export, which submits one more job, and before the process can exit.
+    stopped.wait_all().await;
+    if driver && args.export_summary_to_bigquery {
+        export_summary(options, args, &summaries, started_ms).await?;
     }
     Ok(summaries)
 }

@@ -31,7 +31,8 @@ use super::pipeline::{build_nexmark_pipeline, is_prism_runner};
 use super::report::{NexmarkRunOutcome, QueryRunSummary};
 use super::stop::{MonitorTiming, StopRules, running_time_limit};
 use super::watch::{
-    StopReason, StreamingRun, cancel_at_running_time, monitor_streaming_job, with_publisher,
+    StopReason, StoppedJobs, StreamingRun, cancel_at_running_time, monitor_streaming_job,
+    with_publisher,
 };
 use crate::config::{NexmarkConfig, NexmarkQueryName, PubsubMode, SourceType};
 
@@ -46,6 +47,8 @@ pub(super) struct SuiteRun<'a> {
     pub timing: &'a MonitorTiming,
     /// More than one query runs, so each job name gets the query as a suffix.
     pub multi_query: bool,
+    /// Stopped jobs that end in the background while the next queries run.
+    pub stopped: &'a StoppedJobs,
 }
 
 impl SuiteRun<'_> {
@@ -129,6 +132,7 @@ impl SuiteRun<'_> {
             config,
             args,
             timing: self.timing,
+            stopped: self.stopped,
         };
         match &publisher {
             Some(publisher) => execute_with_publisher(publisher, &pipeline, &run).await,
@@ -161,14 +165,17 @@ fn build_publisher(
     build_nexmark_pipeline(&options, args, &publisher_config)
 }
 
-/// Submits the `publisher` job, then runs `query` and cancels the publisher at its end.
+/// Submits the `publisher` job, then runs `query` and cancels the publisher at its end. The
+/// publisher then ends in the background.
 async fn execute_with_publisher(
     publisher: &Pipeline,
     query: &Pipeline,
     run: &RunSettings<'_>,
 ) -> Result<NexmarkRunOutcome, LauncherError> {
     let publisher_job = publisher.submit().await?;
-    with_publisher(publisher_job.as_ref(), execute(query, run)).await
+    let outcome = with_publisher(publisher_job.as_ref(), execute(query, run)).await;
+    run.stopped.watch(publisher_job);
+    outcome
 }
 
 /// The settings of one query run that [`execute`] needs.
@@ -177,6 +184,7 @@ struct RunSettings<'a> {
     config: &'a NexmarkConfig,
     args: &'a NexmarkArgs,
     timing: &'a MonitorTiming,
+    stopped: &'a StoppedJobs,
 }
 
 /// Submits `pipeline`, waits for or monitors the job, and computes its performance.
@@ -192,6 +200,7 @@ async fn execute(
         metrics,
         stop,
         snapshots,
+        ends_in_background,
     } = match (run.streaming, running_time) {
         (true, _) => {
             let rules = StopRules::new(run.timing, run.config).with_running_time(running_time);
@@ -207,6 +216,9 @@ async fn execute(
         }
         (false, None) => batch_run(pipeline, job.wait_until_finish(None).await?)?,
     };
+    if ends_in_background {
+        run.stopped.watch(job);
+    }
     let perf = NexmarkPerf::from_metrics(&metrics, submit_ms);
     let perf = match steady_state_events_per_sec(&snapshots, run.timing.min_steady_window) {
         Some(rate) => {
@@ -242,5 +254,6 @@ fn batch_run(pipeline: &Pipeline, result: PipelineResult) -> Result<StreamingRun
         metrics: result.metrics.unwrap_or_default(),
         stop: StopReason::Finished,
         snapshots: Vec::new(),
+        ends_in_background: false,
     })
 }

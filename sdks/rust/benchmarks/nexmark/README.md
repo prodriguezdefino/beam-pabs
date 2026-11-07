@@ -291,10 +291,15 @@ A batch job runs to its end. A streaming job is polled every 15 seconds, and the
 | Rule | Action | Row |
 |---|---|---|
 | A `fatal` counter is above zero. | Cancel. | `FAILED` |
-| All `--num_events` passed and the counts did not change for 1 minute. | Drain, or cancel if the runner cannot drain or with `--cancel_streaming_job_after_finish`. | `OK` |
+| All `--num_events` passed and the counts did not change for 1 minute. | Drain, or cancel if the runner cannot drain or with `--cancel_streaming_job_after_finish`. A job that already drains gets no drain request. | `OK` |
 | The counts did not change for 1 hour (a warning after 10 minutes). | Cancel. | `FAILED` |
 | `--stream_timeout` seconds passed since the first event. | Cancel. | `TIMEOUT` |
 | The [run-time limit](#run-time-limit) passed. This rule comes first. | Cancel. | `OK (running time)` |
+
+After the drain or cancel request of this rule, the row takes the figures of the last poll and
+the next query starts at once. The stopped job ends in the background: the launcher logs its end
+state and waits up to 10 minutes for each stopped job before it exits. A COMBINED publisher
+ends the same way. The end state never changes a row.
 
 With at least 9 polls over at least 2 minutes, `Events(/sec)` is the steady-state rate: a
 least-squares fit over the middle third of the polls. Prism ends a finite streaming job by

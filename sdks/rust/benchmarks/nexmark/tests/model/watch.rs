@@ -19,14 +19,15 @@
 
 //! Drives `monitor_streaming_job` against a scripted job handle.
 
-use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use beam::metrics::{MetricKey, MetricPhase, MetricReading, MetricResults, MetricValue};
 use beam::runners::{JobHandle, JobState, PipelineResult, RunnerError};
 use nexmark::launcher::{
     ELEMENTS, EVENTS, LauncherError, METRIC_NAMESPACE, MonitorTiming, StopReason, StopRules,
-    metric_name, monitor_streaming_job, with_publisher,
+    StoppedJobs, metric_name, monitor_streaming_job, with_publisher,
 };
 
 const TIMING: MonitorTiming = MonitorTiming {
@@ -51,6 +52,8 @@ struct ScriptedJob {
     events: Vec<i64>,
     fatal: i64,
     can_drain: bool,
+    /// State after a drain request: `DRAINED`, or `DRAINING` for a job that ends later.
+    drain_state: JobState,
     /// Poll after which the job ends by itself in `DONE`.
     ends_after: Option<usize>,
     polls: Mutex<usize>,
@@ -64,6 +67,7 @@ impl ScriptedJob {
             events: events.to_vec(),
             fatal: 0,
             can_drain: true,
+            drain_state: JobState::Drained,
             ends_after: None,
             polls: Mutex::new(0),
             state: Mutex::new(JobState::Running),
@@ -126,7 +130,7 @@ impl JobHandle for ScriptedJob {
     async fn drain(&self) -> Result<(), RunnerError> {
         match self.can_drain {
             true => {
-                self.stop("drain", JobState::Drained);
+                self.stop("drain", self.drain_state);
                 Ok(())
             }
             false => {
@@ -283,4 +287,124 @@ async fn running_time_cancels_the_job_as_a_complete_run() {
         Some(StopReason::RunningTimeReached)
     );
     assert_eq!(job.calls(), ["cancel"]);
+}
+
+#[tokio::test]
+async fn done_rule_returns_without_waiting_for_the_job_to_end() {
+    // A long `done_delay` in the timing: a wait for the end would take 10 s.
+    let timing = MonitorTiming {
+        done_delay: Duration::from_secs(10),
+        ..TIMING
+    };
+    let job = ScriptedJob {
+        drain_state: JobState::Draining,
+        ..ScriptedJob::new(&[10, 50, 100])
+    };
+    let start = Instant::now();
+    let run = monitor_streaming_job(&job, &timing, RULES, false, 0)
+        .await
+        .expect("finished run");
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        start.elapsed()
+    );
+    assert_eq!(run.stop, StopReason::Finished);
+    assert!(run.ends_in_background);
+    assert_eq!(job.calls(), ["drain"]);
+}
+
+#[tokio::test]
+async fn draining_job_gets_no_drain_request() {
+    let job = ScriptedJob {
+        state: Mutex::new(JobState::Draining),
+        ..ScriptedJob::new(&[10, 50, 100])
+    };
+    let run = monitor_streaming_job(&job, &TIMING, RULES, false, 0)
+        .await
+        .expect("finished run");
+    assert_eq!(run.stop, StopReason::Finished);
+    assert!(run.ends_in_background);
+    assert!(job.calls().is_empty(), "{:?}", job.calls());
+
+    let cancel = ScriptedJob {
+        state: Mutex::new(JobState::Draining),
+        ..ScriptedJob::new(&[100])
+    };
+    let run = monitor_streaming_job(&cancel, &TIMING, RULES, true, 0)
+        .await
+        .expect("finished run");
+    assert!(run.ends_in_background);
+    assert_eq!(cancel.calls(), ["cancel"]);
+}
+
+/// A stopped job that ends in `end` after `delay`, and records that its end was read.
+struct EndingJob {
+    delay: Duration,
+    end: JobState,
+    ended: Arc<AtomicBool>,
+}
+
+#[async_trait::async_trait]
+impl JobHandle for EndingJob {
+    fn job_id(&self) -> &str {
+        "ending"
+    }
+
+    async fn state(&self) -> Result<JobState, RunnerError> {
+        Ok(JobState::Draining)
+    }
+
+    async fn metrics(&self) -> Result<MetricResults, RunnerError> {
+        Ok(MetricResults::default())
+    }
+
+    async fn cancel(&self) -> Result<(), RunnerError> {
+        Ok(())
+    }
+
+    async fn drain(&self) -> Result<(), RunnerError> {
+        Ok(())
+    }
+
+    async fn wait_until_finish(
+        &self,
+        _timeout: Option<Duration>,
+    ) -> Result<PipelineResult, RunnerError> {
+        tokio::time::sleep(self.delay).await;
+        self.ended.store(true, Ordering::SeqCst);
+        Ok(PipelineResult::new("ending", self.end))
+    }
+}
+
+fn ending_job(delay_ms: u64, end: JobState) -> (Box<dyn JobHandle>, Arc<AtomicBool>) {
+    let ended = Arc::new(AtomicBool::new(false));
+    let job = EndingJob {
+        delay: Duration::from_millis(delay_ms),
+        end,
+        ended: Arc::clone(&ended),
+    };
+    (Box::new(job), ended)
+}
+
+#[tokio::test]
+async fn suite_waits_for_each_stopped_job() {
+    let stopped = StoppedJobs::new();
+    let (first, first_ended) = ending_job(50, JobState::Drained);
+    let (second, second_ended) = ending_job(80, JobState::Cancelled);
+    stopped.watch(first);
+    stopped.watch(second);
+    assert!(!first_ended.load(Ordering::SeqCst) && !second_ended.load(Ordering::SeqCst));
+    stopped.wait_all().await;
+    assert!(first_ended.load(Ordering::SeqCst) && second_ended.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn job_that_fails_after_done_is_only_logged() {
+    let stopped = StoppedJobs::new();
+    let (failing, ended) = ending_job(10, JobState::Failed);
+    stopped.watch(failing);
+    // The wait ends normally: the failure is a log line, not an error or a panic.
+    stopped.wait_all().await;
+    assert!(ended.load(Ordering::SeqCst));
 }
