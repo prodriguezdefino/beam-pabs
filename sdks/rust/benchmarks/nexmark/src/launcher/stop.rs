@@ -34,6 +34,8 @@ pub struct MonitorTiming {
     pub stuck_warning: Duration,
     /// Quiet time that cancels the job and fails the run.
     pub stuck_terminate: Duration,
+    /// Time after the submission that cancels a job without events and fails the run.
+    pub start_limit: Duration,
     /// Shortest sample span that gives a steady-state event rate.
     pub min_steady_window: Duration,
 }
@@ -45,6 +47,7 @@ impl Default for MonitorTiming {
             done_delay: Duration::from_secs(60),
             stuck_warning: Duration::from_secs(10 * 60),
             stuck_terminate: Duration::from_secs(60 * 60),
+            start_limit: Duration::from_secs(10 * 60),
             min_steady_window: Duration::from_secs(2 * 60),
         }
     }
@@ -56,6 +59,8 @@ pub struct StopRules {
     pub done_delay: Duration,
     pub stuck_warning: Duration,
     pub stuck_terminate: Duration,
+    /// Time after the submission that ends a run without events.
+    pub start_limit: Duration,
     /// Longest run after the first event.
     pub stream_timeout: Duration,
     /// Events in the whole input, or `None` for an endless input.
@@ -71,6 +76,7 @@ impl StopRules {
             done_delay: timing.done_delay,
             stuck_warning: timing.stuck_warning,
             stuck_terminate: timing.stuck_terminate,
+            start_limit: timing.start_limit,
             stream_timeout: Duration::from_secs(u64::try_from(config.stream_timeout).unwrap_or(0)),
             expected_events: (config.num_events > 0).then_some(config.num_events),
             running_time: None,
@@ -170,11 +176,16 @@ pub enum Decision {
     Fatal { count: i64 },
     /// The counts did not change for `quiet`: cancel the job and fail the run.
     Stuck { quiet: Duration },
+    /// The job reported no event `waited` after the submission: cancel the job and fail the run.
+    NotStarted { waited: Duration },
 }
 
 /// Applies the stop rules, in priority order, to `observation` after it is added to `state`.
 ///
 /// The run-time limit comes first: Java ends the test at that time and checks nothing else.
+/// The other rules, from the highest priority: fatal errors, done, not started, stuck, timed
+/// out, warning. A job without events cannot time out, because the timeout counts from the
+/// first event, so the start limit stops such a job.
 pub fn decide(state: &MonitorState, observation: &Observation) -> Decision {
     let rules = &state.rules;
     if rules
@@ -194,6 +205,7 @@ pub fn decide(state: &MonitorState, observation: &Observation) -> Decision {
     match (
         observation.fatal > 0,
         all_events && quiet >= rules.done_delay,
+        state.first_event.is_none() && observation.at >= rules.start_limit,
         quiet >= rules.stuck_terminate,
         timed_out,
         quiet >= rules.stuck_warning,
@@ -202,9 +214,12 @@ pub fn decide(state: &MonitorState, observation: &Observation) -> Decision {
             count: observation.fatal,
         },
         (false, true, ..) => Decision::Done,
-        (false, false, true, ..) => Decision::Stuck { quiet },
-        (false, false, false, true, _) => Decision::TimedOut,
-        (false, false, false, false, true) => Decision::Warn { quiet },
-        (false, false, false, false, false) => Decision::Continue,
+        (false, false, true, ..) => Decision::NotStarted {
+            waited: observation.at,
+        },
+        (false, false, false, true, ..) => Decision::Stuck { quiet },
+        (false, false, false, false, true, _) => Decision::TimedOut,
+        (false, false, false, false, false, true) => Decision::Warn { quiet },
+        (false, false, false, false, false, false) => Decision::Continue,
     }
 }

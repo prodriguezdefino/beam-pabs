@@ -292,6 +292,7 @@ A batch job runs to its end. A streaming job is polled every 15 seconds, and the
 |---|---|---|
 | A `fatal` counter is above zero. | Cancel. | `FAILED` |
 | All `--num_events` passed and the counts did not change for 1 minute. | Drain, or cancel if the runner cannot drain or with `--cancel_streaming_job_after_finish`. A job that already drains gets no drain request. | `OK` |
+| No event 10 minutes after the submission, for example a job that stays pending. | Cancel. | `FAILED` |
 | The counts did not change for 1 hour (a warning after 10 minutes). | Cancel. | `FAILED` |
 | `--stream_timeout` seconds passed since the first event. | Cancel. | `TIMEOUT` |
 | The [run-time limit](#run-time-limit) passed. This rule comes first. | Cancel. | `OK (running time)` |

@@ -35,6 +35,7 @@ const TIMING: MonitorTiming = MonitorTiming {
     done_delay: Duration::from_millis(20),
     stuck_warning: Duration::from_secs(3600),
     stuck_terminate: Duration::from_secs(3600),
+    start_limit: Duration::from_secs(3600),
     min_steady_window: Duration::ZERO,
 };
 
@@ -42,6 +43,7 @@ const RULES: StopRules = StopRules {
     done_delay: Duration::from_millis(20),
     stuck_warning: Duration::from_secs(3600),
     stuck_terminate: Duration::from_secs(3600),
+    start_limit: Duration::from_secs(3600),
     stream_timeout: Duration::from_secs(3600),
     expected_events: Some(100),
     running_time: None,
@@ -218,6 +220,20 @@ async fn fatal_errors_and_stuck_jobs_are_cancelled_and_fail() {
         .expect_err("stuck fails");
     assert!(err.to_string().contains("no progress"), "{err}");
     assert_eq!(stuck.calls(), ["cancel"]);
+}
+
+#[tokio::test]
+async fn job_without_events_at_the_start_limit_is_cancelled_and_fails() {
+    let pending = ScriptedJob::new(&[0]);
+    let rules = StopRules {
+        start_limit: Duration::from_millis(20),
+        ..RULES
+    };
+    let err = monitor(&pending, rules, false)
+        .await
+        .expect_err("a job without events fails");
+    assert!(err.to_string().contains("no event within"), "{err}");
+    assert_eq!(pending.calls(), ["cancel"]);
 }
 
 #[tokio::test]

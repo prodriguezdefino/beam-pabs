@@ -32,6 +32,7 @@ const RULES: StopRules = StopRules {
     done_delay: secs(10),
     stuck_warning: secs(60),
     stuck_terminate: secs(120),
+    start_limit: secs(200),
     stream_timeout: secs(300),
     expected_events: Some(100),
     running_time: None,
@@ -70,6 +71,8 @@ fn rules_take_delays_from_timing_and_limits_from_config() {
     assert_eq!(finite.expected_events, Some(500));
     assert_eq!(finite.stream_timeout, secs(30));
     assert_eq!(finite.done_delay, timing.done_delay);
+    assert_eq!(timing.start_limit, secs(600));
+    assert_eq!(finite.start_limit, timing.start_limit);
 
     let endless = StopRules::new(
         &timing,
@@ -132,6 +135,65 @@ fn quiet_job_warns_then_fails_as_stuck() {
         decide_after(RULES, &[observation(130, None)]),
         Decision::Stuck { quiet: secs(130) }
     );
+}
+
+#[test]
+fn job_without_events_before_the_start_limit_polls_again() {
+    assert_eq!(
+        decide_after(RULES, &[observation(30, None)]),
+        Decision::Continue
+    );
+    assert_eq!(
+        decide_after(
+            RULES,
+            &[observation(10, Some(0)), observation(100, Some(0))]
+        ),
+        Decision::Warn { quiet: secs(90) }
+    );
+}
+
+#[test]
+fn job_without_events_at_the_start_limit_is_not_started() {
+    assert_eq!(
+        decide_after(RULES, &[observation(200, None)]),
+        Decision::NotStarted { waited: secs(200) }
+    );
+    // The rule applies even when the counts change from no metric to zero events.
+    assert_eq!(
+        decide_after(RULES, &[observation(150, None), observation(210, Some(0))]),
+        Decision::NotStarted { waited: secs(210) }
+    );
+    // A job without events that is also stuck gives the more exact reason.
+    let long_start = StopRules {
+        start_limit: secs(500),
+        ..RULES
+    };
+    assert_eq!(
+        decide_after(long_start, &[observation(500, None)]),
+        Decision::NotStarted { waited: secs(500) }
+    );
+}
+
+#[test]
+fn start_limit_does_not_apply_after_the_first_event() {
+    let first = observation(5, Some(1));
+    assert_eq!(
+        decide_after(RULES, &[first, observation(200, Some(50))]),
+        Decision::Continue
+    );
+    assert_eq!(
+        decide_after(RULES, &[first, observation(250, Some(1))]),
+        Decision::Stuck { quiet: secs(245) }
+    );
+}
+
+#[test]
+fn fatal_errors_win_over_the_start_limit() {
+    let fatal = Observation {
+        fatal: 1,
+        ..observation(300, None)
+    };
+    assert_eq!(decide_after(RULES, &[fatal]), Decision::Fatal { count: 1 });
 }
 
 #[test]

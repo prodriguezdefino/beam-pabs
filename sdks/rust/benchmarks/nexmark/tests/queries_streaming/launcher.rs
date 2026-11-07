@@ -35,6 +35,7 @@ const TIMING: MonitorTiming = MonitorTiming {
     done_delay: Duration::from_secs(1),
     stuck_warning: Duration::from_secs(10),
     stuck_terminate: Duration::from_secs(30),
+    start_limit: Duration::from_secs(60),
     min_steady_window: Duration::from_millis(300),
 };
 

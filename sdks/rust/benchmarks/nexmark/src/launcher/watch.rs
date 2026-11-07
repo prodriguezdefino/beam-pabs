@@ -163,9 +163,9 @@ pub async fn with_publisher<T>(publisher: &dyn JobHandle, query: impl Future<Out
 ///
 /// # Errors
 ///
-/// A failed or unexpectedly stopped job, fatal errors in the pipeline, and a job without
-/// progress for `stuck_terminate` give an error. The launcher cancels the job in the last
-/// two cases.
+/// A failed or unexpectedly stopped job, fatal errors in the pipeline, a job without events
+/// at `start_limit` and a job without progress for `stuck_terminate` give an error. The
+/// launcher cancels the job in the last three cases.
 pub async fn monitor_streaming_job(
     job: &dyn JobHandle,
     timing: &MonitorTiming,
@@ -245,6 +245,13 @@ pub async fn monitor_streaming_job(
                 return Err(LauncherError::Stopped(format!(
                     "no progress for {} s",
                     quiet.as_secs()
+                )));
+            }
+            Decision::NotStarted { waited } => {
+                job.cancel().await?;
+                return Err(LauncherError::Stopped(format!(
+                    "no event within {} s of the submission",
+                    waited.as_secs()
                 )));
             }
         };
