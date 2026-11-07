@@ -148,7 +148,7 @@ pub struct NexmarkArgs {
     #[arg(long)]
     pub side_input_row_count: Option<i32>,
 
-    /// Shard count for Query 13 reshuffle buckets.
+    /// Shard keys of the shuffles in Queries 15 (`PORTABILITY_BATCH`) and 16 (`RESHUFFLE`).
     #[arg(long)]
     pub num_key_buckets: Option<i32>,
 

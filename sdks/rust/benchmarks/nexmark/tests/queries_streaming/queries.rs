@@ -350,7 +350,7 @@ async fn streaming_utility_and_side_input_queries_match_models()
         "Query14",
         &q13_cfg,
         40,
-        Query14,
+        Query14::from_config(&q13_cfg),
         models::query0(&q13_cfg),
     )
     .await?;

@@ -160,9 +160,16 @@ async fn query14_matches_passthrough_model() -> std::result::Result<(), TestPipe
         num_events: 400,
         num_event_generators: 3,
         out_of_order_group_size: 5,
+        num_key_buckets: 7,
         ..NexmarkConfig::default()
     };
-    assert_query_matches_model("Query14", &config, Query14, models::query0(&config)).await
+    assert_query_matches_model(
+        "Query14",
+        &config,
+        Query14::from_config(&config),
+        models::query0(&config),
+    )
+    .await
 }
 
 #[tokio::test]

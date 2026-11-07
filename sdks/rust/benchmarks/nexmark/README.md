@@ -58,7 +58,7 @@ the Apache Beam Rust SDK.
 | 13 | `BOUNDED_SIDE_INPUT_JOIN` | Enriches `Bid` events from a bounded `SideMap`. |
 | 14 | `SESSION_SIDE_INPUT_JOIN` | Enriches `Bid` events in session windows from a bounded `SideMap`. |
 | 15 | `PORTABILITY_BATCH` | Keys events into shard buckets, groups by key, and burns configurable CPU cycles (`Query13`). |
-| 16 | `RESHUFFLE` | Passes events through two `Reshuffle` stages with optional CPU load (`Query14`). |
+| 16 | `RESHUFFLE` | Passes events through one `Reshuffle` over `--num_key_buckets` shard keys (`Query14`). |
 
 Note: Prism panics on `Sessions` combined with a non-default trigger ([apache/beam#31438](https://github.com/apache/beam/issues/31438)).
 Suite runs on Prism skip Query 11 (`USER_SESSIONS`) and mark it `SKIPPED (apache/beam#31438)`.

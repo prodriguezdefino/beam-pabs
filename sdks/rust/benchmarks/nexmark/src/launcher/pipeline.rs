@@ -237,7 +237,9 @@ fn add_query(events: &PCollection<Event>, tail: &QueryTail<'_>) -> Result<(), La
         NexmarkQueryName::PortabilityBatch => {
             tail.finish(&events.apply("Query13", Query13::from_config(config)), None)
         }
-        NexmarkQueryName::Reshuffle => tail.finish(&events.apply("Query14", Query14), None),
+        NexmarkQueryName::Reshuffle => {
+            tail.finish(&events.apply("Query14", Query14::from_config(config)), None)
+        }
         NexmarkQueryName::BoundedSideInputJoin => tail.finish(
             &events.apply(
                 "BoundedSideInputJoin",
