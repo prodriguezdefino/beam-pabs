@@ -27,9 +27,16 @@
 //! - `state_without_caching`, `state_with_caching`: four bundles of one element each through a
 //!   bag state DoFn, as `testStateWithoutCaching` and `testStateWithCaching`.
 //! - `tiny_bundle_latency`: one task, so the time is one bundle's round trip.
+//! - `small_bundle`, `small_bundle_oversubscribed`: bundles of 10 elements from 16 or 256
+//!   tasks, as the small bundles of a streaming runner. With 256 tasks, more bundles run at
+//!   the same time than the machine has CPUs.
 //!
 //! The `process_bundle_cpu` group runs the same benchmarks and reports the CPU time of the
 //! process per operation.
+//!
+//! The callers run on their own small runtime, and the worker and the runner services run on
+//! another one. The bench encodes the inputs and decodes the outputs once, outside the
+//! measurement.
 //!
 //! ```text
 //! ./gradlew :sdks:rust:harnessBenchmark -Pbench=process_bundle
@@ -64,6 +71,8 @@ mod runner;
 use runner::BenchRunner;
 
 const THREADS: usize = 16;
+/// Threads of the runtime that runs the callers. The callers mostly wait, so two are enough.
+const CALLER_THREADS: usize = 2;
 
 #[derive(Clone)]
 struct OutputZeroOneTwo;
@@ -249,8 +258,7 @@ fn descriptors(runner: &BenchRunner) -> Vec<beam_model::fn_execution::ProcessBun
 }
 
 /// Runs `op` `iterations` times split over `tasks` concurrent tasks, and returns what
-/// `measurement` reads over the run. Each task is spawned, so the runner side of the callers
-/// runs on all worker threads.
+/// `measurement` reads over the run. Each task is spawned on the runtime of the callers.
 async fn concurrently<M, F, Fut>(measurement: &M, tasks: usize, iterations: u64, op: F) -> Duration
 where
     M: Measurement<Value = Duration>,
@@ -283,7 +291,14 @@ fn process_bundle<M: Measurement<Value = Duration>>(
     group_name: &str,
     measurement: &'static M,
 ) {
-    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    // The worker and the runner services have their own runtime, so the callers do not take
+    // the threads of the worker.
+    let worker_rt = tokio::runtime::Runtime::new().expect("worker runtime");
+    let callers_rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(CALLER_THREADS)
+        .enable_all()
+        .build()
+        .expect("callers runtime");
     let handlers = HashMap::from([
         ("create".to_string(), handler(OutputZeroOneTwo)),
         ("len".to_string(), handler(ConvertLength)),
@@ -293,13 +308,14 @@ fn process_bundle<M: Measurement<Value = Duration>>(
             StatefulOutputZeroOneTwo.into_handler(),
         ),
     ]);
-    let runner = rt.block_on(async {
+    let runner = worker_rt.block_on(async {
         let runner = BenchRunner::start(handlers).await;
         runner.register(descriptors(&runner)).await;
         runner
     });
-    let tiny = encode([Vec::<u8>::new()]);
-    let large = encode(vec![Vec::<u8>::new(); 1_000]);
+    let tiny = Arc::new(encode([Vec::<u8>::new()]));
+    let large = Arc::new(encode(vec![Vec::<u8>::new(); 1_000]));
+    let small = Arc::new(encode(vec![Vec::<u8>::new(); 10]));
 
     let mut group = c.benchmark_group(group_name);
     group.throughput(Throughput::Elements(1));
@@ -307,42 +323,75 @@ fn process_bundle<M: Measurement<Value = Duration>>(
         ("tiny_bundle", &tiny, 3, THREADS),
         ("large_bundle", &large, 3_000, THREADS),
         ("tiny_bundle_latency", &tiny, 3, 1),
+        ("small_bundle", &small, 30, THREADS),
+        ("small_bundle_oversubscribed", &small, 30, 256),
     ] {
+        // Decode the output once here. The measured loop compares only its length.
+        let output_len = callers_rt.block_on(async {
+            let output = runner
+                .process_bundle("trivial", SOURCE_ID, input.to_vec(), false)
+                .await;
+            assert_eq!(count::<(String, i64)>(&output), outputs);
+            output.len()
+        });
         group.bench_function(name, |b| {
-            b.to_async(&rt).iter_custom(|iterations| {
-                let (runner, input) = (Arc::clone(&runner), input.clone());
+            b.to_async(&callers_rt).iter_custom(|iterations| {
+                let (runner, input) = (Arc::clone(&runner), Arc::clone(input));
                 concurrently(measurement, tasks, iterations, move |_| {
-                    let (runner, input) = (Arc::clone(&runner), input.clone());
+                    let (runner, input) = (Arc::clone(&runner), Arc::clone(&input));
                     async move {
                         let output = runner
-                            .process_bundle("trivial", SOURCE_ID, input, false)
+                            .process_bundle("trivial", SOURCE_ID, input.to_vec(), false)
                             .await;
-                        assert_eq!(count::<(String, i64)>(&output), outputs);
+                        assert_eq!(output.len(), output_len);
                     }
                 })
             });
         });
     }
+    // The four inputs of each task, encoded before the measurement.
+    let state_inputs: Arc<Vec<[Vec<u8>; 4]>> = Arc::new(
+        (0..THREADS)
+            .map(|task| {
+                let key = format!("{task:016x}");
+                ["zero", "one", "two", "flush"]
+                    .map(|value| encode([(key.clone(), value.to_string())]))
+            })
+            .collect(),
+    );
     for (name, cache_state) in [
         ("state_without_caching", false),
         ("state_with_caching", true),
     ] {
+        let run_task = {
+            let (runner, state_inputs) = (Arc::clone(&runner), Arc::clone(&state_inputs));
+            move |task: usize| {
+                let (runner, state_inputs) = (Arc::clone(&runner), Arc::clone(&state_inputs));
+                async move {
+                    let mut outputs = Vec::new();
+                    for input in &state_inputs[task] {
+                        let output = runner
+                            .process_bundle("stateful", SOURCE_ID, input.clone(), cache_state)
+                            .await;
+                        outputs.extend(output);
+                    }
+                    outputs
+                }
+            }
+        };
+        // Every task emits three values of a 16-character key, so all outputs have one length.
+        let output_len = callers_rt.block_on(async {
+            let output = run_task(0).await;
+            assert_eq!(count::<(String, String)>(&output), 3);
+            output.len()
+        });
         group.bench_function(name, |b| {
-            b.to_async(&rt).iter_custom(|iterations| {
-                let runner = Arc::clone(&runner);
+            b.to_async(&callers_rt).iter_custom(|iterations| {
+                let run_task = run_task.clone();
                 concurrently(measurement, THREADS, iterations, move |task| {
-                    let runner = Arc::clone(&runner);
+                    let run_task = run_task.clone();
                     async move {
-                        let key = format!("{task:016x}");
-                        let mut outputs = 0;
-                        for value in ["zero", "one", "two", "flush"] {
-                            let input = encode([(key.clone(), value.to_string())]);
-                            let output = runner
-                                .process_bundle("stateful", SOURCE_ID, input, cache_state)
-                                .await;
-                            outputs += count::<(String, String)>(&output);
-                        }
-                        assert_eq!(outputs, 3);
+                        assert_eq!(run_task(task).await.len(), output_len);
                     }
                 })
             });

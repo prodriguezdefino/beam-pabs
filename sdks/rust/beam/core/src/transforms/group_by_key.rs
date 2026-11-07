@@ -118,8 +118,7 @@ where
 }
 
 /// Returns the windowing strategy of the output of a `GroupByKey` on `input`. Merged windows
-/// do not merge again, and the trigger fires once for each upstream pane. A trigger that this
-/// SDK cannot decode stays as it is.
+/// do not merge again, and the trigger fires once for each upstream pane.
 fn output_strategy(input: &proto::WindowingStrategy) -> proto::WindowingStrategy {
     let merge_status = match proto::merge_status::Enum::try_from(input.merge_status) {
         Ok(proto::merge_status::Enum::NeedsMerge) => {
@@ -127,6 +126,17 @@ fn output_strategy(input: &proto::WindowingStrategy) -> proto::WindowingStrategy
         }
         _ => input.merge_status,
     };
+    proto::WindowingStrategy {
+        merge_status,
+        ..with_continuation_trigger(input)
+    }
+}
+
+/// Returns `input` with a trigger that fires once for each upstream pane. A trigger that this
+/// SDK cannot decode stays as it is.
+pub(crate) fn with_continuation_trigger(
+    input: &proto::WindowingStrategy,
+) -> proto::WindowingStrategy {
     let trigger = input.trigger.as_ref().map(|trigger| {
         Trigger::try_from(trigger).map_or_else(
             |_| trigger.clone(),
@@ -134,7 +144,6 @@ fn output_strategy(input: &proto::WindowingStrategy) -> proto::WindowingStrategy
         )
     });
     proto::WindowingStrategy {
-        merge_status,
         trigger,
         ..input.clone()
     }

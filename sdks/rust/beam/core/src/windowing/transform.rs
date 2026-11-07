@@ -33,7 +33,7 @@ use prost::Message;
 use crate::internals::HandlerContext;
 use crate::pipeline::PipelineError;
 use crate::pipeline::constants::{URN_WINDOW_FN_SESSION_WINDOWS, URN_WINDOW_INTO};
-use crate::transforms::{BundleHandler, HandlerInstance, PTransform, TransformFn};
+use crate::transforms::{BundleHandler, HandlerInstance, PTransform, TransformFn, TypedElement};
 use crate::values::PCollection;
 
 /// A PTransform that assigns the elements of a [`PCollection`] to windows with a [`WindowFn`].
@@ -247,6 +247,8 @@ pub fn window_into_handler_key(window_fn: &proto::FunctionSpec) -> String {
 pub struct WindowIntoHandler {
     window_fn: Arc<dyn WindowFn>,
     windows: Vec<BoundedWindow>,
+    /// Encoded form of an element that a fused step gives by value. Kept between elements.
+    encoded: Vec<u8>,
 }
 
 impl WindowIntoHandler {
@@ -254,6 +256,7 @@ impl WindowIntoHandler {
         Self {
             window_fn,
             windows: Vec::new(),
+            encoded: Vec::new(),
         }
     }
 }
@@ -272,5 +275,19 @@ impl BundleHandler for WindowIntoHandler {
         let new_header = ctx.header.with_windows(&self.windows);
         (0..ctx.header.window_count().max(1))
             .try_for_each(|_| ctx.sink.push_windowed_bytes(&new_header, element))
+    }
+
+    /// Encodes into a buffer that the handler keeps, not into a new `Vec` for each element.
+    fn process_value(
+        &mut self,
+        element: TypedElement<'_>,
+        ctx: &mut HandlerContext<'_>,
+    ) -> Result<(), String> {
+        let mut encoded = std::mem::take(&mut self.encoded);
+        let result = element
+            .encode_into(&mut encoded)
+            .and_then(|()| self.process(&encoded, ctx));
+        self.encoded = encoded;
+        result
     }
 }

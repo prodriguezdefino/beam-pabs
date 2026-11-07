@@ -28,6 +28,7 @@ mod approximate_unique;
 mod builtins;
 mod compare;
 mod compose;
+mod fanout;
 mod globally;
 mod partial;
 mod per_key;

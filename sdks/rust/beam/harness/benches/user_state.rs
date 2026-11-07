@@ -17,17 +17,27 @@
  * under the License.
  */
 
-//! Bag user state of one bundle against an in-process state server: the first read of each
-//! key, appends, cached reads, and the commit at the end of the bundle. The `user_state_cpu`
-//! group runs the same benchmarks and reports the CPU time of the process.
+//! Bag and multimap user state of one bundle against an in-process state server: the first
+//! read of each key, appends, cached reads, the first read of a bag of many pages, and the
+//! commit at the end of the bundle. The `multimap_new_keys` case lists the keys of a
+//! multimap, puts to new keys and reads them back. The `user_state_cpu` group runs the same
+//! benchmarks and reports the CPU time of the process. For `cached_reads`, it reports the CPU
+//! time of the bench thread, so the threads of earlier benchmarks do not count.
+//!
+//! The `paged_read_latency` cases read the same bag from a second server that waits
+//! [`GET_DELAY`] before each GET reply, as a runner with latency does. The `pages_*` cases
+//! read the bag one page at a time and decode each page before they ask for the next one.
+//! `pages_work` also spins for [`PAGE_WORK`] on each page, as the work of a DoFn.
 //!
 //! ```text
 //! ./gradlew :sdks:rust:harnessBenchmark -Pbench=user_state
+//! ./gradlew :sdks:rust:harnessBenchmark -Pbench=user_state -Pfilter=paged_read_latency
 //! ```
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use criterion::measurement::Measurement;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
@@ -36,22 +46,37 @@ use prost::Message;
 use beam::pipeline::URN_PAR_DO;
 use beam_harness::state::StateClients;
 use beam_harness::user_state::{BundleUserState, UserStateSpecs};
-use beam_model::fn_execution::ProcessBundleDescriptor;
+use beam_model::fn_execution::{ProcessBundleDescriptor, StateKey, state_key};
 use beam_model::pipeline::{self as proto, ApiServiceDescriptor, FunctionSpec};
 
 #[path = "../tests/state/state_mock.rs"]
 mod state_mock;
-use state_mock::StrictStateServer;
+use state_mock::{FullKey, StrictStateServer};
 
 #[path = "support/cpu_time.rs"]
 mod cpu_time;
 use cpu_time::CpuTime;
 
+#[path = "support/thread_cpu_time.rs"]
+mod thread_cpu_time;
+use thread_cpu_time::ThreadCpuTime;
+
 const TRANSFORM: &str = "stateful";
 const STATE: &str = "bag";
+const MULTIMAP: &str = "multimap";
 const KEYS: usize = 100;
 const APPENDS_PER_KEY: usize = 10;
 const CACHED_READS: usize = 1_000;
+/// The bag of `paged_read`: [`PAGES`] pages of [`PAGE_BYTES`] one-byte varints.
+const PAGED_KEY: &[u8] = b"paged";
+const PAGES: usize = 64;
+const PAGE_BYTES: usize = 4 << 10;
+/// The wait of the latency server before each GET reply.
+const GET_DELAY: Duration = Duration::from_millis(1);
+/// The CPU work of `pages_work` on each page, after the decode.
+const PAGE_WORK: Duration = Duration::from_micros(500);
+/// Samples of each latency case. One iteration takes about 64 x [`GET_DELAY`].
+const LATENCY_SAMPLES: usize = 10;
 
 static NEXT_BUNDLE: AtomicUsize = AtomicUsize::new(0);
 
@@ -65,8 +90,20 @@ fn descriptor(endpoint: &str) -> ProcessBundleDescriptor {
             element_coder_id: "varint".to_string(),
         })),
     };
+    let multimap = proto::StateSpec {
+        protocol: Some(FunctionSpec {
+            urn: "beam:user_state:multimap:v1".to_string(),
+            payload: Vec::new(),
+        }),
+        spec: Some(proto::state_spec::Spec::MultimapSpec(
+            proto::MultimapStateSpec {
+                key_coder_id: "varint".to_string(),
+                value_coder_id: "varint".to_string(),
+            },
+        )),
+    };
     let pardo = proto::ParDoPayload {
-        state_specs: HashMap::from([(STATE.to_string(), bag)]),
+        state_specs: HashMap::from([(STATE.to_string(), bag), (MULTIMAP.to_string(), multimap)]),
         ..Default::default()
     };
     ProcessBundleDescriptor {
@@ -111,7 +148,68 @@ fn bundle_state(
     BundleUserState::new(Arc::clone(specs), channel, None)
 }
 
-fn user_state<M: Measurement>(c: &mut Criterion<M>, group_name: &str) {
+/// Decodes the varints of one page and returns their count and their sum.
+fn decode_page(page: &[u8]) -> (u64, u64) {
+    let (mut count, mut sum, mut value, mut shift) = (0u64, 0u64, 0u64, 0u32);
+    for &byte in page {
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            count += 1;
+            sum = sum.wrapping_add(value);
+            value = 0;
+            shift = 0;
+        } else {
+            shift += 7;
+        }
+    }
+    (count, sum)
+}
+
+/// Keeps the CPU busy for `work`, as a DoFn that processes the elements of a page.
+fn spin(work: Duration) {
+    let started = Instant::now();
+    while started.elapsed() < work {
+        std::hint::spin_loop();
+    }
+}
+
+/// Reads the bag at `PAGED_KEY` one page at a time. Each page is decoded, then `work` runs,
+/// then the next page is requested.
+fn read_pages(clients: &StateClients, endpoint: &str, window: &[u8], work: Duration) -> u64 {
+    let instruction = format!("bundle-{}", NEXT_BUNDLE.fetch_add(1, Ordering::Relaxed));
+    let channel = clients.channel_to(&instruction, endpoint);
+    let key = StateKey {
+        r#type: Some(state_key::Type::BagUserState(state_key::BagUserState {
+            transform_id: TRANSFORM.to_string(),
+            user_state_id: STATE.to_string(),
+            window: window.to_vec(),
+            key: PAGED_KEY.to_vec(),
+        })),
+    };
+    let mut elements = 0;
+    for page in channel.stream_pages(key).expect("page stream") {
+        let (count, sum) = decode_page(&page.expect("page"));
+        std::hint::black_box(sum);
+        elements += count;
+        if !work.is_zero() {
+            spin(work);
+        }
+    }
+    assert_eq!(
+        elements,
+        (PAGES * PAGE_BYTES) as u64,
+        "every element of the bag"
+    );
+    elements
+}
+
+/// A state server, a descriptor that points to it, the state clients and the user state specs.
+fn setup() -> (
+    StrictStateServer,
+    ProcessBundleDescriptor,
+    StateClients,
+    Arc<UserStateSpecs>,
+) {
     let server = StrictStateServer::start();
     let descriptor = descriptor(server.endpoint());
     let clients = StateClients::new("worker".to_string());
@@ -119,8 +217,19 @@ fn user_state<M: Measurement>(c: &mut Criterion<M>, group_name: &str) {
         UserStateSpecs::from_descriptor(&descriptor, &Arc::new(descriptor.coders.clone()))
             .expect("the descriptor declares user state"),
     );
+    (server, descriptor, clients, specs)
+}
+
+fn user_state<M: Measurement>(c: &mut Criterion<M>, group_name: &str) {
+    let (server, descriptor, clients, specs) = setup();
     let window: Vec<u8> = Vec::new();
     let keys: Vec<Vec<u8>> = (0..KEYS).map(|k| format!("key-{k}").into_bytes()).collect();
+    // The bags of the other benchmarks are smaller than one page.
+    let paged: Vec<u8> = (0..PAGES * PAGE_BYTES).map(|i| (i % 128) as u8).collect();
+    server
+        .backend
+        .preload(FullKey::bag(TRANSFORM, STATE, &window, PAGED_KEY), &paged);
+    server.backend.set_page_size(PAGE_BYTES);
     let mut group = c.benchmark_group(group_name);
 
     group.throughput(Throughput::Elements((KEYS * APPENDS_PER_KEY) as u64));
@@ -142,18 +251,101 @@ fn user_state<M: Measurement>(c: &mut Criterion<M>, group_name: &str) {
         });
     });
 
+    // The benchmark does not commit the bundle, so each iteration starts from the same
+    // empty multimap.
+    let map_keys: Vec<Vec<u8>> = (0..KEYS).map(|k| vec![k as u8]).collect();
+    group.throughput(Throughput::Elements((KEYS * APPENDS_PER_KEY) as u64));
+    group.bench_function("multimap_new_keys", |b| {
+        b.iter(|| {
+            let state = bundle_state(&clients, &descriptor, &specs);
+            let backend = state.scoped(TRANSFORM);
+            let user_key = &keys[0];
+            backend
+                .get_map_keys(MULTIMAP, &window, user_key)
+                .expect("keys");
+            for map_key in &map_keys {
+                for i in 0..APPENDS_PER_KEY {
+                    backend
+                        .append_map_state(
+                            MULTIMAP,
+                            &window,
+                            user_key,
+                            map_key.clone(),
+                            vec![i as u8],
+                        )
+                        .expect("put");
+                }
+                let values = backend
+                    .get_map_state(MULTIMAP, &window, user_key, map_key)
+                    .expect("get");
+                std::hint::black_box(values);
+            }
+        });
+    });
+
+    // Each bundle reads the bag from the runner, since a bundle without a cache keeps nothing.
+    group.throughput(Throughput::Elements(paged.len() as u64));
+    group.bench_function("paged_read", |b| {
+        b.iter(|| {
+            let state = bundle_state(&clients, &descriptor, &specs);
+            let values = state
+                .scoped(TRANSFORM)
+                .get_state(STATE, &window, PAGED_KEY)
+                .expect("paged get");
+            std::hint::black_box(values);
+        });
+    });
+    group.finish();
+
+    // A second server, so that the delay does not change the cases above.
+    let slow = StrictStateServer::start();
+    slow.backend
+        .preload(FullKey::bag(TRANSFORM, STATE, &window, PAGED_KEY), &paged);
+    slow.backend.set_page_size(PAGE_BYTES);
+    slow.backend.set_get_delay(GET_DELAY);
+    let slow_descriptor = self::descriptor(slow.endpoint());
+    let mut group = c.benchmark_group(format!("{group_name}/paged_read_latency"));
+    group.sample_size(LATENCY_SAMPLES);
+    group.throughput(Throughput::Elements(paged.len() as u64));
+    // The user state API joins all pages before it decodes, so no work runs between pages.
+    group.bench_function("user_state", |b| {
+        b.iter(|| {
+            let state = bundle_state(&clients, &slow_descriptor, &specs);
+            let values = state
+                .scoped(TRANSFORM)
+                .get_state(STATE, &window, PAGED_KEY)
+                .expect("paged get");
+            std::hint::black_box(values);
+        });
+    });
+    group.bench_function("pages_no_work", |b| {
+        b.iter(|| read_pages(&clients, slow.endpoint(), &window, Duration::ZERO));
+    });
+    group.bench_function("pages_work_500us", |b| {
+        b.iter(|| read_pages(&clients, slow.endpoint(), &window, PAGE_WORK));
+    });
+    group.finish();
+}
+
+/// Reads of one bag of [`APPENDS_PER_KEY`] values from the cache of the bundle. All the work
+/// runs on the bench thread, so the CPU group measures it with [`ThreadCpuTime`].
+fn cached_reads<M: Measurement>(c: &mut Criterion<M>, group_name: &str) {
+    let (server, descriptor, clients, specs) = setup();
+    let window: Vec<u8> = Vec::new();
+    let key = b"key-0";
+    let values: Vec<u8> = (0..APPENDS_PER_KEY as u8).collect();
+    server
+        .backend
+        .preload(FullKey::bag(TRANSFORM, STATE, &window, key), &values);
+    let mut group = c.benchmark_group(group_name);
     group.throughput(Throughput::Elements(CACHED_READS as u64));
     group.bench_function("cached_reads", |b| {
         let state = bundle_state(&clients, &descriptor, &specs);
         let backend = state.scoped(TRANSFORM);
-        backend
-            .get_state(STATE, &window, &keys[0])
-            .expect("first get");
+        backend.get_state(STATE, &window, key).expect("first get");
         b.iter(|| {
             for _ in 0..CACHED_READS {
-                backend
-                    .get_state(STATE, &window, &keys[0])
-                    .expect("cached get");
+                backend.get_state(STATE, &window, key).expect("cached get");
             }
         });
     });
@@ -162,10 +354,15 @@ fn user_state<M: Measurement>(c: &mut Criterion<M>, group_name: &str) {
 
 fn wall_time(c: &mut Criterion) {
     user_state(c, "user_state");
+    cached_reads(c, "user_state");
 }
 
 fn cpu_time(c: &mut Criterion<CpuTime>) {
     user_state(c, "user_state_cpu");
+}
+
+fn thread_cpu_time(c: &mut Criterion<ThreadCpuTime>) {
+    cached_reads(c, "user_state_cpu");
 }
 
 criterion_group!(benches, wall_time);
@@ -174,4 +371,9 @@ criterion_group! {
     config = Criterion::default().with_measurement(CpuTime);
     targets = cpu_time
 }
-criterion_main!(benches, cpu_benches);
+criterion_group! {
+    name = thread_cpu_benches;
+    config = Criterion::default().with_measurement(ThreadCpuTime);
+    targets = thread_cpu_time
+}
+criterion_main!(benches, cpu_benches, thread_cpu_benches);

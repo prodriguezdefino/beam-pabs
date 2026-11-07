@@ -55,6 +55,7 @@ This page compares the Rust SDK with the other Beam SDKs.
 | Display data | ✅ | ✅ | 🟡 | ❌ | ✅ |
 
 Notes:
+- **Combine**: Java, Python and Rust also split skewed keys across intermediate shards (`withHotKeyFanout` / `withFanout`, `with_hot_key_fanout` / `with_fanout`).
 - **Distinct**: Java and Rust also keep one element per representative value (`Distinct.withRepresentativeValueFn`, `DistinctBy`). Python `Distinct` and Go `filter.Distinct` compare whole elements.
 - **Redistribute and WithTimestamps**: Rust uses `Reshuffle` to spread elements across workers. It sets event time in a `ParDo` with `ctx.output(v).at(ts).emit()`. TypeScript has `assignTimestamps`.
 - **Deduplicate**: Java and Python `Deduplicate` drop a repeated element during a processing-time or event-time duration. `Distinct` keeps one element per window.

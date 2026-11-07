@@ -178,7 +178,16 @@ pub fn translate_job(
         sdk_harness_container_images
     };
 
-    let experiments = DataflowOptions::effective_experiments(&opts.debug.experiments);
+    let has_unbounded = pipeline.components.as_ref().is_some_and(|components| {
+        components
+            .pcollections
+            .values()
+            .any(|p| p.is_bounded == proto::is_bounded::Enum::Unbounded as i32)
+    });
+
+    let is_streaming = opts.streaming || has_unbounded;
+    let experiments =
+        DataflowOptions::effective_experiments_for_mode(&opts.debug.experiments, is_streaming);
 
     let ip_configuration = if opts.dataflow.no_use_public_ips {
         WORKER_IP_PRIVATE
@@ -278,15 +287,6 @@ pub fn translate_job(
                 ))),
             }
         })?;
-
-    let has_unbounded = pipeline.components.as_ref().is_some_and(|components| {
-        components
-            .pcollections
-            .values()
-            .any(|p| p.is_bounded == proto::is_bounded::Enum::Unbounded as i32)
-    });
-
-    let is_streaming = opts.streaming || has_unbounded;
 
     let (job_type, job_type_version) = if is_streaming {
         (JOB_TYPE_STREAMING, FNAPI_STREAMING)

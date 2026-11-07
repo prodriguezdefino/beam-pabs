@@ -73,7 +73,7 @@ pub fn side_input_reader(
     channel: Option<beam_harness::state::StateChannel>,
 ) -> Option<beam_harness::state::FnApiSideInputReader> {
     let coders = Arc::new(descriptor.coders.clone());
-    beam_harness::state::SideInputSpecs::from_descriptor(descriptor, coders)
+    beam_harness::state::SideInputSpecs::from_descriptor(descriptor, &coders)
         .map(|specs| beam_harness::state::FnApiSideInputReader::new(Arc::new(specs), channel))
 }
 

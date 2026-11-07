@@ -253,6 +253,7 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "bytes",
+ "chrono",
  "clap",
  "criterion",
  "foldhash 0.2.0",
@@ -279,6 +280,7 @@ dependencies = [
  "arrow-ipc",
  "arrow-schema",
  "chrono",
+ "criterion",
  "thiserror 2.0.21",
 ]
 
