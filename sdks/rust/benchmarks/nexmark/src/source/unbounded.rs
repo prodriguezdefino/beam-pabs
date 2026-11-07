@@ -109,19 +109,42 @@ struct UnboundedGeneratorFn {
 
 type UnboundedTracker = WatermarkedTracker<GeneratorRestrictionTracker, ManualWatermarkEstimator>;
 
+struct SegmentCursor {
+    seg_start: i64,
+    seg_end: i64,
+    seg_cfg: GeneratorConfig,
+}
+
 impl UnboundedGeneratorFn {
-    fn event_at(&self, pos: i64, wallclock_base_ms: i64) -> Option<(i64, NextEvent)> {
+    fn segment_for(&self, pos: i64) -> Option<SegmentCursor> {
         generator_segments(&self.root, self.num_generators)
             .find(|&(seg_start, seg_end, _, _)| pos >= seg_start && pos < seg_end)
-            .and_then(|(seg_start, _, first_id, sub_max)| {
-                let local_offset = pos - seg_start;
-                let seg_cfg = self
+            .map(|(seg_start, seg_end, first_id, sub_max)| SegmentCursor {
+                seg_start,
+                seg_end,
+                seg_cfg: self
                     .root
-                    .copy_with(first_id, sub_max, self.root.first_event_number);
-                let mut generator = Generator::with_state(seg_cfg, local_offset, wallclock_base_ms);
-                let event_id = generator.next_event_id();
-                generator.next().map(|next| (event_id, next))
+                    .copy_with(first_id, sub_max, self.root.first_event_number),
             })
+    }
+
+    fn event_at(
+        &self,
+        cursor: &mut Option<SegmentCursor>,
+        pos: i64,
+        wallclock_base_ms: i64,
+    ) -> Option<(i64, NextEvent)> {
+        let in_cursor = cursor
+            .as_ref()
+            .is_some_and(|c| pos >= c.seg_start && pos < c.seg_end);
+        if !in_cursor {
+            *cursor = self.segment_for(pos);
+        }
+        let seg = cursor.as_ref()?;
+        let local_offset = pos - seg.seg_start;
+        let mut generator = Generator::with_state(seg.seg_cfg, local_offset, wallclock_base_ms);
+        let event_id = generator.next_event_id();
+        generator.next().map(|next| (event_id, next))
     }
 
     /// Delay of a held-back event. As in Java, only a rate-limited source holds events back:
@@ -227,11 +250,12 @@ impl SplittableDoFn for UnboundedGeneratorFn {
         let wallclock_base_ms = tracker.tracker.wallclock_base_ms(current_wallclock_ms);
         let call_start = WallInstant::now();
         let mut emitted = 0_usize;
+        let mut cursor = None;
 
         while emitted < self.batch_size && call_start.elapsed() < MAX_CALL_DURATION {
             let (pos, end, offset_stopped) = tracker.tracker.offset_bounds();
             let candidate = (!offset_stopped && pos < end)
-                .then(|| self.event_at(pos, wallclock_base_ms))
+                .then(|| self.event_at(&mut cursor, pos, wallclock_base_ms))
                 .flatten();
             let now_ms = if self.is_rate_limited {
                 current_wallclock_ms()
