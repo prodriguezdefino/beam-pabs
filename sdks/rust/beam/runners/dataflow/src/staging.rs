@@ -111,11 +111,7 @@ pub fn stage_worker_binary(
     binary_path: &Path,
 ) -> Result<(String, String), StagingError> {
     let bytes = std::fs::read(binary_path)?;
-    let hash = compute_sha256(&bytes);
-    let target_uri = join_gcs_path(
-        staging_location,
-        &format!("{}-{hash}", crate::constants::STAGED_WORKER_NAME),
-    );
+    let (target_uri, hash) = worker_binary_location(staging_location, &bytes);
     let len = bytes.len();
     // A missing object gives an error; then upload.
     let staged = fs
@@ -131,6 +127,28 @@ pub fn stage_worker_binary(
         );
     }
     Ok((target_uri, hash))
+}
+
+/// The staged location of a worker binary with content `bytes`, and its SHA-256.
+fn worker_binary_location(staging_location: &str, bytes: &[u8]) -> (String, String) {
+    let hash = compute_sha256(bytes);
+    let target_uri = join_gcs_path(
+        staging_location,
+        &format!("{}-{hash}", crate::constants::STAGED_WORKER_NAME),
+    );
+    (target_uri, hash)
+}
+
+/// Returns `(worker_gcs_uri, sha256_hash)` where [`stage_worker_binary`] stages
+/// `binary_path`, without an upload.
+pub(crate) fn locate_worker_binary(
+    staging_location: &str,
+    binary_path: &Path,
+) -> Result<(String, String), StagingError> {
+    Ok(worker_binary_location(
+        staging_location,
+        &std::fs::read(binary_path)?,
+    ))
 }
 
 /// Beam artifact URNs, as used in `Environment.dependencies`, under the short names this

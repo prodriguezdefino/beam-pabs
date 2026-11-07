@@ -146,7 +146,15 @@ struct RegisteredSpec {
     id: String,
     #[prost(bytes = "vec", tag = "2")]
     fields: Vec<u8>,
+    /// The [`FIELDS_FORMAT`] that wrote `fields`. The registered combine payload has it
+    /// under the same tag, so each payload decodes as the other.
+    #[prost(uint32, tag = "7")]
+    fields_format: u32,
 }
+
+/// The version of the format of the fields of a registered function: `serde_json` with the
+/// serde layout of the type. Change it when a worker cannot read the fields of an older one.
+pub(crate) const FIELDS_FORMAT: u32 = 1;
 
 /// Serializes the fields of a registered function of type `F`.
 pub fn encode_registered<F: serde::Serialize + 'static>(func: &dyn Any) -> Result<Vec<u8>, String> {
@@ -210,6 +218,7 @@ pub(crate) fn graph_spec<F: 'static>(
             payload: RegisteredSpec {
                 id: id.to_string(),
                 fields,
+                fields_format: FIELDS_FORMAT,
             }
             .encode_to_vec(),
         }
@@ -218,9 +227,13 @@ pub(crate) fn graph_spec<F: 'static>(
 
 /// Builds the handler of a [`URN_RUST_DOFN_REGISTERED`] `do_fn` from its payload.
 pub fn registered_handler(payload: &[u8]) -> Result<TransformFn, String> {
-    let RegisteredSpec { id, fields } = RegisteredSpec::decode(payload)
+    let RegisteredSpec {
+        id,
+        fields,
+        fields_format,
+    } = RegisteredSpec::decode(payload)
         .map_err(|e| format!("Failed to decode the registered DoFn payload: {e}"))?;
-    match build(&id, &fields)? {
+    match build(&id, fields_format, &fields)? {
         Registered::Handler(handler) => Ok(handler),
         Registered::Combine(_) => Err(format!(
             "'{id}' is registered as a CombineFn, but the spec runs it as a DoFn"
@@ -228,8 +241,16 @@ pub fn registered_handler(payload: &[u8]) -> Result<TransformFn, String> {
     }
 }
 
-/// Builds what the worker runs for the registered function `id` from its fields.
-pub(crate) fn build(id: &str, fields: &[u8]) -> Result<Registered, String> {
+/// Builds what the worker runs for the registered function `id` from its fields, which the
+/// format `fields_format` wrote.
+pub(crate) fn build(id: &str, fields_format: u32, fields: &[u8]) -> Result<Registered, String> {
+    if fields_format != FIELDS_FORMAT {
+        return Err(format!(
+            "registered function '{id}': the spec has fields format {fields_format}, but this \
+             worker reads format {FIELDS_FORMAT}. Build the launcher and the worker with the \
+             same SDK version"
+        ));
+    }
     (find_registration(id)?.build)(fields).map_err(|e| format!("registered function '{id}': {e}"))
 }
 

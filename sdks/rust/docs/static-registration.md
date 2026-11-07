@@ -19,36 +19,44 @@
 
 # Static Registration of User Code
 
-The SDK uses a hybrid model. Registered function types (`DoFn`, `StatefulDoFn`, `SplittableDoFn`, `CombineFn`) and `Create` travel in the pipeline graph. The worker finds closures and the generic SDK transforms when it builds the pipeline again. This note describes both paths and why the rebuild stays.
+A worker finds the code of a transform in one of two ways:
 
-## Background
+- **Registration.** A registered function type, or the elements of a `Create`, travels in the pipeline graph. The worker builds the function from the graph.
+- **Rebuild.** The worker runs the pipeline construction again and finds the handler by key. Closures and generic SDK transforms use this path.
 
-To execute a bundle, an SDK worker must convert the transforms in the pipeline proto back into code.
+While one transform of a pipeline uses the rebuild path, the worker runs the user's `main`. [sdk-parity.md](sdk-parity.md) compares this with the other SDKs.
 
-| SDK | How the worker finds the user code | Rebuilds the pipeline? |
-|---|---|:--:|
-| Java | The SDK writes the DoFn into `ParDoPayload` with Java serialization. The worker deserializes it. | No |
-| Python | The SDK pickles the DoFn into the payload. | No |
-| Go | The program registers functions and DoFn types by name at startup (`register.Function…`, `register.DoFn…`). The payload carries the name and the serialized fields of the struct. | No |
-| **Rust** | A registered function type travels as a stable id and its serialized fields. Closures do not serialize, so for them the payload carries only a handler key. The worker gets the key → closure map when it **runs the pipeline construction again**. | **Partly** |
+## Status
+
+| Capability | Status | Note |
+|---|:--:|---|
+| Registered `DoFn`, `StatefulDoFn`, `SplittableDoFn` | ✅ | `#[derive(Register)]`. State, timers and side inputs need nothing else. |
+| Registered `CombineFn` | ✅ | Any key coder that the SDK can delimit. |
+| SDK combine functions | ✅ | Standard element types. `register!` adds other types. |
+| `Create` | ✅ | The spec holds the encoded elements. |
+| Format version of registered fields | ✅ | A worker rejects another version with a clear error. |
+| Graph check on the worker | ✅ | Prism and Dataflow record the graph; the worker compares it before it serves bundles. |
+| Rust expansion service | 🟡 | An expansion of registered functions needs no replay. The IO providers use unregistered `DoFn`s, so their expansions use replay. |
+| Closures, generic SDK transforms | Rebuild | By design: they have no name across processes. |
+| Custom `WindowFn` | ❌ | The trait cannot build a window function from its URN and payload, so it uses the rebuild path. |
 
 ## How the worker resolves a function spec
 
 The harness (`bundle_processor::handlers::resolve_key_spec`) dispatches on the URN of `ParDoPayload.do_fn`, or of `CombinePayload.combine_fn` for the combine stages:
 
-| URN | Payload | How the worker gets the handler |
+| URN | Payload | Worker action |
 |---|---|---|
-| `beam:dofn:rust:registered:v1` | Stable id and the serialized fields of a `DoFn`, `StatefulDoFn` or `SplittableDoFn` | Finds the type in the link-time registry and deserializes it. |
-| `beam:combine_fn:rust:registered:v1` | Stable id and fields of a `CombineFn`, and the key coder | Builds the combine stage of the transform over encoded keys. |
+| `beam:dofn:rust:registered:v1` | Id, fields format and fields of a `DoFn`, `StatefulDoFn` or `SplittableDoFn` | Finds the type in the link-time registry and deserializes it. |
+| `beam:combine_fn:rust:registered:v1` | Id, fields format and fields of a `CombineFn`, and the key coder | Builds the combine stage over encoded keys. |
 | `beam:dofn:rust:create:v1` | The encoded elements of a `Create` | Emits the elements. |
 | `beam:dofn:rust:expanded:v1` | A replay entry | Builds the expansion of the Rust expansion service again ([`harness::replay`](../beam/harness/src/replay.rs)). |
 | `beam:dofn:rust:v1`, `beam:combine_fn:rust:v1` | A handler key | Looks up the key in the handler map of the rebuilt pipeline. |
 
-Flatten, MapWindows and the standard window functions need no user code: the harness has built-in handlers for them.
+Flatten, MapWindows and the standard window functions need no user code. The harness has built-in handlers for them.
 
-## Registered functions
+## Register a type
 
-`#[derive(Register)]` registers a `DoFn`, `StatefulDoFn`, `SplittableDoFn` or `CombineFn` type. The type must also implement `serde::Serialize` and `serde::Deserialize`, because its fields travel in the graph.
+A registered type implements `serde::Serialize` and `serde::Deserialize`, because its fields travel in the graph.
 
 ```rust
 use beam::prelude::*;
@@ -76,68 +84,93 @@ impl DoFn for ScaleBy {
 }
 ```
 
-- **Identity.** The derive submits a `FnRegistration` (id, `TypeId`, encode and build functions) through `inventory`. The id defaults to the module path and the type name. `#[beam(id = "...")]` overrides it. Set it only when one binary builds the graph and a different binary runs it, and the type moves between the two. Rust has no generic statics, so each registration names one concrete type. For a generic type, `beam::register!(Type<Args>)` registers one instantiation. It submits the same `FnRegistration`, with the same id rule (the module path and the type as written) and the same `id = "..."` override.
-- **Kinds.** The registration builds a handler for a `DoFn`, `StatefulDoFn` or `SplittableDoFn`, or the stages of a `CombineFn`. The compiler picks the kind from the trait that the type implements.
-- **Construction.** `ParDo`, `SplittableParDo` and `CombinePerKey` find the type of their function in the registry by `TypeId`. They write the id and the fields (serde_json) into the function spec.
-- **Fields.** A field with `#[serde(skip)]` gets its `Default` value on the worker. Build connections and other process-local values in `setup`.
-- **Errors.** If two types share an id, or the fields do not serialize, `Pipeline::validate` reports `PipelineError::InvalidConstruction`. The transform keeps a rebuild handler, so the graph stays complete. On the worker, an id with no registration fails the bundle; the worker binary must link the crate that defines the type.
-- **State, timers and side inputs.** A `StatefulDoFn` declares its state cells and timer families as types (`#[derive(State)]`, `#[derive(Timers)]`). Any `DoFn`, `StatefulDoFn` or `SplittableDoFn` returns its side-input views from `side_inputs(&self)`. Side-input views implement `Serialize` and `Deserialize`. `ParDo` and `SplittableParDo` write the specs from the function value. Registered `DoFn`s with state, timers or side inputs need nothing else on the worker.
-- **Splittable DoFns.** The registered handler gives the expanded SDF stages, as the rebuild handler does.
-- **No registration.** A type without the derive uses the rebuild path. It needs no `serde` implementation.
-- **Diagnostics.** `Pipeline::rebuild_path_transforms()` lists the transforms that use the rebuild path, and the launcher logs them when it submits the pipeline.
+| Topic | Rule |
+|---|---|
+| Id | The module path and the type name. `#[beam(id = "...")]` overrides it. Set it only when the launcher and the worker are different binaries and the type moves between them. |
+| Generic types | Each registration names one concrete type. `beam::register!(Type<Args>)` registers one instantiation, with the same id rule. |
+| Kind | The trait that the type implements selects the handler: `DoFn`, `StatefulDoFn`, `SplittableDoFn`, or the stages of a `CombineFn`. |
+| Construction | `ParDo`, `SplittableParDo` and `CombinePerKey` find the type by `TypeId` and write the id and the fields (serde_json) into the spec. |
+| Fields | A `#[serde(skip)]` field gets its `Default` value on the worker. Build connections and other process-local values in `setup`. |
+| Format version | The spec carries the fields format (`fields_format`). A worker with another format fails the bundle with an error that names both formats. Build the launcher and the worker with the same SDK version. |
+| Errors | Two types with one id, or fields that do not serialize, give `PipelineError::InvalidConstruction` at `Pipeline::validate`; the transform keeps a rebuild handler. On the worker, an id with no registration fails the bundle: the worker binary must link the crate of the type. |
+| State, timers, side inputs | `#[derive(State)]`, `#[derive(Timers)]` and the views of `side_inputs(&self)` travel in the spec. |
+| Splittable `DoFn` | The registered handler gives the expanded SDF stages. |
+| No derive | The type uses the rebuild path and needs no `serde` implementation. |
+| Diagnostics | `Pipeline::rebuild_path_transforms()` lists the transforms that use the rebuild path. The launcher logs them at submit. |
 
 ### SDK combine functions
 
-The SDK registers its own combine functions for the standard element types, with ids that start with `beam::transforms::`:
+The SDK registers its combine functions for these element types, with ids that start with `beam::transforms::`:
 
 | Combine functions | Element types |
 |---|---|
 | `Sum`, `Max`, `Min`, `Mean` | `i32`, `i64`, `f64`, `Decimal` |
 | `Sample`, `AnySample`, `ApproximateUnique` | `i32`, `i64`, `f64`, `bool`, `String`, `Vec<u8>`, `Decimal` |
-| `Top`, `ApproximateQuantiles` with `Natural` or `Reversed` | the same, without `f64` (not `Ord`) |
+| `Top`, `ApproximateQuantiles` with `Natural` or `Reversed` | the same types, without `f64` (not `Ord`) |
 
-`Top::largest`, `Top::smallest` and `ApproximateQuantiles::new` use the named orderings `Natural` and `Reversed`. For another element type, register the instantiation, for example `beam::register!(Top<MyScore, Natural>)`. A `Top` or `ApproximateQuantiles` with a closure ordering, and `Compose`, `On` and `MapOutput`, hold closures, so they use the rebuild path.
+For another element type, register the instantiation, for example `beam::register!(Top<MyScore, Natural>)`. A closure ordering, `Compose`, `On` and `MapOutput` hold closures, so they use the rebuild path.
 
-### Combine stages and key types
+### Combine keys
 
-The registry knows the `CombineFn` type, not the key type `K` of `CombinePerKey`. The spec carries a `StandardKey` tag, the key coder, and every coder that the key coder refers to:
+The registry knows the `CombineFn` type, not the key type `K`. The spec carries a `StandardKey` tag, the key coder and the coders that the key coder refers to.
 
-- **Standard keys** (`()`, `bool`, `i32`, `i64`, `String`, `Vec<u8>`) run the combine stages over the concrete Rust type `K`. Fused upstream steps pass `(K, V)` by value without encoding or decoding.
-- **Composite and row keys** (`(K1, K2)`, `Option<K>`, `Vec<T>`, and structs with `#[derive(BeamRow, Clone, PartialEq, Eq, Hash)]`) need no key registration. The key coder delimits each key (`skips_exactly`), and the stages run over `EncodedKey`, which writes the key bytes unchanged.
-- **Custom key coders:** the SDK cannot delimit a key coder with an unknown URN, unless `LengthPrefixCoder` wraps it. Without a length prefix, `CombinePerKey` takes the rebuild path.
-- The `CombinePayload` of the `combine_per_key` composite and of its `combine_grouped_values` step holds a `beam:combine_fn:rust:registered:v1` spec. The URN of the stage transform selects `combine_grouped_values` or the lifted stages (precombine, merge, extract, and convert to accumulators).
+| Key | How the stages run |
+|---|---|
+| Standard (`()`, `bool`, `i32`, `i64`, `String`, `Vec<u8>`) | The precombine before the shuffle runs over `K`, also in the first phase of a hot key fanout. The other stages run over `EncodedKey`. |
+| Composite and row (`(K1, K2)`, `Option<K>`, `Vec<T>`, `#[derive(BeamRow, Clone, PartialEq, Eq, Hash)]` structs) | Over `EncodedKey`. The key coder delimits each key (`skips_exactly`). |
+| Unknown coder URN | Registered only inside `LengthPrefixCoder`. Without it, `CombinePerKey` uses the rebuild path. |
+
+Each typed key adds handlers for every registered `CombineFn` to every binary, so only the precombine stage has them. The URN of the stage transform selects `combine_grouped_values` or a lifted stage (precombine, merge, extract, convert to accumulators).
 
 ## The rebuild path
 
-- The same binary is the launcher and the worker. On a containerized runner, the user's `main` runs again in the worker container. It builds the pipeline again and then serves bundles over the Fn API.
-- Construction registers one handler per transform with `Pipeline::register_transform_handler(key, handler)`. The key is the transform id. For combine and window_into stages, the key comes from the stage (`stage_key`, `window_into_handler_key`). The handler is a `TransformFn` closure. It captures the user's closure or function value, the coders, the side-input wiring and other values.
-- Transforms that the Rust expansion service created for another SDK have no user `main` on the worker. The worker builds that expansion again instead of a user pipeline. This is also a rebuild.
+The launcher and the worker are the same binary. On a containerized runner, the user's `main` runs again in the worker container, builds the pipeline and serves bundles over the Fn API. Construction registers one handler for each transform with `Pipeline::register_transform_handler(key, handler)`. The key is the transform id; combine and window_into stages use `stage_key` and `window_into_handler_key`.
 
-These items use the rebuild path:
+These transforms use the rebuild path:
 
-- closures in `map`, `filter`, `flat_map` and the other fluent wrappers
+- closures in `map`, `filter`, `flat_map` and the other fluent methods
 - unregistered function types
-- `CombinePerKey` with a key coder that the SDK cannot delimit
 - generic SDK transforms, for example the `WriteFiles` `DoFn`s
-- SDK combine functions over element types that the SDK does not register, until the user registers them with `register!`
-- combine functions that hold closures: a closure ordering, `Compose`, `On`, `MapOutput`
+- SDK combine functions over element types that the SDK does not register
+- combine functions that hold closures, and `CombinePerKey` with a key coder that the SDK cannot delimit
 - custom window functions
-- `TestStream` and `PAssert`. The `PAssert` matchers capture the expected values.
+- `TestStream` and `PAssert`: the matchers capture the expected values
 
-### Constraints of the rebuild path
+### Requirements
 
-- The worker must build the pipeline **exactly** as the launcher built it. Each transform must get the same id. Construction must not depend on values that differ between the two processes (environment, time, randomness, local files).
-- Code that is not a `main` needs more machinery, so that the worker knows which pipeline to rebuild. ValidatesRunner tests are the main example. The runner-tests crate uses a test registry and a `--vr_test` pipeline option for this (see [validates-runner.md](validates-runner.md)).
-- Construction-time side effects run twice: once on the launcher and once on each worker.
-- A worker does not expand cross-language transforms. Each output gets a placeholder with no windowing strategy. Its boundedness and its coder (with the row schema) come from the launcher through the job options, so submit the job with `Pipeline::options`. Do not add or skip a transform on the windowing of a cross-language output.
+- Build the pipeline on the worker exactly as on the launcher: every transform gets the same id. Construction must not depend on values that differ between the processes, such as the environment, the time, random values or local files.
+- Construction runs on the launcher and again on each worker, so its side effects run more than once.
+- Code that is not a `main` must tell the worker which pipeline to build. The runner-tests crate uses a test registry and the `--vr_test` option ([validates-runner.md](validates-runner.md)).
+- Submit the job with `Pipeline::options`. The job options carry the launcher facts that the worker needs: the cross-language records and the graph record.
 
-While any transform of a pipeline uses the rebuild path, the worker runs the user's `main`. Registered transforms skip the handler map, and their fields keep the values of the launcher, but they do not remove the rebuild.
+### Cross-language transforms
+
+A worker does not expand cross-language transforms. Each output gets a placeholder with no windowing strategy. Its boundedness and its coder, with the row schema, come from the launcher through the job options. Do not add or skip a transform on the windowing of a cross-language output.
+
+The Rust expansion service serves expansions to other SDKs, so the worker has no user `main` for them. The service writes a replay entry into each spec that holds a handler key, and the worker builds that expansion again. Registered specs and `Create` pass through unchanged, so an expansion of registered functions needs no replay.
+
+### Graph check
+
+The Prism and Dataflow runners record each transform that resolves through the handler map in the job options: its id, spec URN, handler key, and input and output PCollection ids. Before a worker serves bundles, it compares its rebuilt graph with the record.
+
+- A difference fails the worker with `RunnerError::GraphMismatch`. The error names the first transform id that differs and the part that differs.
+- A worker input that is a cross-language placeholder matches any launcher input with the same tag, because the worker does not know the PCollection ids of an expansion.
+- Coder and windowing strategy ids are not in the record: a process-wide counter gives them.
+- Registered transforms and `Create` are not in the record: their code travels in the graph.
+- Without a record, the worker skips the check.
+
+## Limits
+
+- The graph check cannot see a different closure under the same name with the same wiring.
+- Prism LOOPBACK workers run in the launcher process. They do not rebuild, so they do not check.
+- Expansion-service replay workers are not checked.
+- Registered transforms do not remove the rebuild while another transform of the pipeline uses it.
 
 ## Why the rebuild stays
 
-The worker can reach compiled code only through a name, and Rust names only concrete types.
+The worker reaches compiled code only through a name, and Rust names only concrete types.
 
-- **Closures.** `map(|x| x * factor)` has no name that is valid across processes, and its captured values do not serialize.
-- **Generic SDK transforms.** Most SDK `DoFn`s are generic over the element types of the user (`WriteFiles<T>`, the fluent wrappers). The registry holds one entry for each instantiation, so the SDK registers its combine functions for the standard element types, and `register!` adds others. Encoded bytes replace a type only where the code does not decode it, as with combine keys.
+- **Closures.** `map(|x| x * factor)` has no name across processes, and its captured values do not serialize.
+- **Generic SDK transforms.** Most SDK `DoFn`s are generic over the element types of the user (`WriteFiles<T>`, the fluent methods). The registry holds one entry for each instantiation. Encoded bytes replace a type only where the code does not decode it, as with combine keys.
 
-A worker that never rebuilds needs a different API. In that API, code that runs on workers is always a named, serializable type. The user registers each instantiation of a generic transform, as in the Go SDK. That is a separate design decision. This SDK keeps the closures of the fluent API.
+A worker that never rebuilds needs an API where all worker code is a named, serializable type, and the user registers each instantiation of a generic transform. This SDK keeps the closures of the fluent API.

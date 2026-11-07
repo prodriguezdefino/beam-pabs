@@ -27,9 +27,11 @@ use std::sync::MutexGuard;
 
 use beam_model::pipeline as proto;
 
+use crate::options::{OptionsError, PipelineOptions};
 use crate::pipeline::constants::URN_RUST_DOFN;
 use crate::pipeline::resources::ResourceHints;
 use crate::pipeline::{Pipeline, URN_PAR_DO};
+use crate::runners::RunnerError;
 use crate::values::{PCollection, POutput};
 
 pub use crate::coders::display::ElementFormatter;
@@ -391,6 +393,14 @@ pub trait PipelineInternals: sealed::Sealed {
 
     /// Adds an annotation to the node of the transform that is expanding.
     fn set_scope_annotation(&self, key: &str, value: Vec<u8>);
+
+    /// Records the transforms that resolve through the handler map in `options`, for the
+    /// graph check of the workers. Runners call it before they take the options snapshot.
+    fn record_rebuild_graph(&self, options: &PipelineOptions) -> Result<(), OptionsError>;
+
+    /// Compares this rebuilt graph with the record of the launcher in `options`. Passes when
+    /// `options` has no record.
+    fn check_rebuild_graph(&self, options: &PipelineOptions) -> Result<(), RunnerError>;
 }
 
 impl PipelineInternals for Pipeline {
@@ -450,6 +460,14 @@ impl PipelineInternals for Pipeline {
 
     fn set_scope_annotation(&self, key: &str, value: Vec<u8>) {
         self.set_scope_annotation(key, value);
+    }
+
+    fn record_rebuild_graph(&self, options: &PipelineOptions) -> Result<(), OptionsError> {
+        self.record_rebuild_graph(options)
+    }
+
+    fn check_rebuild_graph(&self, options: &PipelineOptions) -> Result<(), RunnerError> {
+        self.check_rebuild_graph(options)
     }
 }
 

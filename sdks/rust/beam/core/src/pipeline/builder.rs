@@ -30,6 +30,7 @@ use beam_model::pipeline as proto;
 use super::constants::*;
 use super::error::PipelineError;
 use super::graph::PipelineInner;
+use super::rebuild::handler_key;
 use super::{ExpansionMode, Pipeline};
 use crate::coders::CoderRegistry;
 use crate::runners::{PipelineResult, PipelineRunner};
@@ -424,30 +425,12 @@ impl Pipeline {
     /// them. A registered type travels in the graph with the values of the launcher; see
     /// `#[derive(Register)]` and `beam::register!`.
     pub fn rebuild_path_transforms(&self) -> Vec<String> {
-        use prost::Message;
-        let components = self.to_proto().components.unwrap_or_default();
-        let mut names: Vec<String> = components
+        let lock = self.lock();
+        let mut names: Vec<String> = lock
+            .components
             .transforms
             .values()
-            .filter(|transform| transform.subtransforms.is_empty())
-            .filter(|transform| {
-                let Some(spec) = &transform.spec else {
-                    return false;
-                };
-                match spec.urn.as_str() {
-                    URN_PAR_DO => proto::ParDoPayload::decode(spec.payload.as_slice())
-                        .ok()
-                        .and_then(|payload| payload.do_fn)
-                        .is_some_and(|do_fn| do_fn.urn == URN_RUST_DOFN),
-                    URN_COMBINE_GROUPED_VALUES => {
-                        proto::CombinePayload::decode(spec.payload.as_slice())
-                            .ok()
-                            .and_then(|payload| payload.combine_fn)
-                            .is_some_and(|combine_fn| combine_fn.urn == URN_RUST_COMBINE_FN)
-                    }
-                    _ => false,
-                }
-            })
+            .filter(|transform| handler_key(transform).is_some())
             .map(|transform| transform.unique_name.clone())
             .collect();
         names.sort();
@@ -591,6 +574,15 @@ impl Pipeline {
     pub async fn run(&self) -> Result<PipelineResult, crate::runners::RunnerError> {
         let options = self.options();
         crate::runners::run(self, &options).await
+    }
+
+    /// Validates and submits the pipeline to the runner that its options select, and returns
+    /// a handle to the job without waiting for it to end.
+    pub async fn submit(
+        &self,
+    ) -> Result<Box<dyn crate::runners::JobHandle>, crate::runners::RunnerError> {
+        let options = self.options();
+        crate::runners::submit(self, &options).await
     }
 
     /// Executes the pipeline with an explicitly constructed runner.

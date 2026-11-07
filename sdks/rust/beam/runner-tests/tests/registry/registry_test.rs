@@ -23,7 +23,8 @@
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use beam::options::PipelineOptions;
+use beam::internals::PipelineInternals;
+use beam::options::{HarnessOptions, OptionsSnapshot, PipelineOptions};
 use beam::runners::{JobState, PipelineResult, RunnerError};
 use beam::testing::{TestPipeline, TestPipelineError};
 use beam_runner_tests::{
@@ -74,6 +75,32 @@ fn every_test_builds_a_pipeline_with_assertions() {
         let p = TestPipeline::with_options(PipelineOptions::default()).without_run_enforcement();
         (test.build)(&p);
         assert!(p.assertion_count() > 0, "{} asserts nothing", test.id);
+    }
+}
+
+/// A worker rebuilds each test from the job options, as the Dataflow worker binary does, and
+/// gets the graph that the launcher recorded.
+#[test]
+fn every_test_builds_the_launcher_graph_on_a_worker() {
+    for test in VALIDATES_RUNNER_TESTS {
+        let options = PipelineOptions::parse_from(["app", &format!("--vr_test={}", test.id)]);
+        let launcher = TestPipeline::with_options(options.clone()).without_run_enforcement();
+        (test.build)(&launcher);
+        launcher.pipeline().record_rebuild_graph(&options).unwrap();
+
+        let encoded = options.snapshot().unwrap().encode();
+        let harness = HarnessOptions {
+            worker: true,
+            ..HarnessOptions::default()
+        };
+        let options =
+            PipelineOptions::from_snapshot(OptionsSnapshot::decode(&encoded).unwrap(), harness)
+                .unwrap();
+        let worker = TestPipeline::with_options(options.clone()).without_run_enforcement();
+        (test.build)(&worker);
+        if let Err(error) = worker.pipeline().check_rebuild_graph(&options) {
+            panic!("{}: {error}", test.id);
+        }
     }
 }
 

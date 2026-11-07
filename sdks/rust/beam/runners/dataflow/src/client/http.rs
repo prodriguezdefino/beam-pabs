@@ -262,13 +262,14 @@ impl DataflowApiClient for HttpDataflowClient {
         region: &str,
         job_id: &str,
         requested_state: JobState,
-    ) -> Result<JobResponse, ClientError> {
+    ) -> Result<(), ClientError> {
         let jobs = self.jobs_url(project, region);
         let payload = serde_json::json!({
             "requestedState": requested_state.as_str(),
         })
         .to_string();
-        self.send(format!("{jobs}/{job_id}"), Method::Put(payload.into()))
+        self.send::<serde::de::IgnoredAny>(format!("{jobs}/{job_id}"), Method::Put(payload.into()))
             .await
+            .map(|_| ())
     }
 }

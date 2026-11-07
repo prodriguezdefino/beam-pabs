@@ -55,8 +55,29 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! [`submit`] starts the job and returns a [`JobHandle`]. Use it to read the state and live
+//! metrics, to cancel or drain the job, and to wait for it with a timeout:
+//!
+//! ```no_run
+//! # use std::time::Duration;
+//! # use beam::pipeline::Pipeline;
+//! # use beam::options::PipelineOptions;
+//! # async fn doc_example(pipeline: Pipeline, options: PipelineOptions) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+//! let job = beam::runners::submit(&pipeline, &options).await?;
+//! let result = job.wait_until_finish(Some(Duration::from_secs(600))).await?;
+//! if !result.state.is_terminal() {
+//!     job.cancel().await?;
+//! }
+//! # Ok(())
+//! # }
+//! ```
 
-use crate::options::PipelineOptions;
+mod job;
+
+pub use job::JobHandle;
+
+use crate::options::{OptionsError, PipelineOptions};
 use crate::pipeline::{Pipeline, PipelineError};
 
 /// Errors produced while selecting a runner or executing a pipeline on it.
@@ -87,11 +108,36 @@ pub enum RunnerError {
     #[error("invalid pipeline: {0}")]
     InvalidPipeline(#[from] PipelineError),
 
+    /// The pipeline options cannot be read or set.
+    #[error("invalid pipeline options: {0}")]
+    Options(#[from] OptionsError),
+
+    /// A worker rebuilt a graph that differs from the graph of the launcher, so a handler
+    /// can run the code of another transform.
+    #[error(
+        "the worker built a different graph than the launcher: transform '{transform_id}' \
+         {difference}. Pipeline construction must not depend on values that differ between \
+         the launcher and the worker, such as the environment, the time or local files"
+    )]
+    GraphMismatch {
+        transform_id: String,
+        difference: String,
+    },
+
     /// The runner accepted the pipeline but failed to execute it.
     ///
     /// The source is the runner's own error type, which callers can downcast to.
     #[error("pipeline execution failed: {0}")]
     Execution(#[source] Box<dyn std::error::Error + Send + Sync>),
+
+    /// The runner cannot carry out this operation on a job.
+    #[error("the {runner} runner does not support {operation}")]
+    Unsupported {
+        /// Name of the runner, for example `prism`.
+        runner: &'static str,
+        /// The operation that the caller asked for, for example `drain`.
+        operation: &'static str,
+    },
 }
 
 impl RunnerError {
@@ -278,6 +324,14 @@ impl PipelineResult {
 #[async_trait::async_trait]
 pub trait PipelineRunner: Send + Sync {
     async fn run(&self, pipeline: &Pipeline) -> Result<PipelineResult, RunnerError>;
+
+    /// Starts `pipeline` and returns a handle to the job without waiting for it to end.
+    ///
+    /// The default runs the pipeline to the end and returns a handle to the finished job.
+    /// Override it when the runner can detach from a running job.
+    async fn submit(&self, pipeline: &Pipeline) -> Result<Box<dyn JobHandle>, RunnerError> {
+        self.run(pipeline).await.map(Into::into)
+    }
 }
 
 /// A runner selectable by name through [`PipelineOptions::runner`]. Runner crates submit one
@@ -291,8 +345,8 @@ pub struct RunnerRegistration {
 inventory::collect!(RunnerRegistration);
 
 /// Name of the Fn API worker harness registration that linking `apache-beam-harness` submits.
-/// [`run`] selects it before `--runner` when the process starts with worker flags. In a worker
-/// container, `--runner` still names the runner that launched the job.
+/// [`run`] and [`submit`] select it before `--runner` when the process starts with worker
+/// flags. In a worker container, `--runner` still names the runner that launched the job.
 pub const WORKER_RUNNER_NAME: &str = "worker";
 
 /// Names of every runner linked into the current binary, sorted.
@@ -329,22 +383,45 @@ pub fn runner_for(options: &PipelineOptions) -> Result<Box<dyn PipelineRunner>, 
 ///
 /// When a runner's container boot program starts the process as a worker, this selects the
 /// worker harness and ignores `--runner`. The harness serves the pipeline, rebuilt from the
-/// forwarded options, so its transform handlers match the ones that the runner requests.
+/// forwarded options, so its transform handlers match the ones that the runner requests. If
+/// the rebuilt graph differs from the graph that the launcher recorded, `run` returns
+/// [`RunnerError::GraphMismatch`].
 pub async fn run(
     pipeline: &Pipeline,
     options: &PipelineOptions,
 ) -> Result<PipelineResult, RunnerError> {
-    let runner = if options.harness.is_worker() {
-        runner_named(WORKER_RUNNER_NAME, options).map_err(|_| {
+    select_runner(pipeline, options)?.run(pipeline).await
+}
+
+/// Validates and submits `pipeline` to the runner named by `options`, and returns a handle to
+/// the job without waiting for it to end.
+///
+/// Selects the runner in the same way as [`run`]. In a worker process, the worker harness
+/// serves the pipeline until the runner stops it, then returns a handle to the finished job.
+pub async fn submit(
+    pipeline: &Pipeline,
+    options: &PipelineOptions,
+) -> Result<Box<dyn JobHandle>, RunnerError> {
+    select_runner(pipeline, options)?.submit(pipeline).await
+}
+
+/// Picks the worker harness in a worker process, after it checks the rebuilt graph against
+/// the record of the launcher. Otherwise validates `pipeline` and builds the runner that
+/// `--runner` names.
+fn select_runner(
+    pipeline: &Pipeline,
+    options: &PipelineOptions,
+) -> Result<Box<dyn PipelineRunner>, RunnerError> {
+    if options.harness.is_worker() {
+        let runner = runner_named(WORKER_RUNNER_NAME, options).map_err(|_| {
             RunnerError::WorkerHarnessMissing {
                 linked: registered_runners(),
             }
-        })?
-    } else {
-        pipeline.validate()?;
-        pipeline.log_rebuild_path();
-        runner_for(options)?
-    };
-
-    runner.run(pipeline).await
+        })?;
+        pipeline.check_rebuild_graph(options)?;
+        return Ok(runner);
+    }
+    pipeline.validate()?;
+    pipeline.log_rebuild_path();
+    runner_for(options)
 }

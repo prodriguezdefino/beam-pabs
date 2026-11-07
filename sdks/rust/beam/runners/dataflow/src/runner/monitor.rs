@@ -27,8 +27,7 @@ use tracing::{info, warn};
 
 use super::{DataflowRunnerError, SubmittedJob};
 use crate::client::{
-    DataflowApiClient, JobMessageItem, JobResponse, MessageCursor, is_successful_state,
-    is_terminal_state,
+    DataflowApiClient, JobMessageItem, JobResponse, JobState, MessageCursor, is_successful_state,
 };
 use crate::constants::{JOB_MESSAGE_ERROR, MAX_CONSECUTIVE_JOB_STATUS_ERRORS};
 
@@ -175,17 +174,28 @@ async fn terminal_result(
         .fold(result, PipelineResult::with_metrics))
 }
 
+/// Polls `job` until it reaches a terminal state, logging messages, and returns that state
+/// together with any [`JOB_MESSAGE_ERROR`] messages observed.
+pub(super) async fn poll_until_terminal(
+    client: &dyn DataflowApiClient,
+    job: &SubmittedJob,
+    poll_interval: Duration,
+) -> Result<(JobState, Vec<String>), DataflowRunnerError> {
+    let mut poller = JobPoller::new(client, job, poll_interval);
+    loop {
+        let state = JobState::parse(&poller.next_status().await?.current_state);
+        if state.is_terminal() {
+            return Ok((state, poller.errors));
+        }
+    }
+}
+
 /// Polls `job` until it reaches a terminal state, logging messages.
 pub(super) async fn wait_for_job(
     client: &dyn DataflowApiClient,
     job: &SubmittedJob,
     poll_interval: Duration,
 ) -> Result<PipelineResult, DataflowRunnerError> {
-    let mut poller = JobPoller::new(client, job, poll_interval);
-    loop {
-        let status = poller.next_status().await?;
-        if is_terminal_state(&status.current_state) {
-            return terminal_result(client, job, &status.current_state, poller.errors()).await;
-        }
-    }
+    let (state, errors) = poll_until_terminal(client, job, poll_interval).await?;
+    terminal_result(client, job, state.as_str(), &errors).await
 }

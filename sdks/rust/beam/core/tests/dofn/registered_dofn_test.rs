@@ -314,16 +314,23 @@ async fn registered_stateful_dofn_runs_on_prism_without_a_registered_handler() {
     p.run().await.expect("pipeline and assertions pass");
 }
 
+/// The `do_fn` payload of a registered `DoFn`, as other code decodes it from the wire.
+#[derive(Message)]
+struct WireSpec {
+    #[prost(string, tag = "1")]
+    id: String,
+    #[prost(bytes = "vec", tag = "2")]
+    fields: Vec<u8>,
+    #[prost(uint32, tag = "7")]
+    fields_format: u32,
+}
+
 #[test]
 fn an_unknown_id_does_not_build() {
-    #[derive(Message)]
-    struct RegisteredSpec {
-        #[prost(string, tag = "1")]
-        id: String,
-    }
-
-    let payload = RegisteredSpec {
+    let payload = WireSpec {
         id: "nowhere::Missing".to_string(),
+        fields: Vec::new(),
+        fields_format: 1,
     }
     .encode_to_vec();
     let error = beam::internals::registered_handler(&payload)
@@ -333,4 +340,51 @@ fn an_unknown_id_does_not_build() {
         error.contains("no function type registered as 'nowhere::Missing'"),
         "{error}"
     );
+}
+
+#[test]
+fn a_spec_carries_fields_format_1_and_builds() {
+    let p = Pipeline::new();
+    let _ = p.apply("Create", Create::new(vec![1i64])).apply(
+        "Scale",
+        ParDo::new(ScaleBy {
+            factor: 3,
+            offset: 0,
+        }),
+    );
+    let spec = do_fn_spec(&p, "Scale");
+    let wire = WireSpec::decode(spec.payload.as_slice()).expect("spec");
+    assert_eq!(wire.fields_format, 1);
+    assert_eq!(wire.fields, br#"{"factor":3}"#);
+    assert!(beam::internals::registered_handler(&spec.payload).is_ok());
+}
+
+#[test]
+fn a_spec_with_another_fields_format_fails_and_names_both_formats() {
+    let p = Pipeline::new();
+    let _ = p.apply("Create", Create::new(vec![1i64])).apply(
+        "Scale",
+        ParDo::new(ScaleBy {
+            factor: 3,
+            offset: 0,
+        }),
+    );
+    let wire = WireSpec::decode(do_fn_spec(&p, "Scale").payload.as_slice()).expect("spec");
+    [0, 2].into_iter().for_each(|format| {
+        let payload = WireSpec {
+            id: wire.id.clone(),
+            fields: wire.fields.clone(),
+            fields_format: format,
+        }
+        .encode_to_vec();
+        let error = beam::internals::registered_handler(&payload)
+            .err()
+            .expect("the format is unknown");
+        assert!(
+            error.contains(&format!("has fields format {format}"))
+                && error.contains("reads format 1")
+                && error.contains(&wire.id),
+            "{error}"
+        );
+    });
 }

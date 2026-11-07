@@ -28,6 +28,7 @@
 //! `--worker_binary` is served to the container over the artifact staging service, matching
 //! how a production runner delivers it.
 
+pub(crate) mod job;
 pub(crate) mod runner;
 pub(crate) mod server;
 pub(crate) mod staging;

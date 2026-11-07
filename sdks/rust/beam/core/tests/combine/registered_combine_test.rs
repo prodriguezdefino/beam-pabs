@@ -396,6 +396,37 @@ async fn row_key_runs_on_prism_without_registered_handlers() {
 }
 
 #[test]
+fn a_combine_spec_with_another_fields_format_does_not_build() {
+    // Tag 7 of the payload is the fields format. A later field replaces an earlier one.
+    #[derive(prost::Message)]
+    struct FieldsFormat {
+        #[prost(uint32, tag = "7")]
+        fields_format: u32,
+    }
+
+    let p = Pipeline::new();
+    let _ = p
+        .apply("Create", Create::new(kvs(&[("a", 1)])))
+        .apply("Sum", CombinePerKey::new(ScaledSum { factor: 3 }));
+    let payload = combine_fn_spec(&p, "Sum").payload;
+    let format = <FieldsFormat as Message>::decode(payload.as_slice()).expect("payload");
+    assert_eq!(format.fields_format, 1);
+
+    let changed = [
+        payload,
+        Message::encode_to_vec(&FieldsFormat { fields_format: 9 }),
+    ]
+    .concat();
+    let error = registered_combine_handler(&changed, CombineStage::Precombine.as_str())
+        .err()
+        .expect("the format is unknown");
+    assert!(
+        error.contains("has fields format 9") && error.contains("reads format 1"),
+        "{error}"
+    );
+}
+
+#[test]
 fn a_lifted_stage_comes_from_the_runner_and_overrides_the_payload() {
     let p = Pipeline::new();
     let _ = p

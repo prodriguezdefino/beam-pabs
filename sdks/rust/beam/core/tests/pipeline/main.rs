@@ -30,4 +30,5 @@ mod label_scope_test;
 mod pcollection_boundedness_test;
 mod pipeline_graph_test;
 mod pipeline_validation_test;
+mod rebuild_graph_test;
 mod trigger_validation_test;
