@@ -20,6 +20,7 @@
 //! Dataflow runner implementation for Apache Beam Rust SDK.
 
 mod config;
+mod handle;
 mod job_name;
 mod monitor;
 mod submit;
@@ -27,9 +28,12 @@ mod submit;
 use std::sync::Arc;
 use std::time::Duration;
 
+use beam::internals::PipelineInternals;
 use beam::options::{OptionsError, PipelineOptions};
 use beam::pipeline::Pipeline;
-use beam::runners::{JobState, PipelineResult, PipelineRunner, RunnerError, RunnerRegistration};
+use beam::runners::{
+    JobHandle, JobState, PipelineResult, PipelineRunner, RunnerError, RunnerRegistration,
+};
 use beam_io_file::{FileSystem, get_filesystem};
 use thiserror::Error;
 use tracing::info;
@@ -38,6 +42,7 @@ use crate::client::{DataflowApiClient, HttpDataflowClient};
 use crate::staging::write_bytes;
 use crate::translate::{DataflowJob, translate_job};
 use config::ResolvedJobConfig;
+use handle::DataflowJobHandle;
 use monitor::wait_for_job;
 use submit::{handle_dry_run, new_client_request_id, stage_artifacts, submit_job};
 
@@ -243,10 +248,23 @@ impl SubmittedJob {
     }
 }
 
+/// What [`DataflowRunner::launch`] did with a pipeline.
+pub(super) enum Launch {
+    /// Wrote a job file or a template. No job runs.
+    Offline(Box<PipelineResult>),
+    /// Dataflow accepted the job.
+    Submitted(SubmittedJob, Arc<dyn DataflowApiClient>),
+}
+
 #[async_trait::async_trait]
 impl PipelineRunner for DataflowRunner {
     async fn run(&self, pipeline: &Pipeline) -> Result<PipelineResult, RunnerError> {
         self.execute(pipeline).await.map_err(RunnerError::execution)
+    }
+
+    /// Returns when Dataflow accepts the job, whatever `--async_job` says.
+    async fn submit(&self, pipeline: &Pipeline) -> Result<Box<dyn JobHandle>, RunnerError> {
+        self.start(pipeline).await.map_err(RunnerError::execution)
     }
 }
 
@@ -261,15 +279,23 @@ impl DataflowRunner {
         self.poll_interval
     }
 
-    /// Prepares artifacts and submits `pipeline` to Google Cloud Dataflow, returning
-    /// the submitted job handle and API client without waiting for completion.
-    pub(super) async fn prepare_and_submit(
+    /// Writes the job file or the template that the options ask for, or else submits
+    /// `pipeline`. Does not wait for the job.
+    pub(super) async fn configure_and_launch(
         &self,
         pipeline: &Pipeline,
-    ) -> Result<(SubmittedJob, Arc<dyn DataflowApiClient>), DataflowRunnerError> {
+    ) -> Result<Launch, DataflowRunnerError> {
+        let config = self.configure(pipeline)?;
+        self.launch(pipeline, &config).await
+    }
+
+    /// Resolves the job configuration and sets the Docker environment of `pipeline`. It
+    /// records the graph for the workers first, so the options snapshot of the job holds it.
+    fn configure(&self, pipeline: &Pipeline) -> Result<ResolvedJobConfig, DataflowRunnerError> {
+        pipeline.record_rebuild_graph(&self.options)?;
         let config = ResolvedJobConfig::from_options(&self.options, &pipeline.options())?;
         pipeline.set_docker_environment(&config.container.image);
-        self.prepare_and_submit_with_config(pipeline, &config).await
+        Ok(config)
     }
 
     /// The Docker environment of `pipeline` must already be set.
@@ -322,33 +348,59 @@ impl DataflowRunner {
 
     /// Runs `pipeline`, reporting failures with this runner's own error type.
     async fn execute(&self, pipeline: &Pipeline) -> Result<PipelineResult, DataflowRunnerError> {
-        let config = ResolvedJobConfig::from_options(&self.options, &pipeline.options())?;
-        pipeline.set_docker_environment(&config.container.image);
+        let config = self.configure(pipeline)?;
 
+        match self.launch(pipeline, &config).await? {
+            Launch::Offline(result) => Ok(*result),
+            Launch::Submitted(job, _) if !config.options.debug.should_wait_until_finish() => {
+                let state = if job.initial_state.is_empty() {
+                    JobState::Pending
+                } else {
+                    job.initial_state.parse().unwrap_or_default()
+                };
+                Ok(PipelineResult::new(job.id, state))
+            }
+            Launch::Submitted(job, client) => {
+                wait_for_job(&*client, &job, self.poll_interval).await
+            }
+        }
+    }
+
+    /// Submits `pipeline` and returns a handle to the job without waiting for it.
+    async fn start(&self, pipeline: &Pipeline) -> Result<Box<dyn JobHandle>, DataflowRunnerError> {
+        let config = self.configure(pipeline)?;
+
+        Ok(match self.launch(pipeline, &config).await? {
+            Launch::Offline(result) => (*result).into(),
+            Launch::Submitted(job, client) => {
+                Box::new(DataflowJobHandle::new(client, job, self.poll_interval))
+            }
+        })
+    }
+
+    /// Writes the job file or the template that `config` asks for, or else submits the job.
+    /// The Docker environment of `pipeline` must already be set.
+    async fn launch(
+        &self,
+        pipeline: &Pipeline,
+        config: &ResolvedJobConfig,
+    ) -> Result<Launch, DataflowRunnerError> {
         if let Some(ref job_file) = config.options.dataflow.dataflow_job_file {
-            return handle_dry_run(job_file, &pipeline.to_proto(), &config);
+            return handle_dry_run(job_file, pipeline, config)
+                .map(|result| Launch::Offline(Box::new(result)));
         }
 
         if let Some(ref location) = config.options.dataflow.template_location {
-            let job = self.stage_and_translate(pipeline, &config)?;
-            return self.write_template(location, &job);
+            let job = self.stage_and_translate(pipeline, config)?;
+            return self
+                .write_template(location, &job)
+                .map(|result| Launch::Offline(Box::new(result)));
         }
 
-        let should_wait = config.options.debug.should_wait_until_finish();
         let (job, client) = self
-            .prepare_and_submit_with_config(pipeline, &config)
+            .prepare_and_submit_with_config(pipeline, config)
             .await?;
-
-        if !should_wait {
-            let state = if job.initial_state.is_empty() {
-                JobState::Pending
-            } else {
-                job.initial_state.parse().unwrap_or_default()
-            };
-            return Ok(PipelineResult::new(job.id, state));
-        }
-
-        wait_for_job(&*client, &job, self.poll_interval).await
+        Ok(Launch::Submitted(job, client))
     }
 
     /// Writes `job` to `location` as a classic template instead of submitting. Launch it with

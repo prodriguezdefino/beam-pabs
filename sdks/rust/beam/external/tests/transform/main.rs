@@ -23,4 +23,5 @@ mod multi_output_test;
 mod placeholder_boundedness_test;
 mod placeholder_schema_test;
 mod placeholder_side_input_test;
+mod rebuild_graph_test;
 mod xlang_test;

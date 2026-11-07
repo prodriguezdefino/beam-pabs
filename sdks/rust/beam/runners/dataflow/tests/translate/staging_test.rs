@@ -436,3 +436,107 @@ fn deferred_artifact_with_many_recorded_jars_is_left_untouched() {
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+#[derive(Debug)]
+struct CountingFileSystem {
+    inner: LocalFileSystem,
+    uploads: std::sync::atomic::AtomicUsize,
+    upload_delay: std::time::Duration,
+}
+
+impl CountingFileSystem {
+    fn new(upload_delay: std::time::Duration) -> Self {
+        Self {
+            inner: LocalFileSystem::new(),
+            uploads: std::sync::atomic::AtomicUsize::new(0),
+            upload_delay,
+        }
+    }
+
+    fn uploads(&self) -> usize {
+        self.uploads.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl FileSystem for CountingFileSystem {
+    fn match_files(&self, pattern: &str) -> std::io::Result<Vec<String>> {
+        self.inner.match_files(pattern)
+    }
+
+    fn open_read(&self, path: &str) -> std::io::Result<Box<dyn Read + Send>> {
+        self.inner.open_read(path)
+    }
+
+    fn open_write(&self, path: &str) -> std::io::Result<Box<dyn Write + Send>> {
+        self.uploads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        std::thread::sleep(self.upload_delay);
+        self.inner.open_write(path)
+    }
+
+    fn open_append(&self, path: &str) -> std::io::Result<Box<dyn Write + Send>> {
+        self.inner.open_append(path)
+    }
+
+    fn size(&self, path: &str) -> std::io::Result<u64> {
+        self.inner.size(path)
+    }
+
+    fn remove(&self, path: &str) -> std::io::Result<()> {
+        self.inner.remove(path)
+    }
+
+    fn rename(&self, old_path: &str, new_path: &str) -> std::io::Result<()> {
+        self.inner.rename(old_path, new_path)
+    }
+
+    fn copy(&self, from: &str, to: &str) -> std::io::Result<()> {
+        self.inner.copy(from, to)
+    }
+
+    fn last_modified(&self, path: &str) -> std::io::Result<std::time::SystemTime> {
+        self.inner.last_modified(path)
+    }
+}
+
+#[test]
+fn concurrent_stage_worker_binary_uploads_once() {
+    const CALLERS: usize = 4;
+    let fs = CountingFileSystem::new(std::time::Duration::from_millis(30));
+    let temp_dir = std::env::temp_dir().join(format!(
+        "dataflow_stage_worker_concurrent_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let staging_loc = temp_dir.to_str().unwrap();
+    let bin_path = temp_dir.join("worker_bin");
+    std::fs::write(&bin_path, b"shared worker binary bytes").unwrap();
+
+    let barrier = std::sync::Barrier::new(CALLERS);
+    let results: Vec<(String, String)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..CALLERS)
+            .map(|_| {
+                scope.spawn(|| {
+                    barrier.wait();
+                    stage_worker_binary(&fs, staging_loc, &bin_path).unwrap()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect()
+    });
+
+    assert_eq!(fs.uploads(), 1);
+    for pair in &results[1..] {
+        assert_eq!(pair, &results[0]);
+    }
+    assert_eq!(
+        std::fs::read(&results[0].0).unwrap(),
+        b"shared worker binary bytes"
+    );
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}

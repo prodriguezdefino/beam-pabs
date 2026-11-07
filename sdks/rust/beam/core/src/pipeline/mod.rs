@@ -31,6 +31,7 @@ pub(crate) mod constants;
 pub(crate) mod environment;
 pub(crate) mod error;
 pub(crate) mod graph;
+pub(crate) mod rebuild;
 pub(crate) mod resources;
 pub(crate) mod roots;
 pub(crate) mod validation;

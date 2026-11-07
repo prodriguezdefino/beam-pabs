@@ -326,6 +326,9 @@ struct RegisteredCombineSpec {
     coders: HashMap<String, proto::Coder>,
     #[prost(enumeration = "StandardKey", tag = "5")]
     standard_key: i32,
+    /// The [`registered::FIELDS_FORMAT`] that wrote `fields`.
+    #[prost(uint32, tag = "7")]
+    fields_format: u32,
 }
 
 /// The function spec of a registered combine.
@@ -357,6 +360,7 @@ impl CombineSpecs {
                 key_coder_id: key_coder_id.to_string(),
                 coders,
                 standard_key,
+                fields_format: registered::FIELDS_FORMAT,
             },
         })
     }
@@ -397,6 +401,7 @@ pub fn registered_combine_handler(payload: &[u8], stage: &str) -> Result<Transfo
         key_coder_id,
         coders,
         standard_key,
+        fields_format,
     } = RegisteredCombineSpec::decode(payload)
         .map_err(|e| format!("Failed to decode the registered combine payload: {e}"))?;
     let stage: CombineStage = stage
@@ -407,7 +412,7 @@ pub fn registered_combine_handler(payload: &[u8], stage: &str) -> Result<Transfo
         plan: SkipPlan::new(&key_coder_id, &coders),
         standard,
     });
-    match registered::build(&id, &fields)? {
+    match registered::build(&id, fields_format, &fields)? {
         Registered::Combine(stages) => Ok(stages.stage(stage, key)),
         Registered::Handler(_) => Err(format!(
             "'{id}' is registered as a DoFn, but the spec runs it as a CombineFn"

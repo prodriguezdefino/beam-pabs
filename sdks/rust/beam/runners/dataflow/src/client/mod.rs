@@ -110,12 +110,14 @@ pub trait DataflowApiClient: Send + Sync + fmt::Debug {
         job_id: &str,
     ) -> Result<JobMetricsResponse, ClientError>;
 
-    /// Updates the state of an existing Dataflow job (e.g. to cancel or drain).
+    /// Asks Dataflow to move a job to `requested_state` (cancel or drain).
+    ///
+    /// The answer to a state change does not hold the whole job, so no job is returned.
     async fn update_job(
         &self,
         project: &str,
         region: &str,
         job_id: &str,
         requested_state: JobState,
-    ) -> Result<JobResponse, ClientError>;
+    ) -> Result<(), ClientError>;
 }

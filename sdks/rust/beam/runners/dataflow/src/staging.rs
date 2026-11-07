@@ -20,8 +20,10 @@
 //! Staging pipeline model artifacts and worker binaries to Google Cloud Storage.
 
 use std::collections::{HashMap, HashSet};
-use std::io::Write as _;
+use std::fs::File;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use thiserror::Error;
 
 use beam_io_file::FileSystem;
@@ -53,12 +55,36 @@ pub fn join_gcs_path(base: &str, relative: &str) -> String {
     format!("{trimmed}/{rel}")
 }
 
+/// Formats a SHA-256 digest as a 64-character lowercase hex string.
+fn format_sha256(digest: &[u8]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 /// Computes the SHA-256 digest of `data` and returns it as a 64-character lowercase hex string.
 pub fn compute_sha256(data: &[u8]) -> String {
-    Sha256::digest(data)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    format_sha256(&Sha256::digest(data))
+}
+
+/// Adapts `Sha256` to [`Write`] so [`std::io::copy`] can stream files through the hasher.
+struct HashWriter(Sha256);
+
+impl Write for HashWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.update(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Streams `path` through SHA-256 and returns `(hex_digest, byte_len)`.
+fn hash_file(path: &Path) -> Result<(String, u64), StagingError> {
+    let mut file = File::open(path)?;
+    let mut hasher = HashWriter(Sha256::new());
+    let len = std::io::copy(&mut file, &mut hasher)?;
+    Ok((format_sha256(&hasher.0.finalize()), len))
 }
 
 /// Writes `bytes` to `target_uri`, mapping every failure to [`StagingError::Upload`].
@@ -74,6 +100,45 @@ pub(super) fn write_bytes(
     let mut writer = fs.open_write(target_uri).map_err(upload_error)?;
     writer.write_all(bytes).map_err(upload_error)?;
     writer.flush().map_err(upload_error)
+}
+
+/// Streams `path` to `target_uri`, mapping upload failures to [`StagingError::Upload`].
+fn write_file(fs: &dyn FileSystem, target_uri: &str, path: &Path) -> Result<(), StagingError> {
+    let mut file = File::open(path)?;
+    let upload_error = |source| StagingError::Upload {
+        uri: target_uri.to_string(),
+        source,
+    };
+    let mut writer = fs.open_write(target_uri).map_err(upload_error)?;
+    std::io::copy(&mut file, &mut writer).map_err(upload_error)?;
+    writer.flush().map_err(upload_error)
+}
+
+/// Serializes check-and-upload per target URI so parallel callers share one upload.
+static IN_FLIGHT_UPLOADS: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn upload_guard(target_uri: &str) -> Arc<Mutex<()>> {
+    let mut guards = IN_FLIGHT_UPLOADS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    Arc::clone(
+        guards
+            .entry(target_uri.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(()))),
+    )
+}
+
+fn release_upload_guard(target_uri: &str, guard: &Arc<Mutex<()>>) {
+    let mut guards = IN_FLIGHT_UPLOADS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if guards
+        .get(target_uri)
+        .is_some_and(|entry| Arc::ptr_eq(entry, guard) && Arc::strong_count(guard) == 2)
+    {
+        guards.remove(target_uri);
+    }
 }
 
 /// Stages the serialized Pipeline protobuf model to Google Cloud Storage.
@@ -110,27 +175,49 @@ pub fn stage_worker_binary(
     staging_location: &str,
     binary_path: &Path,
 ) -> Result<(String, String), StagingError> {
-    let bytes = std::fs::read(binary_path)?;
-    let hash = compute_sha256(&bytes);
-    let target_uri = join_gcs_path(
+    // The upload reads the file again, so a rebuild between the two reads stages other bytes
+    // under this hash. Do not rebuild the binary while a job submits.
+    let (hash, len) = hash_file(binary_path)?;
+    let target_uri = worker_binary_uri(staging_location, &hash);
+
+    let guard = upload_guard(&target_uri);
+    let result = {
+        let _upload_lock = guard.lock().unwrap_or_else(PoisonError::into_inner);
+        // A missing object gives an error; then upload.
+        let staged = fs.size(&target_uri).is_ok_and(|size| size == len);
+        if staged {
+            tracing::info!("Worker binary already staged ({len} bytes) at {target_uri}");
+            Ok(())
+        } else {
+            write_file(fs, &target_uri, binary_path).inspect(|()| {
+                tracing::info!(
+                    "Staged worker binary '{path}' ({len} bytes, sha256: {hash}) to {target_uri}",
+                    path = binary_path.display(),
+                );
+            })
+        }
+    };
+    release_upload_guard(&target_uri, &guard);
+    result?;
+    Ok((target_uri, hash))
+}
+
+/// The staged location of a worker binary with SHA-256 `hash`.
+fn worker_binary_uri(staging_location: &str, hash: &str) -> String {
+    join_gcs_path(
         staging_location,
         &format!("{}-{hash}", crate::constants::STAGED_WORKER_NAME),
-    );
-    let len = bytes.len();
-    // A missing object gives an error; then upload.
-    let staged = fs
-        .size(&target_uri)
-        .is_ok_and(|size| usize::try_from(size) == Ok(len));
-    if staged {
-        tracing::info!("Worker binary already staged ({len} bytes) at {target_uri}");
-    } else {
-        write_bytes(fs, &target_uri, &bytes)?;
-        tracing::info!(
-            "Staged worker binary '{path}' ({len} bytes, sha256: {hash}) to {target_uri}",
-            path = binary_path.display(),
-        );
-    }
-    Ok((target_uri, hash))
+    )
+}
+
+/// Returns `(worker_gcs_uri, sha256_hash)` where [`stage_worker_binary`] stages
+/// `binary_path`, without an upload.
+pub(crate) fn locate_worker_binary(
+    staging_location: &str,
+    binary_path: &Path,
+) -> Result<(String, String), StagingError> {
+    let (hash, _) = hash_file(binary_path)?;
+    Ok((worker_binary_uri(staging_location, &hash), hash))
 }
 
 /// Beam artifact URNs, as used in `Environment.dependencies`, under the short names this
@@ -153,15 +240,13 @@ pub fn stage_file_artifact(
     file_path: &Path,
     staged_name: &str,
 ) -> Result<(String, String), StagingError> {
-    let bytes = std::fs::read(file_path)?;
+    let (hash, len) = hash_file(file_path)?;
     let target_uri = join_gcs_path(staging_location, &format!("{job_id}/xlang/{staged_name}"));
-    write_bytes(fs, &target_uri, &bytes)?;
+    write_file(fs, &target_uri, file_path)?;
 
-    let hash = compute_sha256(&bytes);
     tracing::info!(
         "Staged artifact '{path}' ({len} bytes, sha256: {hash}) to {target_uri}",
         path = file_path.display(),
-        len = bytes.len()
     );
     Ok((target_uri, hash))
 }
