@@ -29,6 +29,7 @@ use beam::prelude::*;
 use beam::windowing::{
     AccumulationMode, FixedWindows, GlobalWindows, Trigger, WindowInto, is_globally_windowed,
 };
+use serde::Serialize;
 
 use super::NexmarkArgs;
 use super::avro::{read_avro_events, with_coder_strategy, write_avro_events};
@@ -52,6 +53,9 @@ use crate::source::{BoundedEventSource, UnboundedEventSource};
 
 /// Name of the `--assert_correctness` check. A pipeline holds at most one.
 const CORRECTNESS_CHECK: &str = "AssertCorrectness";
+
+/// First capacity of the buffer that the DEVNULL sink encodes into. Most results fit.
+const DEVNULL_BUFFER_BYTES: usize = 256;
 
 /// Checks whether `--runner` selects the local Prism runner.
 pub fn is_prism_runner(runner: &str) -> bool {
@@ -296,7 +300,7 @@ impl QueryTail<'_> {
         check: Option<ModelCheck<'_, T>>,
     ) -> Result<(), LauncherError>
     where
-        T: DefaultCoder + KnownSize + Debug + Send + Sync + 'static,
+        T: DefaultCoder + KnownSize + Debug + Serialize + Send + Sync + 'static,
     {
         if let (true, false, Some(check)) =
             (self.args.assert_correctness, self.options.streaming, check)
@@ -312,15 +316,22 @@ impl QueryTail<'_> {
 
     fn apply_sink<T>(&self, output: &PCollection<T>) -> Result<(), LauncherError>
     where
-        T: DefaultCoder + Debug + Send + Sync + 'static,
+        T: DefaultCoder + Debug + Serialize + Send + Sync + 'static,
     {
         match self.config.sink_type {
             SinkType::CountOnly => {}
+            // Writes each element as JSON and drops the bytes.
             SinkType::Devnull => {
-                let _ = output.filter("DevnullSink", |elem: &T| {
-                    std::hint::black_box(format!("{elem:?}"));
-                    false
-                });
+                let _ = output.par_do_fn(
+                    "DevnullSink",
+                    |elem: T, _ctx: &mut ProcessContext<'_, T>| {
+                        let mut json = Vec::with_capacity(DEVNULL_BUFFER_BYTES);
+                        serde_json::to_writer(&mut json, &elem)
+                            .map_err(|e| format!("cannot write a result as JSON: {e}"))?;
+                        std::hint::black_box(json);
+                        Ok(())
+                    },
+                );
             }
             SinkType::Text => {
                 let base = self

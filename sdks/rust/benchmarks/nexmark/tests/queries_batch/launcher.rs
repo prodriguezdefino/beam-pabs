@@ -88,6 +88,42 @@ async fn count_only_and_devnull_sinks_record_monitor_metrics() -> Result {
 }
 
 #[tokio::test]
+async fn devnull_sink_discards_events_and_string_results() -> Result {
+    let options = PipelineOptions::default();
+    for (query, expected) in [
+        (
+            NexmarkQueryName::Passthrough,
+            (|cfg: &NexmarkConfig| models::query0(cfg).len()) as fn(&NexmarkConfig) -> usize,
+        ),
+        (
+            NexmarkQueryName::LocalItemSuggestion,
+            |cfg: &NexmarkConfig| models::query3(cfg).len(),
+        ),
+    ] {
+        let args = NexmarkArgs {
+            query: Some(query),
+            sink_type: Some(SinkType::Devnull),
+            num_events: Some(5_000),
+            num_event_generators: Some(2),
+            ..NexmarkArgs::default()
+        };
+        let config = args.resolve_configs().remove(0);
+        let expected = expected(&config) as i64;
+        assert!(expected > 0, "{query:?} has no results to discard");
+        let pipeline = build_nexmark_pipeline(&options, &args, &config)?;
+        let result = pipeline.run().await?;
+        let metrics = result.metrics().expect("Prism reports pipeline metrics");
+        assert_eq!(
+            monitor_counter(metrics, RESULTS, ELEMENTS),
+            expected,
+            "{query:?}"
+        );
+        assert!(monitor_counter(metrics, RESULTS, BYTES) > 0, "{query:?}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn text_sink_writes_output_files_for_global_and_windowed_queries() -> Result {
     let dir = tempfile::tempdir()?;
     let output_path = dir.path().to_string_lossy().into_owned();
