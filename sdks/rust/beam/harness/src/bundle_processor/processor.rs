@@ -537,6 +537,7 @@ impl BundleProcessor {
         if let Some(user_state) = &state.user_state {
             user_state.commit().map_err(BundleError::Handler)?;
         }
+        state.log_get_totals(instruction_id);
         parts.tracker.sync_from(&chain_ctx);
 
         emit_timers(plan, &mut chain_ctx, &mut parts.read.timers)?;
@@ -922,6 +923,8 @@ impl ReadProgress {
 
 /// A bundle's access to runner state: side inputs, user state and state-backed iterables.
 struct StateAccess {
+    /// The bundle's channel. Its clones below add to its GET totals.
+    channel: Option<crate::state::StateChannel>,
     stream_reader: Option<Arc<dyn beam::coders::StateStreamReader>>,
     side_inputs: Option<Arc<dyn beam::internals::SideInputReader>>,
     user_state: Option<crate::user_state::BundleUserState>,
@@ -960,9 +963,16 @@ impl StateAccess {
                     cache: Arc::clone(cache),
                     token,
                 });
-        let user_state = plan.user_state().zip(channel).map(|(specs, channel)| {
-            crate::user_state::BundleUserState::new(Arc::clone(specs), channel, user_state_cache)
-        });
+        let user_state = plan
+            .user_state()
+            .zip(channel.clone())
+            .map(|(specs, channel)| {
+                crate::user_state::BundleUserState::new(
+                    Arc::clone(specs),
+                    channel,
+                    user_state_cache,
+                )
+            });
         let scoped = user_state
             .as_ref()
             .map(|state| {
@@ -974,11 +984,25 @@ impl StateAccess {
             })
             .unwrap_or_default();
         Self {
+            channel,
             stream_reader,
             side_inputs,
             user_state,
             scoped,
         }
+    }
+
+    /// Logs the State API GET totals of the bundle at debug level.
+    fn log_get_totals(&self, instruction_id: &str) {
+        let Some(channel) = &self.channel else {
+            return;
+        };
+        let crate::state::StateGetTotals { pages, bytes, wait } = channel.state_get_totals();
+        debug!(
+            "State GET totals of instruction '{instruction_id}': {pages} pages, {bytes} bytes, \
+             {} ms waiting",
+            wait.as_millis()
+        );
     }
 }
 

@@ -77,5 +77,13 @@ harness = false
 name = "user_state"
 harness = false
 
+[[bench]]
+name = "window_into"
+harness = false
+
+[[bench]]
+name = "side_input"
+harness = false
+
 [lints]
 workspace = true

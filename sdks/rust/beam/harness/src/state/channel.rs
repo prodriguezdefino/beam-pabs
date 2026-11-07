@@ -18,14 +18,14 @@
  */
 
 use std::collections::HashMap;
-use std::marker::PhantomData;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::thread::{self, Thread};
 use std::time::{Duration, Instant};
 
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
+use super::get_stats::{StateGetStats, StateGetTotals};
 use crate::grpc;
 use model::fn_execution::{
     ProcessBundleDescriptor, StateAppendRequest, StateClearRequest, StateGetRequest, StateKey,
@@ -78,6 +78,7 @@ impl StateClients {
         StateChannel {
             client: self.client(endpoint),
             instruction_id: instruction_id.to_string(),
+            get_stats: Arc::default(),
         }
     }
 
@@ -140,9 +141,23 @@ impl Drop for StateRuntime {
 pub struct StateChannel {
     client: Arc<StateClient>,
     instruction_id: String,
+    /// The GET requests of this channel and of its clones.
+    get_stats: Arc<StateGetStats>,
 }
 
 impl StateChannel {
+    /// The GET requests of this channel and of its clones so far.
+    pub fn state_get_totals(&self) -> StateGetTotals {
+        self.get_stats.totals()
+    }
+
+    /// Requests on the stream of this channel that wait for a reply. All channels to the
+    /// same endpoint share the stream. For tests.
+    #[doc(hidden)]
+    pub fn pending_requests(&self) -> usize {
+        self.client.waiters.lock().map_or(0, |w| w.pending.len())
+    }
+
     /// Fetches all bytes for the given state key and concatenates the pages.
     pub fn get(&self, state_key: StateKey) -> Result<Vec<u8>, String> {
         self.stream_pages(state_key)
@@ -155,11 +170,7 @@ impl StateChannel {
 
     /// Sends an append of `data` to `state_key` and returns without waiting for the reply.
     /// The runner applies the requests of one stream in order.
-    pub fn start_append(
-        &self,
-        state_key: StateKey,
-        data: Vec<u8>,
-    ) -> Result<PendingReply<'_>, String> {
+    pub fn start_append(&self, state_key: StateKey, data: Vec<u8>) -> Result<PendingReply, String> {
         self.start(
             state_key,
             state_request::Request::Append(StateAppendRequest { data }),
@@ -167,7 +178,7 @@ impl StateChannel {
     }
 
     /// Sends a clear of `state_key` and returns without waiting for the reply.
-    pub fn start_clear(&self, state_key: StateKey) -> Result<PendingReply<'_>, String> {
+    pub fn start_clear(&self, state_key: StateKey) -> Result<PendingReply, String> {
         self.start(
             state_key,
             state_request::Request::Clear(StateClearRequest {}),
@@ -178,7 +189,7 @@ impl StateChannel {
         &self,
         state_key: StateKey,
         request: state_request::Request,
-    ) -> Result<PendingReply<'_>, String> {
+    ) -> Result<PendingReply, String> {
         tracing::debug!(
             key = ?state_key,
             request = write_summary(&request),
@@ -210,7 +221,8 @@ impl StateChannel {
         .map(|_| ())
     }
 
-    /// Opens an iterator over the pages of `state_key` that fetches each page on demand.
+    /// Opens an iterator over the pages of `state_key`. When a page has a next page, the
+    /// iterator sends the GET for it before it returns the page.
     pub fn stream_pages(
         &self,
         state_key: StateKey,
@@ -218,7 +230,7 @@ impl StateChannel {
         Ok(Box::new(StatePageIterator {
             channel: self.clone(),
             state_key,
-            continuation_token: Some(Vec::new()),
+            next: NextPage::Token(Vec::new()),
         }))
     }
 
@@ -230,14 +242,41 @@ impl StateChannel {
         continuation_token: Vec<u8>,
     ) -> Result<(Vec<u8>, Option<Vec<u8>>), String> {
         let first_page = continuation_token.is_empty();
-        let request = state_request::Request::Get(StateGetRequest { continuation_token });
-        let response = self.client.call(StateRequest {
+        let sent = self.send_get(state_key, continuation_token);
+        self.read_page(state_key, first_page, sent)
+    }
+
+    /// Sends a GET of the page of `state_key` at `continuation_token`.
+    fn send_get(
+        &self,
+        state_key: &StateKey,
+        continuation_token: Vec<u8>,
+    ) -> Result<PendingReply, String> {
+        self.client.send(StateRequest {
             instruction_id: self.instruction_id.clone(),
             state_key: Some(state_key.clone()),
-            request: Some(request),
+            request: Some(state_request::Request::Get(StateGetRequest {
+                continuation_token,
+            })),
             ..Default::default()
-        })?;
-        let page = get_page(&response.id, first_page, response.response);
+        })
+    }
+
+    /// Waits for the reply to a GET and counts the page. The wait time is only the time that
+    /// this call blocks, not the time that the request was in flight before the call.
+    fn read_page(
+        &self,
+        state_key: &StateKey,
+        first_page: bool,
+        sent: Result<PendingReply, String>,
+    ) -> Result<(Vec<u8>, Option<Vec<u8>>), String> {
+        let started = Instant::now();
+        let response = sent.and_then(PendingReply::wait);
+        let waited = started.elapsed();
+        let page =
+            response.and_then(|response| get_page(&response.id, first_page, response.response));
+        self.get_stats
+            .record(page.as_ref().map_or(0, |(data, _)| data.len()), waited);
         tracing::debug!(
             key = ?state_key,
             first_page,
@@ -276,27 +315,47 @@ impl beam::coders::StateStreamReader for StateChannel {
     }
 }
 
-/// Reads a state key one page at a time, fetching each page only when it is requested.
+/// Reads a state key one page at a time. It keeps at most one GET in flight: the GET of the
+/// page after the page that it returned last. The runner sends that page while the caller
+/// decodes the page before it.
 struct StatePageIterator {
     channel: StateChannel,
     state_key: StateKey,
-    /// Token of the next page; `None` after the last page or an error.
-    continuation_token: Option<Vec<u8>>,
+    next: NextPage,
+}
+
+/// What the next call of [`StatePageIterator::next`] does.
+enum NextPage {
+    /// Send the GET of the page at this token (empty for the first page), then wait for it.
+    Token(Vec<u8>),
+    /// Wait for the GET that was sent, or return the error of its send. A drop of the
+    /// iterator removes the waiter of the GET.
+    Sent(Result<PendingReply, String>),
+    /// The last page or an error was returned.
+    Done,
 }
 
 impl Iterator for StatePageIterator {
     type Item = Result<Vec<u8>, beam::coders::CoderError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let token = self.continuation_token.take()?;
+        let (sent, first_page) = match std::mem::replace(&mut self.next, NextPage::Done) {
+            NextPage::Token(token) => {
+                let first_page = token.is_empty();
+                (self.channel.send_get(&self.state_key, token), first_page)
+            }
+            NextPage::Sent(sent) => (sent, false),
+            NextPage::Done => return None,
+        };
+        let page = self.channel.read_page(&self.state_key, first_page, sent);
         Some(
-            self.channel
-                .fetch_page(&self.state_key, token)
-                .map(|(page, next)| {
-                    self.continuation_token = next;
-                    page
-                })
-                .map_err(beam::coders::CoderError::StateStream),
+            page.map(|(page, next)| {
+                if let Some(token) = next {
+                    self.next = NextPage::Sent(self.channel.send_get(&self.state_key, token));
+                }
+                page
+            })
+            .map_err(beam::coders::CoderError::StateStream),
         )
     }
 }
@@ -304,28 +363,40 @@ impl Iterator for StatePageIterator {
 /// Prefix of the request ids; the number after it is the key of [`Waiters::pending`].
 const REQUEST_ID_PREFIX: &str = "state_";
 
-/// The reply to one request. The reader task fills it and wakes the thread that sent the
-/// request.
-struct ReplySlot {
-    reply: Mutex<Option<Reply>>,
-    ready: AtomicBool,
-    waiter: Thread,
+/// The reply to one request. The reader task fills it and wakes the thread that waits for
+/// it. That thread can differ from the thread that sent the request.
+#[derive(Default)]
+struct ReplySlot(Mutex<SlotState>);
+
+#[derive(Default)]
+struct SlotState {
+    reply: Option<Reply>,
+    /// The thread to wake when the reply arrives. The waiter sets it before it parks.
+    waiter: Option<Thread>,
 }
 
 impl ReplySlot {
     fn fill(&self, reply: Reply) {
-        if let Ok(mut slot) = self.reply.lock() {
-            *slot = Some(reply);
+        let waiter = {
+            let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            state.reply = Some(reply);
+            state.waiter.take()
+        };
+        if let Some(waiter) = waiter {
+            waiter.unpark();
         }
-        self.ready.store(true, Ordering::Release);
-        self.waiter.unpark();
     }
 
-    fn take(&self) -> Option<Reply> {
-        self.ready
-            .load(Ordering::Acquire)
-            .then(|| self.reply.lock().ok()?.take())
-            .flatten()
+    /// Takes the reply if it arrived. If not, sets the current thread as the waiter. The
+    /// lock covers the check and the set, so a reply that arrives before the park unparks
+    /// this thread and the park returns at once.
+    fn take_or_wait(&self) -> Option<Reply> {
+        let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let reply = state.reply.take();
+        if reply.is_none() && state.waiter.is_none() {
+            state.waiter = Some(thread::current());
+        }
+        reply
     }
 }
 
@@ -406,7 +477,8 @@ impl StateClient {
                             .and_then(|number| route.lock().ok()?.pending.remove(&number));
                         match slot {
                             Some(slot) => slot.fill(Ok(response)),
-                            None => tracing::warn!(
+                            // A page iterator that stops early drops its prefetched GET.
+                            None => tracing::debug!(
                                 "Dropping state response '{}' that no request is waiting for",
                                 response.id
                             ),
@@ -441,18 +513,14 @@ impl StateClient {
     }
 
     /// Sends `request` with a new id and returns the response.
-    fn call(&self, request: StateRequest) -> Reply {
+    fn call(self: &Arc<Self>, request: StateRequest) -> Reply {
         self.send(request)?.wait()
     }
 
     /// Sends `request` with a new id. The reply arrives in the returned [`PendingReply`].
-    fn send(&self, request: StateRequest) -> Result<PendingReply<'_>, String> {
+    fn send(self: &Arc<Self>, request: StateRequest) -> Result<PendingReply, String> {
         let number = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let slot = Arc::new(ReplySlot {
-            reply: Mutex::new(None),
-            ready: AtomicBool::new(false),
-            waiter: thread::current(),
-        });
+        let slot = Arc::new(ReplySlot::default());
         {
             let mut waiters = self.waiters.lock().map_err(|e| e.to_string())?;
             if let Some(reason) = &waiters.failed {
@@ -467,33 +535,32 @@ impl StateClient {
             })
             .map_err(|_| "State gRPC request stream closed".to_string())?;
         Ok(PendingReply {
-            client: self,
+            client: Arc::clone(self),
             number,
             slot,
-            same_thread: PhantomData,
+            filled: false,
         })
     }
 }
 
-/// A sent state request whose reply has not been read. Only the thread that sent the request
-/// is woken by the reply, so the type is not `Send`.
+/// A sent state request whose reply has not been read. Any thread can wait for the reply.
+/// A drop before the reply arrives removes the request from the waiters.
 #[must_use = "a state request fails silently unless its reply is read"]
-pub struct PendingReply<'a> {
-    client: &'a StateClient,
+pub struct PendingReply {
+    client: Arc<StateClient>,
     number: u64,
     slot: Arc<ReplySlot>,
-    same_thread: PhantomData<*const ()>,
+    /// The reader task filled the slot, so it also removed the request from the waiters.
+    filled: bool,
 }
 
-impl PendingReply<'_> {
+impl PendingReply {
     /// Waits for the reply. A reply with an error is an `Err`.
-    fn wait(self) -> Reply {
-        let reply = wait_for(&self.slot).inspect_err(|_| {
-            if let Ok(mut w) = self.client.waiters.lock() {
-                w.pending.remove(&self.number);
-            }
-        })?;
-        match reply {
+    fn wait(mut self) -> Reply {
+        let reply = wait_for(&self.slot)
+            .ok_or_else(|| format!("No state response within {STATE_RESPONSE_TIMEOUT:?}"))?;
+        self.filled = true;
+        match reply? {
             res if !res.error.is_empty() => Err(format!("Runner state error: {}", res.error)),
             res => Ok(res),
         }
@@ -505,20 +572,29 @@ impl PendingReply<'_> {
     }
 }
 
-/// Waits up to [`STATE_RESPONSE_TIMEOUT`] for the reply in `slot`. The thread does not spin:
-/// a spin costs a sequential caller more CPU than the wakeup that it saves. The wait blocks
-/// the thread; the streams run on their own runtime, so they continue.
-fn wait_for(slot: &ReplySlot) -> Reply {
+impl Drop for PendingReply {
+    fn drop(&mut self) {
+        if !self.filled
+            && let Ok(mut w) = self.client.waiters.lock()
+        {
+            w.pending.remove(&self.number);
+        }
+    }
+}
+
+/// Waits up to [`STATE_RESPONSE_TIMEOUT`] for the reply in `slot`, or `None` at the timeout.
+/// The thread does not spin: a spin costs a sequential caller more CPU than the wakeup that
+/// it saves. The wait blocks the thread; the streams run on their own runtime, so they
+/// continue.
+fn wait_for(slot: &ReplySlot) -> Option<Reply> {
     let deadline = Instant::now() + STATE_RESPONSE_TIMEOUT;
     loop {
-        if let Some(reply) = slot.take() {
-            return reply;
+        if let Some(reply) = slot.take_or_wait() {
+            return Some(reply);
         }
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return Err(format!(
-                "No state response within {STATE_RESPONSE_TIMEOUT:?}"
-            ));
+            return None;
         }
         thread::park_timeout(left);
     }

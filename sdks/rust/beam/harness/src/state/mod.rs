@@ -19,15 +19,20 @@
 
 //! Beam Fn State API client and side input materialization for portable runners.
 //!
-//! [`channel`] owns the Fn API state request/response transport, [`side_input_cache`] owns
-//! side input reads, and [`cache`] keeps runner state across bundles per cache token.
+//! [`channel`] owns the Fn API state request/response transport, [`get_stats`] counts its GET
+//! requests, [`side_input_cache`] owns side input reads, and [`cache`] keeps runner state
+//! across bundles per cache token.
 
 pub(crate) mod cache;
 pub(crate) mod channel;
+pub(crate) mod get_stats;
 pub(crate) mod side_input_cache;
 pub(crate) mod tables;
 
 pub use cache::{CacheStats, CacheTokens, DEFAULT_STATE_CACHE_BYTES, StateCache};
 pub use channel::{StateChannel, StateClients};
+pub use get_stats::{
+    HARNESS_METRICS_NAMESPACE, STATE_GET_BYTES, STATE_GET_PAGES, STATE_GET_WAIT_US, StateGetTotals,
+};
 pub(crate) use side_input_cache::split_concatenated_elements;
 pub use side_input_cache::{FnApiSideInputReader, SideInputSpecs};

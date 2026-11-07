@@ -368,8 +368,9 @@ impl ProcessorCache {
     }
 
     fn recycle(&self, descriptor_id: String, processor: PreparedProcessor) {
-        let now = Instant::now();
         let expired = self.with_idle(|idle| {
+            // Read the clock under the lock, so each pool stays in the order of return.
+            let now = Instant::now();
             idle.entry(descriptor_id)
                 .or_default()
                 .push((now, processor));
@@ -389,21 +390,20 @@ impl ProcessorCache {
     }
 }
 
-/// Removes the processors that have been idle longer than `timeout`.
+/// Removes the processors that have been idle longer than `timeout`. A pool holds its
+/// processors in the order of return, so the expired ones are at its front. Each bundle
+/// calls this function, so it does not touch the processors that stay.
 fn take_expired(
     idle: &mut HashMap<String, Vec<Idle>>,
     now: Instant,
     timeout: Duration,
 ) -> Vec<PreparedProcessor> {
-    let is_expired = |returned: &Instant| now.duration_since(*returned) > timeout;
     let expired = idle
         .values_mut()
         .flat_map(|pool| {
-            let (stale, fresh) = std::mem::take(pool)
-                .into_iter()
-                .partition::<Vec<_>, _>(|(returned, _)| is_expired(returned));
-            *pool = fresh;
-            stale
+            let stale =
+                pool.partition_point(|(returned, _)| now.duration_since(*returned) > timeout);
+            pool.drain(..stale)
         })
         .map(|(_, processor)| processor)
         .collect();

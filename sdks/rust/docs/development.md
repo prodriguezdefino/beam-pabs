@@ -140,7 +140,8 @@ gsutil cp gs://apache-beam-samples/wikipedia_edits/wiki_data-000000000000.json b
   `ProcessBundleBenchmark` (`sdks/java/harness/jmh`); its times are per operation, so
   1 / time compares with JMH's ops/s. `data_plane` measures inbound routing, outbound
   buffering and the wait one slow bundle causes another on the same stream. `user_state`
-  measures bag state against an in-process state server. `chain_throughput` is not a
+  measures bag state against an in-process state server, and `side_input` the reads of a
+  singleton side input. `chain_throughput` is not a
   criterion bench: it runs a fused WordCount chain with and without a user counter per word,
   and prints the ns/word of each. `-Pfilter` selects benchmark ids,
   `-PsmokeTest` runs each once. `-PcargoProfile=worker` builds with the fat LTO of the

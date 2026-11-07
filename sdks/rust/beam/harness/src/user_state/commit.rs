@@ -142,12 +142,12 @@ impl BundleUserState {
 }
 
 /// Sends the mutations of one bag cell: a clear if the bundle cleared it, then the appends.
-fn bag_mutations<'c>(
-    channel: &'c StateChannel,
+fn bag_mutations(
+    channel: &StateChannel,
     cell: &StateCellKey,
     cleared: bool,
     batches: Vec<Vec<u8>>,
-) -> Result<Vec<PendingReply<'c>>, String> {
+) -> Result<Vec<PendingReply>, String> {
     let clear = cleared.then(|| channel.start_clear(cell.bag_state_key()));
     let appends = batches
         .into_iter()
@@ -157,11 +157,11 @@ fn bag_mutations<'c>(
 
 /// Sends the mutations of one map cell: a whole-cell clear or the clears of removed keys,
 /// then the writes. A replaced key gets a clear and an append; an added-to key one append.
-fn map_mutations<'c>(
-    channel: &'c StateChannel,
+fn map_mutations(
+    channel: &StateChannel,
     cell: &StateCellKey,
     commit: MapCommit,
-) -> Result<Vec<PendingReply<'c>>, String> {
+) -> Result<Vec<PendingReply>, String> {
     let MapCommit {
         cleared,
         cleared_keys,

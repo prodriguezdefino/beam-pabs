@@ -21,7 +21,10 @@
 mod common;
 mod state_mock;
 
+mod side_input_memo_test;
 mod state_cache_test;
 mod state_channel_test;
+mod state_get_stats_test;
+mod state_prefetch_test;
 mod state_protocol_test;
 mod user_state_test;

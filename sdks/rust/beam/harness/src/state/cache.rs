@@ -31,6 +31,7 @@ use bytes::Bytes;
 use model::fn_execution::ProcessBundleRequest;
 use model::fn_execution::process_bundle_request::cache_token;
 
+use super::side_input_cache::CellKind;
 use super::tables::{FastHashMap, FastHashSet, StateCellKey, StateCellKeyParts};
 
 /// The default maximum size of the [`StateCache`], in bytes.
@@ -188,8 +189,10 @@ pub(crate) enum CachedPart {
     Bag,
     /// The keys and the known entries of a map or set cell.
     Map,
-    /// One page of a side input. The bytes are the continuation token of the page.
-    SideInputPage(Bytes),
+    /// One page of a side input read of one kind. The bytes are the continuation token of
+    /// the page. An iterable cell and a multimap cell with an empty key have the same cell
+    /// key, so the kind keeps their pages apart.
+    SideInputPage(CellKind, Bytes),
 }
 
 /// The key of a [`StateCache`] entry: the runner token, the cell and the part of the cell.

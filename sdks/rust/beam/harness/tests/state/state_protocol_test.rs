@@ -331,8 +331,8 @@ fn a_runner_error_on_append_fails_the_commit() {
 }
 
 #[test]
-fn stream_pages_yields_each_page_lazily() {
-    with_timeout("stream_pages_yields_each_page_lazily", || {
+fn stream_pages_yields_each_page_in_order() {
+    with_timeout("stream_pages_yields_each_page_in_order", || {
         let server = StrictStateServer::start();
         let cell = FullKey::bag("t_a", "state_accum", b"", b"k");
         server.backend.preload(cell.clone(), &[1, 2, 3, 4, 5]);
@@ -343,16 +343,18 @@ fn stream_pages_yields_each_page_lazily() {
             .stream_pages(bag_proto("t_a", "state_accum", b"", b"k"))
             .unwrap();
         assert_eq!(pages.next().unwrap().unwrap(), vec![1, 2]);
-        assert_eq!(
-            server.backend.calls(),
-            [Call::get_page(cell, b"")],
-            "only the first page is fetched until the next one is asked for"
-        );
         assert_eq!(pages.next().unwrap().unwrap(), vec![3, 4]);
         assert_eq!(pages.next().unwrap().unwrap(), vec![5]);
         assert!(pages.next().is_none());
         assert!(pages.next().is_none());
-        assert_eq!(server.backend.calls().len(), 3);
+        assert_eq!(
+            server.backend.calls(),
+            [
+                Call::get_page(cell.clone(), b""),
+                Call::get_page(cell.clone(), b"2"),
+                Call::get_page(cell, b"4"),
+            ]
+        );
     });
 }
 
@@ -690,6 +692,51 @@ fn the_process_stage_of_a_splittable_dofn_reads_its_side_inputs() {
                 [[7]]
             );
             assert_eq!(server.backend.calls(), [Call::get(cell)]);
+        },
+    );
+}
+
+#[test]
+fn a_runner_error_on_a_side_input_page_ends_the_read_and_is_not_cached() {
+    with_timeout(
+        "a_runner_error_on_a_side_input_page_ends_the_read_and_is_not_cached",
+        || {
+            let server = StrictStateServer::start();
+            let cell = FullKey::iterable_side_input("t_side", "si_iter", b"w");
+            server.backend.preload(cell.clone(), &[1, 2]);
+            server.backend.set_page_size(1);
+            server.backend.fail_next(Op::Get, None, "boom");
+            let descriptor = side_input_descriptor(Some(server.endpoint()));
+            let channel =
+                StateClients::new("worker".to_string()).channel("inst_si_err", &descriptor);
+            let reader = side_input_reader(&descriptor, channel).unwrap();
+            let read = || -> Vec<Result<Vec<u8>, String>> {
+                reader
+                    .get_iterable("si_iter", b"w")
+                    .unwrap()
+                    .map(|element| element.map(|e| e.to_vec()).map_err(|e| e.to_string()))
+                    .collect()
+            };
+            let failed =
+                |reason: &str| Err(format!("Failed to read side input 'si_iter': {reason}"));
+
+            assert_eq!(read(), [failed("Runner state error: boom")], "first page");
+            server.backend.fail_next(Op::Get, Some(b"1"), "page gone");
+            assert_eq!(
+                read(),
+                [Ok(vec![1]), failed("Runner state error: page gone")],
+                "second page"
+            );
+            assert_eq!(read(), [Ok(vec![1]), Ok(vec![2])], "no error is cached");
+            assert_eq!(
+                server.backend.calls(),
+                [
+                    Call::get_page(cell.clone(), b""),
+                    Call::get_page(cell.clone(), b""),
+                    Call::get_page(cell.clone(), b"1"),
+                    Call::get_page(cell, b"1"),
+                ]
+            );
         },
     );
 }

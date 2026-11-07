@@ -35,7 +35,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -369,6 +369,8 @@ pub struct StrictStateBackend {
     instruction_ids: Mutex<Vec<String>>,
     /// The `worker_id` metadata of every state stream opened, in order.
     stream_worker_ids: Mutex<Vec<Option<String>>>,
+    /// Microseconds that the server waits before it sends each GET reply; 0 sends at once.
+    get_delay_us: AtomicU64,
 }
 
 impl StrictStateBackend {
@@ -385,6 +387,20 @@ impl StrictStateBackend {
     /// Splits GET responses into pages of at most `bytes` bytes.
     pub fn set_page_size(&self, bytes: usize) {
         self.page_size.store(bytes, Ordering::SeqCst);
+    }
+
+    /// Delays each GET reply by `delay`, as the latency of a runner. The server reads the
+    /// page when the request arrives and sends it after `delay`. Other requests on the
+    /// stream do not wait for the delay, and the replies can leave out of request order.
+    pub fn set_get_delay(&self, delay: Duration) {
+        let micros = u64::try_from(delay.as_micros()).unwrap_or(u64::MAX);
+        self.get_delay_us.store(micros, Ordering::SeqCst);
+    }
+
+    fn get_delay(&self, req: &StateRequest) -> Option<Duration> {
+        let micros = self.get_delay_us.load(Ordering::SeqCst);
+        let is_get = matches!(req.request, Some(state_request::Request::Get(_)));
+        (is_get && micros > 0).then(|| Duration::from_micros(micros))
     }
 
     /// Fails the next `op` request (only the `token` page, if given) with `message` as error.
@@ -748,6 +764,15 @@ impl BeamFnState for StrictStateService {
                         let _ = release.await;
                     }
                     None => {}
+                }
+                if let Some(delay) = backend.get_delay(&req) {
+                    let reply = backend.handle(req);
+                    let out_tx = out_tx.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(delay).await;
+                        let _ = out_tx.send(Ok(reply)).await;
+                    });
+                    continue;
                 }
                 let _ = out_tx.send(Ok(backend.handle(req))).await;
             }
