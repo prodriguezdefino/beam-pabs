@@ -52,8 +52,8 @@ pub struct NexmarkArgs {
     #[arg(long)]
     pub output_path: Option<String>,
 
-    /// Worker count multiplier for Query 10 log shard calculation.
-    #[arg(long, default_value_t = 1)]
+    /// Worker count multiplier for Query 10 log shard calculation (`5` shards per worker).
+    #[arg(long, default_value_t = 5)]
     pub query10_max_workers: i32,
 
     /// Override for synthetic event count (`0` means unbounded in streaming mode).
@@ -275,7 +275,7 @@ impl Default for NexmarkArgs {
             source_type: None,
             sink_type: None,
             output_path: None,
-            query10_max_workers: 1,
+            query10_max_workers: 5,
             num_events: None,
             num_event_generators: None,
             rate_shape: None,

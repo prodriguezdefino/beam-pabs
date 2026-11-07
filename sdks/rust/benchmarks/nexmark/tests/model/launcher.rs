@@ -157,10 +157,12 @@ fn correctness_and_logging_flags_default_to_false() {
     assert!(!args.assert_correctness);
     assert!(!args.log_events);
     assert!(args.log_results);
+    assert_eq!(args.query10_max_workers, 5);
 
     let defaults = NexmarkArgs::default();
     assert!(!defaults.assert_correctness && !defaults.log_events && !defaults.log_results);
     assert!(!defaults.cancel_streaming_job_after_finish);
+    assert_eq!(defaults.query10_max_workers, 5);
     assert_eq!(defaults.resolve_configs()[0].stream_timeout, 240);
     assert_eq!(
         defaults.resolve_configs()[0].pubsub_mode,
