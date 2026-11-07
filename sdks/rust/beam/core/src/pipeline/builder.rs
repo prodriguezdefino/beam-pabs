@@ -593,6 +593,15 @@ impl Pipeline {
         crate::runners::run(self, &options).await
     }
 
+    /// Validates and submits the pipeline to the runner that its options select, and returns
+    /// a handle to the job without waiting for it to end.
+    pub async fn submit(
+        &self,
+    ) -> Result<Box<dyn crate::runners::JobHandle>, crate::runners::RunnerError> {
+        let options = self.options();
+        crate::runners::submit(self, &options).await
+    }
+
     /// Executes the pipeline with an explicitly constructed runner.
     pub async fn run_with_runner<R: PipelineRunner + ?Sized>(
         &self,

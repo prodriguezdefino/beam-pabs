@@ -122,6 +122,9 @@ Your crate needs `clap`, `serde` and `tokio` as dependencies for this pattern.
 
 - `--runner` selects the runner (`prism` by default, `dataflow`, …).
 - `p.run()` validates the graph, submits it and waits as the options specify.
+- `p.submit()` returns a `JobHandle` when the runner accepts the job. Use it to read the
+  state and live metrics, to cancel the job, or to wait with a timeout. See
+  [runners.md](runners.md#controlling-a-running-job).
 - `p.run_with_runner(&runner)` runs on a runner instance. Use it for tests and custom runners.
 - `PipelineOptions::parse()` parses only the standard flags;
   `PipelineOptions::with_runner("prism")` builds options in code.
@@ -1626,8 +1629,10 @@ The prelude contains the items that a usual pipeline uses. Each other item has o
 | `beam::transforms::display_data` | `DisplayDataBuilder`, `HasDisplayData` |
 | `beam::pipeline` | `ResourceHints`, `URN_RESOURCE_*` |
 | `beam::metrics` | Metrics query API (`MetricResults`, `MetricFilter`, `MetricResult`), `Lineage`, `THROTTLE_TIME_*` |
-| `beam::coders` | Coders, `WindowedHeader`, `PaneInfo` |
-| `beam::options` | `parse`, `parse_from`, `try_parse_from`, option groups |
+| `beam::coders` | Coders, `WindowedHeader`, `PaneInfo`, `ShardedKey` |
+| `beam::runners` | `JobHandle`, runner registry |
+| `beam::options` | `parse`, `parse_from`, `try_parse_from`, option groups, `Secret` |
+| `beam::logging` | `init_logging` (feature `harness`) |
 | `beam::io::*` | `beam::io::file::textio`, `beam::io::file::fileio`, `beam::io::file::WriteFiles`, `beam::io::parquet::parquetio`, `beam::io::avro::avroio`, `beam::io::tfrecord::tfrecordio`, `beam::io::kafka`, `beam::io::managed` |
 | `beam::ml` | `RunInference`, `ModelHandler`, ONNX / Candle / remote handlers ([guide](accelerated-workloads.md)) |
 | `beam::external` | `ExternalTransform`, `ExternalSource`, `ExternalSink`, `ExternalOutputs`, expansion service targets |

@@ -69,6 +69,8 @@ if let Some(metrics) = result.metrics() {
 }
 ```
 
+- **Live Query API** (**Implemented**): `pipeline.submit()` returns a `JobHandle`. While the job runs, `JobHandle::metrics()` returns the `MetricResults` that the runner has. Prism and Dataflow give attempted and committed values.
+
 **I/O and service metrics.**
 
 - `beam:metric:io:api_request_count:v1` and `beam:metric:io:api_request_latencies:v1` (*Planned*): standard connector metrics for Cloud Storage, BigQuery and HTTP services. The SDK defines the URNs, but no connector emits them.

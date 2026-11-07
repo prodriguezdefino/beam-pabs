@@ -55,6 +55,27 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! [`submit`] starts the job and returns a [`JobHandle`]. Use it to read the state and live
+//! metrics, to cancel or drain the job, and to wait for it with a timeout:
+//!
+//! ```no_run
+//! # use std::time::Duration;
+//! # use beam::pipeline::Pipeline;
+//! # use beam::options::PipelineOptions;
+//! # async fn doc_example(pipeline: Pipeline, options: PipelineOptions) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+//! let job = beam::runners::submit(&pipeline, &options).await?;
+//! let result = job.wait_until_finish(Some(Duration::from_secs(600))).await?;
+//! if !result.state.is_terminal() {
+//!     job.cancel().await?;
+//! }
+//! # Ok(())
+//! # }
+//! ```
+
+mod job;
+
+pub use job::JobHandle;
 
 use crate::options::PipelineOptions;
 use crate::pipeline::{Pipeline, PipelineError};
@@ -92,6 +113,15 @@ pub enum RunnerError {
     /// The source is the runner's own error type, which callers can downcast to.
     #[error("pipeline execution failed: {0}")]
     Execution(#[source] Box<dyn std::error::Error + Send + Sync>),
+
+    /// The runner cannot carry out this operation on a job.
+    #[error("the {runner} runner does not support {operation}")]
+    Unsupported {
+        /// Name of the runner, for example `prism`.
+        runner: &'static str,
+        /// The operation that the caller asked for, for example `drain`.
+        operation: &'static str,
+    },
 }
 
 impl RunnerError {
@@ -278,6 +308,14 @@ impl PipelineResult {
 #[async_trait::async_trait]
 pub trait PipelineRunner: Send + Sync {
     async fn run(&self, pipeline: &Pipeline) -> Result<PipelineResult, RunnerError>;
+
+    /// Starts `pipeline` and returns a handle to the job without waiting for it to end.
+    ///
+    /// The default runs the pipeline to the end and returns a handle to the finished job.
+    /// Override it when the runner can detach from a running job.
+    async fn submit(&self, pipeline: &Pipeline) -> Result<Box<dyn JobHandle>, RunnerError> {
+        self.run(pipeline).await.map(Into::into)
+    }
 }
 
 /// A runner selectable by name through [`PipelineOptions::runner`]. Runner crates submit one
@@ -291,8 +329,8 @@ pub struct RunnerRegistration {
 inventory::collect!(RunnerRegistration);
 
 /// Name of the Fn API worker harness registration that linking `apache-beam-harness` submits.
-/// [`run`] selects it before `--runner` when the process starts with worker flags. In a worker
-/// container, `--runner` still names the runner that launched the job.
+/// [`run`] and [`submit`] select it before `--runner` when the process starts with worker
+/// flags. In a worker container, `--runner` still names the runner that launched the job.
 pub const WORKER_RUNNER_NAME: &str = "worker";
 
 /// Names of every runner linked into the current binary, sorted.
@@ -334,17 +372,35 @@ pub async fn run(
     pipeline: &Pipeline,
     options: &PipelineOptions,
 ) -> Result<PipelineResult, RunnerError> {
-    let runner = if options.harness.is_worker() {
-        runner_named(WORKER_RUNNER_NAME, options).map_err(|_| {
+    select_runner(pipeline, options)?.run(pipeline).await
+}
+
+/// Validates and submits `pipeline` to the runner named by `options`, and returns a handle to
+/// the job without waiting for it to end.
+///
+/// Selects the runner in the same way as [`run`]. In a worker process, the worker harness
+/// serves the pipeline until the runner stops it, then returns a handle to the finished job.
+pub async fn submit(
+    pipeline: &Pipeline,
+    options: &PipelineOptions,
+) -> Result<Box<dyn JobHandle>, RunnerError> {
+    select_runner(pipeline, options)?.submit(pipeline).await
+}
+
+/// Picks the worker harness in a worker process. Otherwise validates `pipeline` and builds the
+/// runner that `--runner` names.
+fn select_runner(
+    pipeline: &Pipeline,
+    options: &PipelineOptions,
+) -> Result<Box<dyn PipelineRunner>, RunnerError> {
+    if options.harness.is_worker() {
+        return runner_named(WORKER_RUNNER_NAME, options).map_err(|_| {
             RunnerError::WorkerHarnessMissing {
                 linked: registered_runners(),
             }
-        })?
-    } else {
-        pipeline.validate()?;
-        pipeline.log_rebuild_path();
-        runner_for(options)?
-    };
-
-    runner.run(pipeline).await
+        });
+    }
+    pipeline.validate()?;
+    pipeline.log_rebuild_path();
+    runner_for(options)
 }

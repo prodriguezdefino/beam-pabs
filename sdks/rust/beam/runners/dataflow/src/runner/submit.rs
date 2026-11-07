@@ -32,7 +32,8 @@ use super::DataflowRunnerError;
 use super::config::ResolvedJobConfig;
 use crate::client::{DataflowApiClient, JobResponse};
 use crate::staging::{
-    stage_and_resolve_environment_artifacts, stage_pipeline_model, stage_worker_binary,
+    locate_worker_binary, stage_and_resolve_environment_artifacts, stage_pipeline_model,
+    stage_worker_binary,
 };
 use crate::translate::{
     DataflowJob, PackageItem, StagedArtifacts, apply_environment_overrides, translate_job,
@@ -112,20 +113,31 @@ pub(super) fn stage_artifacts(
 
 pub(super) fn handle_dry_run(
     job_file: &str,
-    proto_pipeline: &beam_model::pipeline::Pipeline,
+    pipeline: &Pipeline,
     config: &ResolvedJobConfig,
 ) -> Result<PipelineResult, DataflowRunnerError> {
-    let mut adapted_pipeline = proto_pipeline.clone();
+    // A dry run names the staged path of the worker binary and uploads nothing.
+    let worker = config
+        .container
+        .worker_binary
+        .as_deref()
+        .map(|path| locate_worker_binary(&config.staging_location, Path::new(path)))
+        .transpose()?;
+    if let Some((url, hash)) = &worker {
+        pipeline.set_worker_binary_artifact(url, hash);
+    }
+    let mut adapted_pipeline = pipeline.to_proto();
     apply_environment_overrides(
         &mut adapted_pipeline,
         &config.options.worker.sdk_harness_container_image_overrides,
     );
     let dry_model_url = format!("{}/{}/model", config.staging_location, config.job_name);
+    let (worker_url, worker_hash) = worker.unzip();
     let artifacts = StagedArtifacts {
         model_url: &dry_model_url,
         model_hash: "dry-run-hash",
-        worker_url: None,
-        worker_hash: None,
+        worker_url: worker_url.as_deref(),
+        worker_hash: worker_hash.as_deref(),
         packages: &[],
     };
     let job = translate_job(

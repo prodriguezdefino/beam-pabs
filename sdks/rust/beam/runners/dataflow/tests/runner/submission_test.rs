@@ -277,6 +277,40 @@ async fn test_dataflow_runner_template_location_writes_job_without_submitting() 
     assert!(fs.contains_file(&staged_worker()));
 }
 
+/// A dry run names the worker binary where staging would put it, and uploads nothing.
+#[tokio::test]
+async fn a_dry_run_names_the_worker_binary_without_staging_it() {
+    let bin = TempBinary::new("dry_run_worker");
+    let job_file = std::env::temp_dir().join(format!("dry_run_worker_{}.json", std::process::id()));
+    let (image, worker_binary, job_file_flag) = (
+        format!("--sdk_container_image={TEST_IMAGE}"),
+        bin.flag(),
+        format!("--dataflow_job_file={}", job_file.display()),
+    );
+    let (fs, client) = mocks();
+    let runner = DataflowRunner::with_options_and_clients(
+        container_options("dry-worker", &[&image, &worker_binary, &job_file_flag]),
+        Arc::clone(&fs) as _,
+        Arc::clone(&client) as _,
+    );
+
+    let result = runner.run(&uppercase_pipeline()).await.unwrap();
+
+    assert_eq!(result.job_id, "dry-run");
+    let job: DataflowJob = serde_json::from_slice(&std::fs::read(&job_file).unwrap()).unwrap();
+    let _ = std::fs::remove_file(&job_file);
+    let worker = staged_worker();
+    let packages = &job.environment.worker_pools[0].packages;
+    assert!(
+        packages
+            .iter()
+            .any(|pkg| pkg.name == STAGED_WORKER_NAME && pkg.location == worker),
+        "{packages:?}"
+    );
+    assert!(fs.all_paths().is_empty(), "nothing may be staged");
+    assert!(client.submitted_jobs().is_empty());
+}
+
 #[tokio::test]
 async fn test_dataflow_runner_rejects_job_file_with_template_location() {
     let job_file = std::env::temp_dir().join(format!("both_modes_{}.json", std::process::id()));

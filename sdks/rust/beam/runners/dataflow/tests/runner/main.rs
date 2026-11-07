@@ -17,6 +17,7 @@
  */
 
 mod common;
+mod job_handle_test;
 mod runner_monitoring_test;
 mod runner_test;
 mod submission_test;

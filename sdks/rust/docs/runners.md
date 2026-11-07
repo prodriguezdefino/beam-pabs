@@ -123,6 +123,32 @@ commands cross-compile binaries for container execution (Docker or Dataflow):
 contains the binary. You can scope this setting to one example in
 `sdks/rust/.local/sdk.properties` (`example.<name>.workerBinary`), as with other settings.
 
+## Controlling a running job
+
+`p.run()` waits until the job ends. On Dataflow, `--async_job` makes it return after the
+submission, with the first job state. To control a job while it runs, call `p.submit()`
+(or `beam::runners::submit`). It returns a `JobHandle` when the runner accepts the job:
+
+```rust
+let job = p.submit().await?;
+let live = job.metrics().await?; // the values change while the job runs
+let result = job.wait_until_finish(Some(Duration::from_secs(600))).await?;
+if !result.state.is_terminal() {
+    job.cancel().await?;
+}
+```
+
+| Operation | Prism | Dataflow |
+|---|---|---|
+| `state`, `metrics`, `cancel` | job service | `jobs.get`, `jobs.getMetrics`, `jobs.update` |
+| `drain` | `RunnerError::Unsupported` | streaming jobs only |
+| `wait_until_finish(timeout)` | message stream | polls the job state |
+
+- A failed job gives an error. A cancelled or drained job gives its state.
+- At the timeout, `wait_until_finish` gives the current state and leaves the job running.
+- On Prism, the Prism process and the LOOPBACK workers stay alive until the handle drops.
+- Other runners run the job to the end in `submit` and return a handle to the finished job.
+
 ## Other portable runners
 
 Flink and Spark use the same portable Fn API as Prism, so a Rust pipeline should

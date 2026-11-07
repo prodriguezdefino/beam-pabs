@@ -174,10 +174,10 @@ mod link {
 /// All that an ordinary pipeline needs, in both styles.
 ///
 /// Holds the core prelude (`apply` style: `pcoll.apply(.., Map::new())`), the fluent
-/// extension traits (method style: `pcoll.map(..)`), [`textio`](beam_io_file::textio), and
-/// [`run`](beam_core::runners::run). Import other connectors and RunInference from their
-/// own modules: `beam::io::parquet::parquetio`, `beam::io::avro::avroio`, `beam::ml`,
-/// and so on.
+/// extension traits (method style: `pcoll.map(..)`), [`textio`](beam_io_file::textio),
+/// [`run`](beam_core::runners::run) and [`submit`](beam_core::runners::submit). Import other connectors
+/// and RunInference from their own modules: `beam::io::parquet::parquetio`,
+/// `beam::io::avro::avroio`, `beam::ml`, and so on.
 pub mod prelude {
     pub use beam_core::prelude::*;
 
@@ -187,5 +187,5 @@ pub mod prelude {
     #[cfg(feature = "io-file")]
     pub use beam_io_file::textio;
 
-    pub use beam_core::runners::run;
+    pub use beam_core::runners::{run, submit};
 }

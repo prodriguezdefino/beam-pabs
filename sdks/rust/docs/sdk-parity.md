@@ -248,6 +248,7 @@ Decimals:
 | Prism runner | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Dataflow runner | ✅ | ✅ | ✅ | ❌ | ✅ |
 | Flink / Spark runners | ✅ | ✅ | ✅ | 🟡 | 🟡 untested |
+| Live job handle (state, metrics, cancel, wait with timeout) | ✅ | ✅ | 🟡 | 🟡 | ✅ Prism, Dataflow |
 | **Consume** cross-language transforms | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **Provide** transforms to other SDKs | ✅ | ✅ | ❌ | ❌ | ✅ |
 | Automated Java expansion service download | ❌ | ✅ | ✅ | ✅ | ✅ |
