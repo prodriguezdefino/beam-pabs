@@ -19,6 +19,7 @@
 
 //! The loop that pushes the inbound data and timers of a bundle through the chain.
 
+use std::borrow::Cow;
 use std::time::{Duration, Instant};
 
 use tracing::{debug, warn};
@@ -27,7 +28,7 @@ use super::{BundleProcessor, emit_timers};
 use crate::bundle_processor::BundleError;
 use crate::bundle_processor::cache::BundlePlan;
 use crate::bundle_processor::chain::{ChainCtx, Instances};
-use crate::bundle_processor::decoding::PortFraming;
+use crate::bundle_processor::decoding::{PortFraming, StreamCarry};
 use crate::bundle_processor::timers::BundleTimers;
 use crate::bundle_processor::tracker::ActiveBundleTracker;
 use crate::data::DataError;
@@ -65,7 +66,7 @@ async fn next_timers(
 /// How far a bundle has read its inbound data, and the timers it changed.
 pub(in crate::bundle_processor) struct ReadProgress {
     /// The trailing partial element of the last chunk. The next chunk completes it.
-    pub(super) carry: Vec<u8>,
+    pub(super) carry: StreamCarry,
     /// The header of the last element or fired timer.
     pub(in crate::bundle_processor) last_header: WindowedHeader,
     /// The timers that the bundle set or cleared.
@@ -85,7 +86,7 @@ impl ReadProgress {
     pub(super) fn new() -> Self {
         let now = Instant::now();
         Self {
-            carry: Vec::new(),
+            carry: StreamCarry::default(),
             last_header: WindowedHeader::default(),
             timers: BundleTimers::default(),
             elements: 0,
@@ -151,7 +152,7 @@ impl BundleProcessor {
                     Some(None) => {
                         // Bytes left at the end of the stream are a partial element. The
                         // framing and the runner disagree, so do not drop them silently.
-                        let carry = read.carry.as_slice();
+                        let carry = read.carry.bytes();
                         if !carry.is_empty() {
                             return Err(BundleError::Coder(format!(
                                 "Inbound data stream closed for instruction '{}' (descriptor: '{}', \
@@ -207,7 +208,7 @@ impl BundleProcessor {
                             instruction_id,
                             ctx.descriptor.id,
                             read.started.elapsed().as_secs(),
-                            read.carry.len()
+                            read.carry.bytes().len()
                         );
                     } else if read.last_input.elapsed() >= INBOUND_IDLE_WARNING * (read.idle_warnings + 1) {
                         read.idle_warnings += 1;
@@ -249,22 +250,20 @@ impl BundleProcessor {
         read: &mut ReadProgress,
         bytes: Vec<u8>,
     ) -> Result<(), BundleError> {
-        let data = if read.carry.is_empty() {
-            bytes
-        } else {
-            let mut joined = std::mem::take(&mut read.carry);
-            joined.extend_from_slice(&bytes);
-            joined
-        };
-        let mut cursor = data.as_slice();
-        while let Some(element) = framing.decode_next(&mut cursor, &data)? {
+        let mut elements = framing.open_chunk(&mut read.carry, Cow::Owned(bytes));
+        while let Some(element) = framing.next_element(&mut elements)? {
             // Claim the element before any work on it. The claim fails when the runner has
             // taken back the tail of this bundle; this and all later elements belong to it.
             if !tracker.begin_element() {
                 read.split_reached = true;
                 break;
             }
-            self.push_source_element(ctx, instances, &element.header, element.payload(&data))?;
+            self.push_source_element(
+                ctx,
+                instances,
+                &element.header,
+                element.payload(elements.chunk()),
+            )?;
             read.last_header = element.header;
             // Drain a full outbound queue here, between elements, to apply back-pressure.
             if ctx.outbound.has_pending() {
@@ -272,9 +271,6 @@ impl BundleProcessor {
             }
             read.elements += 1;
         }
-        if !read.split_reached && !cursor.is_empty() {
-            read.carry = cursor.to_vec();
-        }
-        Ok(())
+        framing.close_chunk(&mut read.carry, elements, !read.split_reached)
     }
 }

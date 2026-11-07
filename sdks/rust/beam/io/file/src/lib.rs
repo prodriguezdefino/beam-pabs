@@ -23,6 +23,7 @@
 //! text connectors. Connectors that require external clients—such as object stores,
 //! message brokers, or databases—belong in separate crates.
 
+pub(crate) mod cache;
 pub(crate) mod composite;
 pub(crate) mod compression;
 pub(crate) mod filebasedsource;
@@ -33,6 +34,7 @@ pub(crate) mod sink;
 pub mod textio;
 pub(crate) mod write_files;
 
+pub use cache::FileCache;
 pub use compression::{CompressedWriter, Compression};
 pub use filebasedsource::{
     DEFAULT_SPLIT_SIZE, FileBasedSource, FileBasedSourceFn, FileRecordReader,

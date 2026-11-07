@@ -50,7 +50,7 @@ class RustBenchmarkTasks {
 
   private static final List<String> HARNESS_BENCHES = [
     'process_bundle', 'data_plane', 'user_state', 'side_input',
-    'chain_throughput', 'window_into', 'row_coder', 'logging',
+    'chain_throughput', 'window_into', 'row_coder', 'logging', 'combine', 'state_cache',
   ]
 
   final RustDataflowTasks dataflow

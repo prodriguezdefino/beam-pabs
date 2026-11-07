@@ -582,3 +582,64 @@ async fn concurrent_splits_while_claiming_never_cross_the_granted_boundary() {
     assert_eq!(emitted, expected);
     assert_eq!(final_read_index(&pb), expected_count as i64);
 }
+
+/// A split while the next element is split across chunks. The element that the first chunk
+/// starts is not claimed, whether the split comes before its second half (cut in element 1)
+/// or before the tail of the first chunk is saved (cut in element 2).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_checkpoint_while_an_element_spans_two_chunks_keeps_it_in_the_residual() {
+    for cut_element in [1, 2] {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let entered = Gate::new();
+        let release = Gate::new();
+        let handler: TransformFn = {
+            let (seen, entered, release) = (
+                Arc::clone(&seen),
+                Arc::clone(&entered),
+                Arc::clone(&release),
+            );
+            Arc::new(move |bytes: &[u8], sink: &mut dyn ElementSink| {
+                let value = StringUtf8Coder
+                    .decode(&mut &bytes[..], Context::Nested)
+                    .map_err(|e| e.to_string())?;
+                let first = {
+                    let mut seen = seen.lock().unwrap();
+                    seen.push(value);
+                    seen.len() == 1
+                };
+                if first {
+                    entered.open();
+                    release.wait("the test to release element 0");
+                }
+                sink.push(bytes.to_vec())
+            })
+        };
+        let descriptor_id = format!("desc_partial_split_{cut_element}");
+        let fixture = start_bundle_in_chunks(
+            &descriptor_id,
+            ELEMENTS,
+            Some(cut_element),
+            handler,
+            seen,
+            entered,
+            release,
+        )
+        .await;
+
+        let response = split(&fixture.control, SOURCE_ID, desired(0.0, ELEMENTS as i64)).await;
+        assert_eq!(
+            response.channel_splits,
+            vec![ChannelSplit {
+                transform_id: SOURCE_ID.to_string(),
+                last_primary_element: 0,
+                first_residual_element: 1,
+            }],
+            "cut in element {cut_element}"
+        );
+
+        let (pb, seen, emitted) = finish(fixture).await;
+        assert_eq!(seen, names(0..1), "cut in element {cut_element}");
+        assert_eq!(emitted, names(0..1), "cut in element {cut_element}");
+        assert_eq!(final_read_index(&pb), 1, "cut in element {cut_element}");
+    }
+}

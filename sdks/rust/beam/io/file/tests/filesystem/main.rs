@@ -19,6 +19,7 @@
 
 //! FileSystem trait, registry, glob semantics and the local implementation.
 
+mod cache;
 mod compression_test;
 mod fileio_test;
 mod glob;

@@ -22,16 +22,19 @@
 //! Data read under a cache token stays valid while the runner sends the same token. Old
 //! tokens age out of the cache.
 
-use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use beam::internals::StateBag;
 use beam_model::fn_execution::ProcessBundleRequest;
 use beam_model::fn_execution::process_bundle_request::cache_token;
 use bytes::Bytes;
+use moka::notification::RemovalCause;
+use moka::sync::Cache;
 
+use super::side_input_cache::CellKind;
 use super::tables::{FastHashMap, FastHashSet, StateCellKey, StateCellKeyParts};
 
 /// The default maximum size of the [`StateCache`], in bytes.
@@ -42,21 +45,26 @@ pub(crate) trait Weight {
     fn weight(&self) -> usize;
 }
 
-/// The bytes that one entry holds apart from its key bytes and its value bytes, as an
-/// estimate. The map, the entry and the queue each hold a copy of the key struct.
+/// Estimated per-entry overhead in bytes, apart from key and value payload bytes.
 const ENTRY_OVERHEAD_BYTES: usize = 512;
 
-/// A map with a maximum size in bytes. The least recently used entries go first.
-pub(crate) struct WeightedCache<K, V> {
-    entries: FastHashMap<K, Entry<K, V>>,
-    /// Keys from least to most recently used. Only the position with the entry stamp counts.
-    order: VecDeque<(K, u64)>,
-    next_stamp: u64,
-    total_bytes: usize,
-    max_bytes: usize,
-    hits: u64,
-    misses: u64,
-    evictions: u64,
+const COUNTER_STRIPES: usize = 16;
+
+/// Cache-line-aligned hit and miss counters so concurrent reads do not contend on one line.
+#[repr(align(128))]
+#[derive(Default)]
+struct CounterStripe {
+    hits: AtomicU64,
+    misses: AtomicU64,
+}
+
+fn stripe_index() -> usize {
+    static NEXT_STRIPE: AtomicUsize = AtomicUsize::new(0);
+    thread_local! {
+        static STRIPE: usize =
+            NEXT_STRIPE.fetch_add(1, Ordering::Relaxed) & (COUNTER_STRIPES - 1);
+    }
+    STRIPE.with(|&slot| slot)
 }
 
 /// The size and the counts of a cache, for the status page.
@@ -70,122 +78,6 @@ pub struct CacheStats {
     pub evictions: u64,
 }
 
-struct Entry<K, V> {
-    key: K,
-    value: V,
-    weight: usize,
-    stamp: u64,
-}
-
-impl<K: Clone + Eq + Hash + Weight, V: Clone + Weight> WeightedCache<K, V> {
-    pub(crate) fn new(max_bytes: usize) -> Self {
-        Self {
-            entries: FastHashMap::default(),
-            order: VecDeque::new(),
-            next_stamp: 0,
-            total_bytes: 0,
-            max_bytes,
-            hits: 0,
-            misses: 0,
-            evictions: 0,
-        }
-    }
-
-    /// The value of `key`, which becomes the most recently used entry.
-    pub(crate) fn get<Q>(&mut self, key: &Q) -> Option<V>
-    where
-        K: std::borrow::Borrow<Q>,
-        Q: Hash + Eq + ?Sized,
-    {
-        let stamp = self.stamp();
-        let Some(entry) = self.entries.get_mut(key) else {
-            self.misses += 1;
-            return None;
-        };
-        entry.stamp = stamp;
-        let k = entry.key.clone();
-        let value = entry.value.clone();
-        self.hits += 1;
-        self.order.push_back((k, stamp));
-        self.compact();
-        Some(value)
-    }
-
-    /// Stores `value` under `key`, unless the entry is larger than the whole cache.
-    pub(crate) fn insert(&mut self, key: K, value: V) {
-        let weight = ENTRY_OVERHEAD_BYTES + key.weight() + value.weight();
-        if weight > self.max_bytes {
-            self.remove(&key);
-            return;
-        }
-        let stamp = self.stamp();
-        let replaced = self.entries.insert(
-            key.clone(),
-            Entry {
-                key: key.clone(),
-                value,
-                weight,
-                stamp,
-            },
-        );
-        self.total_bytes = self.total_bytes - replaced.map_or(0, |old| old.weight) + weight;
-        self.order.push_back((key, stamp));
-        self.evict();
-        self.compact();
-    }
-
-    pub(crate) fn remove<Q>(&mut self, key: &Q)
-    where
-        K: std::borrow::Borrow<Q>,
-        Q: Hash + Eq + ?Sized,
-    {
-        if let Some(old) = self.entries.remove(key) {
-            self.total_bytes -= old.weight;
-        }
-    }
-
-    pub(crate) fn total_bytes(&self) -> usize {
-        self.total_bytes
-    }
-
-    pub(crate) fn stats(&self) -> CacheStats {
-        CacheStats {
-            entries: self.entries.len(),
-            bytes: self.total_bytes,
-            max_bytes: self.max_bytes,
-            hits: self.hits,
-            misses: self.misses,
-            evictions: self.evictions,
-        }
-    }
-
-    fn stamp(&mut self) -> u64 {
-        self.next_stamp += 1;
-        self.next_stamp
-    }
-
-    fn evict(&mut self) {
-        while self.total_bytes > self.max_bytes {
-            let Some((key, stamp)) = self.order.pop_front() else {
-                return;
-            };
-            if self.entries.get(&key).is_some_and(|e| e.stamp == stamp) {
-                self.remove(&key);
-                self.evictions += 1;
-            }
-        }
-    }
-
-    /// Drops the outdated queue positions when they outnumber the entries.
-    fn compact(&mut self) {
-        if self.order.len() > 2 * self.entries.len() + 64 {
-            let entries = &self.entries;
-            self.order
-                .retain(|(key, stamp)| entries.get(key).is_some_and(|e| e.stamp == *stamp));
-        }
-    }
-}
-
 /// The part of a state cell that a cache entry holds.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum CachedPart {
@@ -193,8 +85,10 @@ pub(crate) enum CachedPart {
     Bag,
     /// The keys and the known entries of a map or set cell.
     Map,
-    /// One page of a side input. The bytes are the continuation token of the page.
-    SideInputPage(Bytes),
+    /// One page of a side input read of one kind. The bytes are the continuation token of
+    /// the page. An iterable cell and a multimap cell with an empty key have the same cell
+    /// key, so the kind keeps their pages apart.
+    SideInputPage(CellKind, Bytes),
 }
 
 /// The key of a [`StateCache`] entry: the runner token, the cell and the part of the cell.
@@ -271,7 +165,7 @@ impl Weight for CacheKey {
         let (transform_id, state_id, window, key) = self.cell.parts();
         let part = match &self.part {
             CachedPart::Bag | CachedPart::Map => 0,
-            CachedPart::SideInputPage(token) => token.len(),
+            CachedPart::SideInputPage(_, token) => token.len(),
         };
         self.token.len() + transform_id.len() + state_id.len() + window.len() + key.len() + part
     }
@@ -346,25 +240,102 @@ impl Weight for CachedValue {
 
 /// The cache of runner state that bundles share, valid per runner cache token.
 pub struct StateCache {
-    entries: Mutex<WeightedCache<CacheKey, CachedValue>>,
+    entries: Cache<CacheKey, CachedValue, foldhash::fast::RandomState>,
+    max_bytes: usize,
+    counters: Box<[CounterStripe; COUNTER_STRIPES]>,
+    evictions: Arc<AtomicU64>,
 }
 
 impl StateCache {
     /// A cache that keeps at most `max_bytes` of state.
     pub fn new(max_bytes: usize) -> Self {
+        let evictions = Arc::new(AtomicU64::new(0));
+        let listener_evictions = Arc::clone(&evictions);
+        let entries = Cache::builder()
+            .max_capacity(max_bytes as u64)
+            .weigher(|key: &CacheKey, value: &CachedValue| -> u32 {
+                let weight = ENTRY_OVERHEAD_BYTES
+                    .saturating_add(key.weight())
+                    .saturating_add(value.weight());
+                u32::try_from(weight).unwrap_or(u32::MAX)
+            })
+            .eviction_listener(move |_key, _value, cause| {
+                if cause == RemovalCause::Size {
+                    listener_evictions.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+            .build_with_hasher(foldhash::fast::RandomState::default());
         Self {
-            entries: Mutex::new(WeightedCache::new(max_bytes)),
+            entries,
+            max_bytes,
+            counters: Box::new(std::array::from_fn(|_| CounterStripe::default())),
+            evictions,
         }
     }
 
     /// The bytes that the cache holds.
     pub fn total_bytes(&self) -> usize {
-        self.lock().total_bytes()
+        self.entries.run_pending_tasks();
+        self.entries.weighted_size() as usize
     }
 
     /// The size and the hit, miss and eviction counts of the cache.
     pub fn stats(&self) -> CacheStats {
-        self.lock().stats()
+        self.entries.run_pending_tasks();
+        let (hits, misses) = self.counters.iter().fold((0u64, 0u64), |(h, m), stripe| {
+            (
+                h + stripe.hits.load(Ordering::Relaxed),
+                m + stripe.misses.load(Ordering::Relaxed),
+            )
+        });
+        CacheStats {
+            entries: self.entries.entry_count() as usize,
+            bytes: self.entries.weighted_size() as usize,
+            max_bytes: self.max_bytes,
+            hits,
+            misses,
+            evictions: self.evictions.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Reads a cached bag cell for the `state_cache` benchmark.
+    pub fn get_bag(
+        &self,
+        token: &[u8],
+        transform_id: &str,
+        state_id: &str,
+        window: &[u8],
+        key: &[u8],
+    ) -> Option<StateBag> {
+        let key_ref = CacheKeyRef {
+            token,
+            cell: (transform_id, state_id, window, key),
+            part: &CachedPart::Bag,
+        };
+        match self.get(&key_ref as &dyn CacheKeyParts) {
+            Some(CachedValue::Bag(bag)) => Some(bag),
+            Some(CachedValue::Map(_) | CachedValue::Page { .. }) | None => None,
+        }
+    }
+
+    /// Inserts a cached bag cell for the `state_cache` benchmark.
+    pub fn insert_bag(
+        &self,
+        token: Bytes,
+        transform_id: &str,
+        state_id: &str,
+        window: &[u8],
+        key: &[u8],
+        bag: StateBag,
+    ) {
+        self.insert(
+            CacheKey {
+                token,
+                cell: Arc::new(StateCellKey::new(transform_id, state_id, window, key)),
+                part: CachedPart::Bag,
+            },
+            CachedValue::Bag(bag),
+        );
     }
 
     pub(crate) fn get<Q>(&self, key: &Q) -> Option<CachedValue>
@@ -372,11 +343,25 @@ impl StateCache {
         CacheKey: std::borrow::Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        self.lock().get(key)
+        let stripe = &self.counters[stripe_index()];
+        let found = self.entries.get(key);
+        if found.is_some() {
+            stripe.hits.fetch_add(1, Ordering::Relaxed);
+        } else {
+            stripe.misses.fetch_add(1, Ordering::Relaxed);
+        }
+        found
     }
 
     pub(crate) fn insert(&self, key: CacheKey, value: CachedValue) {
-        self.lock().insert(key, value);
+        let weight = ENTRY_OVERHEAD_BYTES
+            .saturating_add(key.weight())
+            .saturating_add(value.weight());
+        if weight > self.max_bytes {
+            self.entries.invalidate(&key);
+            return;
+        }
+        self.entries.insert(key, value);
     }
 
     pub(crate) fn remove<Q>(&self, key: &Q)
@@ -384,12 +369,7 @@ impl StateCache {
         CacheKey: std::borrow::Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        self.lock().remove(key);
-    }
-
-    /// Locks the entries. A panic elsewhere cannot leave them invalid, so poison is ignored.
-    fn lock(&self) -> MutexGuard<'_, WeightedCache<CacheKey, CachedValue>> {
-        self.entries.lock().unwrap_or_else(PoisonError::into_inner)
+        self.entries.invalidate(key);
     }
 }
 

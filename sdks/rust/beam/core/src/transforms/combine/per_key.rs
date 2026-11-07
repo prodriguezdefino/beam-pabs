@@ -28,8 +28,9 @@ use beam_model::pipeline as proto;
 use prost::Message;
 
 use super::CombineFn;
-use super::partial::PartialCombineFn;
-use super::registered::{CombineSpecs, CombineStage};
+use super::fanout::expand_fanout;
+use super::partial::PartialCombineHandler;
+use super::registered::{CombinePhase, CombineSpecs, CombineStage};
 use crate::coders::{BeamIterable, DefaultCoder};
 use crate::pipeline::{
     URN_COMBINE_GROUPED_VALUES, URN_COMBINE_PER_KEY, URN_RUST_COMBINE_FN, stage_key,
@@ -51,6 +52,7 @@ use crate::values::PCollection;
 /// shuffle. The lifted stages run in this SDK, with the same functions as the stages above.
 pub struct CombinePerKey<K, CF> {
     combine_fn: Arc<CF>,
+    fanout: usize,
     _marker: PhantomData<K>,
 }
 
@@ -64,8 +66,18 @@ impl<K, CF: CombineFn> CombinePerKey<K, CF> {
     pub(super) fn shared(combine_fn: Arc<CF>) -> Self {
         Self {
             combine_fn,
+            fanout: 1,
             _marker: PhantomData,
         }
+    }
+
+    /// Splits each key across `fanout` intermediate shards before the final merge.
+    ///
+    /// Each bundle picks one shard in `0..fanout`, so the spread grows with the number of
+    /// bundles. Values `0` and `1` turn fanout off.
+    pub fn with_hot_key_fanout(mut self, fanout: usize) -> Self {
+        self.fanout = fanout;
+        self
     }
 }
 
@@ -73,6 +85,9 @@ impl<K, CF: CombineFn> HasDisplayData for CombinePerKey<K, CF> {
     fn populate_display_data(&self, builder: &mut DisplayDataBuilder) {
         builder.add_text("transform", "CombinePerKey");
         builder.add_text("combine_fn", std::any::type_name::<CF>());
+        if self.fanout > 1 {
+            builder.add_integer("fanout", i64::try_from(self.fanout).unwrap_or(i64::MAX));
+        }
     }
 }
 
@@ -86,70 +101,91 @@ where
     fn expand(self, input: &PCollection<(K, CF::Input)>) -> PCollection<(K, CF::Output)> {
         let pipeline = input.pipeline();
         let name = pipeline.scope_name().unwrap_or_default();
-        let accum_coder_id = CF::Accum::register_coder(pipeline);
-        let key_coder_id = pipeline
-            .coder_components(&input.coder_id())
-            .first()
-            .cloned();
-
-        // A registered `CombineFn` goes into the payload, so the worker needs no rebuilt
-        // pipeline for any stage. If the key coder cannot be determined (e.g. custom KV coder
-        // without registered components) or is not registered, fall back to the rebuild path,
-        // where the payload holds the composite name as the handler key.
-        let specs = CombineSpecs::new::<K, CF>(
-            pipeline,
-            &name,
-            self.combine_fn.as_ref(),
-            key_coder_id.as_deref(),
-        );
-        let combine_fn = specs.as_ref().map_or_else(
-            || proto::FunctionSpec {
-                urn: URN_RUST_COMBINE_FN.to_string(),
-                payload: name.clone().into_bytes(),
-            },
-            CombineSpecs::combine_fn,
-        );
-        let payload = proto::CombinePayload {
-            combine_fn: Some(combine_fn),
-            accumulator_coder_id: accum_coder_id,
-        }
-        .encode_to_vec();
-
-        let grouped = input.apply("GroupByKey", GroupByKey::new());
-        let output = pipeline.add_scoped_primitive("CombineGroupedValues", |stage| {
-            combine_grouped_values::<K, CF>(&stage, &grouped, key_coder_id, payload.clone())
-        });
-        pipeline.set_scope_spec(proto::FunctionSpec {
-            urn: URN_COMBINE_PER_KEY.to_string(),
-            payload,
-        });
-
-        let mut builder = DisplayDataBuilder::with_namespace(name.clone());
+        let output = if self.fanout > 1 {
+            expand_fanout(input, &self.combine_fn, self.fanout)
+        } else {
+            combine_single_stage::<K, CF, K, CF>(
+                input,
+                self.combine_fn.as_ref(),
+                CombinePhase::Full,
+                |stage| typed_stage::<K, CF>(stage, Arc::clone(&self.combine_fn)),
+            )
+        };
+        let mut builder = DisplayDataBuilder::with_namespace(name);
         self.populate_display_data(&mut builder);
         pipeline.set_scope_display_data(builder.into_proto());
-
-        if specs.is_some() {
-            return output;
-        }
-
-        // A runner asks for the function of each stage by the composite name and the stage
-        // name, both from the stage payload and URN. Do not use the transform id: runners make
-        // their own ids (Prism uses `e{composite}_lift`).
-        for stage in [
-            CombineStage::Precombine,
-            CombineStage::Merge,
-            CombineStage::Extract,
-            CombineStage::ConvertToAccumulators,
-            CombineStage::CombineGroupedValues,
-        ] {
-            pipeline.register_transform_handler(
-                stage_key(&name, stage),
-                typed_stage::<K, CF>(stage, Arc::clone(&self.combine_fn)),
-            );
-        }
-
         output
     }
+}
+
+/// Expands one `CombinePerKey` stage (`GroupByKey` + `CombineGroupedValues`) and sets its
+/// composite `URN_COMBINE_PER_KEY` spec.
+pub(super) fn combine_single_stage<StageK, StageCF, RegK, RegCF>(
+    input: &PCollection<(StageK, StageCF::Input)>,
+    reg_fn: &RegCF,
+    phase: CombinePhase,
+    build_stage: impl Fn(CombineStage) -> TransformFn,
+) -> PCollection<(StageK, StageCF::Output)>
+where
+    StageK: DefaultCoder + Eq + Hash,
+    StageCF: CombineFn,
+    RegK: DefaultCoder + 'static,
+    RegCF: 'static,
+{
+    let pipeline = input.pipeline();
+    let name = pipeline.scope_name().unwrap_or_default();
+    let accum_coder_id = StageCF::Accum::register_coder(pipeline);
+    let key_coder_id = pipeline
+        .coder_components(&input.coder_id())
+        .first()
+        .cloned();
+
+    // A registered `CombineFn` goes into the payload, so the worker needs no rebuilt
+    // pipeline for any stage. If the key coder cannot be determined (e.g. custom KV coder
+    // without registered components) or is not registered, fall back to the rebuild path,
+    // where the payload holds the composite name as the handler key.
+    let specs =
+        CombineSpecs::new::<RegK, RegCF>(pipeline, &name, reg_fn, key_coder_id.as_deref(), phase);
+    let combine_fn = specs.as_ref().map_or_else(
+        || proto::FunctionSpec {
+            urn: URN_RUST_COMBINE_FN.to_string(),
+            payload: name.clone().into_bytes(),
+        },
+        CombineSpecs::combine_fn,
+    );
+    let payload = proto::CombinePayload {
+        combine_fn: Some(combine_fn),
+        accumulator_coder_id: accum_coder_id,
+    }
+    .encode_to_vec();
+
+    let grouped = input.apply("GroupByKey", GroupByKey::new());
+    let output = pipeline.add_scoped_primitive("CombineGroupedValues", |stage| {
+        combine_grouped_values::<StageK, StageCF>(&stage, &grouped, key_coder_id, payload.clone())
+    });
+    pipeline.set_scope_spec(proto::FunctionSpec {
+        urn: URN_COMBINE_PER_KEY.to_string(),
+        payload,
+    });
+
+    if specs.is_some() {
+        return output;
+    }
+
+    // A runner asks for the function of each stage by the composite name and the stage
+    // name, both from the stage payload and URN. Do not use the transform id: runners make
+    // their own ids (Prism uses `e{composite}_lift`).
+    for stage in [
+        CombineStage::Precombine,
+        CombineStage::Merge,
+        CombineStage::Extract,
+        CombineStage::ConvertToAccumulators,
+        CombineStage::CombineGroupedValues,
+    ] {
+        pipeline.register_transform_handler(stage_key(&name, stage), build_stage(stage));
+    }
+
+    output
 }
 
 /// Builds the handler of `stage` for a concrete key type `K`.
@@ -159,9 +195,7 @@ where
     CF: CombineFn,
 {
     match stage {
-        CombineStage::Precombine => {
-            Arc::new(DoFnHandler::new(PartialCombineFn::<K, CF>::new(combine_fn)))
-        }
+        CombineStage::Precombine => typed_precombine::<K, CF>(combine_fn),
         CombineStage::Merge => Arc::new(DoFnHandler::new(MergeOnlyFn::<K, CF>::new(combine_fn))),
         CombineStage::Extract => {
             Arc::new(DoFnHandler::new(ExtractOnlyFn::<K, CF>::new(combine_fn)))
@@ -174,6 +208,15 @@ where
             CF,
         >::new(combine_fn))),
     }
+}
+
+/// Builds the precombine handler on key `K`.
+pub(super) fn typed_precombine<K, CF>(combine_fn: Arc<CF>) -> TransformFn
+where
+    K: DefaultCoder + Eq + Hash,
+    CF: CombineFn,
+{
+    Arc::new(PartialCombineHandler::<K, CF>::new(combine_fn))
 }
 
 /// Adds the `combine_grouped_values` step `name` after `grouped`, and returns its output. The
@@ -295,6 +338,66 @@ where
     }
 }
 
+/// Maximum accumulators read per chunk when merging a state-backed [`BeamIterable`].
+const MERGE_CHUNK_SIZE: usize = 1024;
+
+/// Merges an in-memory vector of accumulators, using `merge_two` for pairs.
+pub(super) fn merge_vec<CF: CombineFn>(
+    combine_fn: &CF,
+    accumulators: Vec<CF::Accum>,
+) -> crate::Result<CF::Accum> {
+    match accumulators.len() {
+        0 => combine_fn.create_accumulator(),
+        2 => match <[_; 2]>::try_from(accumulators) {
+            Ok([left, right]) => combine_fn.merge_two(left, right),
+            Err(accs) => combine_fn.merge_accumulators(accs),
+        },
+        _ => combine_fn.merge_accumulators(accumulators),
+    }
+}
+
+/// Merges all accumulators from `accumulators`, streaming in chunks when state-backed.
+pub(super) fn merge_iterable<CF: CombineFn>(
+    combine_fn: &CF,
+    accumulators: BeamIterable<CF::Accum>,
+) -> crate::Result<CF::Accum> {
+    if accumulators.is_in_memory() {
+        let accs = accumulators
+            .into_vec()
+            .map_err(|e| format!("Failed to fetch accumulators: {e}"))?;
+        return merge_vec(combine_fn, accs);
+    }
+    let mut iter = accumulators.try_into_iter();
+    let mut running: Option<CF::Accum> = None;
+    while let Some(first) = iter.next() {
+        let first = first.map_err(|e| format!("Failed to fetch accumulators: {e}"))?;
+        let Some(second) = iter.next() else {
+            return match running {
+                Some(acc) => combine_fn.merge_two(acc, first),
+                None => combine_fn.merge_accumulators(vec![first]),
+            };
+        };
+        let second = second.map_err(|e| format!("Failed to fetch accumulators: {e}"))?;
+        let mut chunk = Vec::new();
+        if let Some(acc) = running.take() {
+            chunk.push(acc);
+        }
+        chunk.push(first);
+        chunk.push(second);
+        for _ in 2..MERGE_CHUNK_SIZE {
+            let Some(item) = iter.next() else {
+                break;
+            };
+            chunk.push(item.map_err(|e| format!("Failed to fetch accumulators: {e}"))?);
+        }
+        running = Some(merge_vec(combine_fn, chunk)?);
+    }
+    match running {
+        Some(acc) => Ok(acc),
+        None => combine_fn.create_accumulator(),
+    }
+}
+
 /// Merge stage of a lifted combine.
 pub(super) struct MergeOnlyFn<K, CF> {
     combine_fn: Arc<CF>,
@@ -332,10 +435,7 @@ where
         (key, accumulators): (K, BeamIterable<CF::Accum>),
         out: &mut ProcessContext<(K, CF::Accum)>,
     ) -> crate::Result {
-        let acc_vec = accumulators
-            .into_vec()
-            .map_err(|e| format!("Failed to fetch accumulators: {e}"))?;
-        let merged = self.combine_fn.merge_accumulators(acc_vec)?;
+        let merged = merge_iterable(self.combine_fn.as_ref(), accumulators)?;
         out.emit((key, merged))
     }
 }

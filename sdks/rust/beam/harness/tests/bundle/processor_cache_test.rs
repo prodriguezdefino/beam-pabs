@@ -293,6 +293,36 @@ async fn a_sweep_tears_down_instances_idle_past_the_timeout() {
     assert!(worker.processor.idle_processors().is_empty());
 }
 
+#[tokio::test]
+async fn a_sweep_keeps_an_instance_that_came_back_after_an_older_one() {
+    let timeout = Duration::from_millis(300);
+    let descriptor = windowed_linear_descriptor(DESCRIPTOR_ID);
+    let worker = Arc::new(Worker::start_with(descriptor, Some(timeout)).await);
+    worker.feed("b1", &["a"], Duration::from_millis(100));
+    worker.feed("b2", &["b"], Duration::from_millis(50));
+    let (first, second) = tokio::join!(worker.process("b1"), async {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        worker.process("b2").await
+    });
+    first.unwrap();
+    second.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(180)).await;
+    // The bundle takes the instance that came back last, and returns it fresh.
+    worker.bundle("b3", &["c"]).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(180)).await;
+
+    assert_eq!(
+        worker.processor.sweep_idle_processors(),
+        1,
+        "the older instance"
+    );
+    assert_eq!(
+        worker.processor.idle_processors(),
+        [(DESCRIPTOR_ID.to_string(), 1)]
+    );
+}
+
 /// The worker reads one data source for each descriptor, so a second one is an error, not
 /// lost data.
 #[tokio::test]

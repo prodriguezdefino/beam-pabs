@@ -273,6 +273,90 @@ async fn run_streaming_test(
         .expect("the streaming test runner did not return")
 }
 
+/// Options for a test job on the mocks, with `extra` flags appended.
+fn test_job_options(job_name: &str, extra: &[&str]) -> PipelineOptions {
+    let base = [
+        "app".to_string(),
+        "--runner=TestDataflowRunner".to_string(),
+        "--project=poll-proj".to_string(),
+        "--region=us-central1".to_string(),
+        "--temp_location=gs://poll-bucket/temp".to_string(),
+        format!("--job_name={job_name}"),
+        "--sdk_container_image=gcr.io/test/rust:v1".to_string(),
+    ];
+    PipelineOptions::parse_from(
+        base.into_iter()
+            .chain(extra.iter().map(|flag| flag.to_string())),
+    )
+}
+
+/// An unbounded pipeline is a streaming test without `--streaming`: the runner applies the
+/// test timeout and cancels the job.
+#[tokio::test]
+async fn an_unbounded_pipeline_is_a_streaming_test_without_the_streaming_option() {
+    let p = Pipeline::new();
+    let _ = p.apply("GenerateSequence", GenerateSequence::new(0));
+    let client = Arc::new(MockDataflowClient::with_initial_job_state(
+        JOB_STATE_RUNNING,
+    ));
+    let fs = Arc::new(InMemoryFileSystem::default());
+    let runner = TestDataflowRunner::from_runner(
+        DataflowRunner::with_options_and_clients(
+            test_job_options("unbounded-test", &[]),
+            fs,
+            Arc::clone(&client) as _,
+        )
+        .with_poll_interval(Duration::from_millis(1)),
+    )
+    .with_test_timeout(Duration::from_millis(50));
+
+    let err = tokio::time::timeout(Duration::from_secs(30), runner.run(&p))
+        .await
+        .expect("the test runner did not return")
+        .unwrap_err()
+        .to_string();
+
+    assert!(err.contains("still pending: []"), "{err}");
+    assert_eq!(
+        client.update_requests(),
+        [("job-1".to_string(), JobState::Cancelled)]
+    );
+}
+
+/// A streaming test with `--template_location` or `--dataflow_job_file` writes the file and
+/// submits no job.
+#[tokio::test]
+async fn a_streaming_test_writes_a_template_or_a_job_file_and_submits_no_job() {
+    let template = "gs://poll-bucket/templates/streaming-test";
+    let job_file = std::env::temp_dir().join(format!("streaming_test_{}.json", std::process::id()));
+    let cases = [
+        (format!("--template_location={template}"), "template"),
+        (
+            format!("--dataflow_job_file={}", job_file.display()),
+            "dry-run",
+        ),
+    ];
+
+    let fs = Arc::new(InMemoryFileSystem::default());
+    for (flag, job_id) in cases {
+        let client = Arc::new(MockDataflowClient::new());
+        let runner = TestDataflowRunner::from_runner(DataflowRunner::with_options_and_clients(
+            test_job_options("streaming-offline", &["--streaming=true", &flag]),
+            Arc::clone(&fs) as _,
+            Arc::clone(&client) as _,
+        ));
+
+        let result = runner.run(&Pipeline::new()).await.unwrap();
+
+        assert_eq!(result.job_id, job_id, "{flag}");
+        assert_eq!(result.state, BeamJobState::Done, "{flag}");
+        assert!(client.submitted_jobs().is_empty(), "{flag}");
+    }
+    assert!(fs.contains_file(template), "the template");
+    assert!(job_file.exists(), "the job file");
+    let _ = std::fs::remove_file(&job_file);
+}
+
 #[tokio::test]
 async fn test_streaming_test_runner_cancels_only_once_every_assertion_passed() {
     let (p, names) = streaming_assertions_pipeline();

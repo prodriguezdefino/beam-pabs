@@ -45,11 +45,13 @@ async-trait = { workspace = true }
 inventory = { workspace = true }
 bytes = { workspace = true }
 foldhash = { workspace = true }
+moka = { workspace = true }
 arc-swap = { workspace = true }
 
 [dev-dependencies]
 beam = { package = "apache-beam-core", path = "../core", version = "2.79.0-SNAPSHOT", features = ["derive"] }
 beam_harness = { package = "apache-beam-harness", path = "." }
+chrono = { workspace = true }
 criterion = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }
@@ -75,6 +77,42 @@ harness = false
 
 [[bench]]
 name = "user_state"
+harness = false
+
+[[bench]]
+name = "window_into"
+harness = false
+
+[[bench]]
+name = "side_input"
+harness = false
+
+[[bench]]
+name = "row_coder"
+harness = false
+
+[[bench]]
+name = "logging"
+harness = false
+
+[[bench]]
+name = "combine"
+harness = false
+
+[[bench]]
+name = "timers"
+harness = false
+
+[[bench]]
+name = "join"
+harness = false
+
+[[bench]]
+name = "async_rpc"
+harness = false
+
+[[bench]]
+name = "state_cache"
 harness = false
 
 [lints]

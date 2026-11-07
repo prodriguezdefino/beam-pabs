@@ -29,6 +29,7 @@
 
 use std::time::{Duration, Instant};
 
+use beam::internals::PipelineInternals;
 use beam::metrics::MetricResults;
 use beam::options::PipelineOptions;
 use beam::pipeline::Pipeline;
@@ -39,7 +40,10 @@ use beam_testing::passert::{
 use tracing::{info, warn};
 
 use crate::client::{DataflowApiClient, JobState};
-use crate::runner::{DataflowRunner, DataflowRunnerError, JobPoller, SubmittedJob, fetch_metrics};
+use crate::runner::{
+    DataflowRunner, DataflowRunnerError, JobPoller, Launch, SubmittedJob, fetch_metrics,
+};
+use crate::translate::is_streaming;
 
 /// How long a streaming test job may run before its assertions must be decided. Covers
 /// worker start-up, which on Dataflow alone takes several minutes.
@@ -101,7 +105,11 @@ inventory::submit! {
 #[async_trait::async_trait]
 impl PipelineRunner for TestDataflowRunner {
     async fn run(&self, pipeline: &Pipeline) -> Result<PipelineResult, RunnerError> {
-        if !self.runner.options().streaming {
+        let streaming = is_streaming(
+            self.runner.options().streaming,
+            Some(&pipeline.lock().components),
+        );
+        if !streaming {
             let result = self.runner.run(pipeline).await?;
             // A plain `Pipeline` run has no `TestPipeline` to check the assertions.
             let expected_assertions = assertion_names(pipeline);
@@ -111,11 +119,15 @@ impl PipelineRunner for TestDataflowRunner {
             return Ok(result);
         }
 
-        let (job, client) = self
+        let (job, client) = match self
             .runner
-            .prepare_and_submit(pipeline)
+            .configure_and_launch(pipeline)
             .await
-            .map_err(RunnerError::execution)?;
+            .map_err(RunnerError::execution)?
+        {
+            Launch::Offline(result) => return Ok(*result),
+            Launch::Submitted(job, client) => (job, client),
+        };
 
         let expected_assertions = assertion_names(pipeline);
         self.wait_for_streaming_test(&*client, &job, &expected_assertions)

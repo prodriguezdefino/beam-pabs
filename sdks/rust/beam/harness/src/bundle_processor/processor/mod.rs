@@ -391,6 +391,7 @@ impl BundleProcessor {
         if let Some(user_state) = &state.user_state {
             user_state.commit().map_err(BundleError::Handler)?;
         }
+        state.log_get_totals(instruction_id);
 
         emit_timers(plan, &mut chain_ctx, &mut parts.read.timers)?;
         let can_embed = self

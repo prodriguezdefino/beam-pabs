@@ -42,3 +42,8 @@ thiserror = { workspace = true }
 [dev-dependencies]
 beam = { package = "apache-beam-core", path = "../../core", version = "2.79.0-SNAPSHOT", features = ["derive"] }
 chrono = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "row_bridge"
+harness = false

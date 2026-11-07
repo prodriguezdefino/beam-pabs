@@ -22,51 +22,27 @@
 
 use std::sync::{Arc, LazyLock};
 
-use arc_swap::ArcSwap;
+use beam_io_file::FileCache;
 use parquet::arrow::arrow_reader::ArrowReaderMetadata;
 
-/// Footers kept per worker. A footer of a wide file can be large, so the cache stays small.
-const CAPACITY: usize = 16;
+/// Maximum footer bytes kept per worker.
+const MAX_BYTES: u64 = 16 * 1024 * 1024;
 
-/// The footers of the files read last, newest first.
-static FOOTERS: LazyLock<ArcSwap<Vec<Entry>>> = LazyLock::new(|| ArcSwap::from_pointee(Vec::new()));
-
-/// A footer and the file it belongs to. The size is part of the key, so a file that is
-/// written again with another size does not get the old footer.
-#[derive(Clone)]
-struct Entry {
-    path: Arc<str>,
-    size: u64,
-    metadata: Arc<ArrowReaderMetadata>,
-}
+static FOOTERS: LazyLock<FileCache<Arc<ArrowReaderMetadata>>> = LazyLock::new(|| {
+    FileCache::new(MAX_BYTES, |metadata| {
+        metadata
+            .metadata()
+            .memory_size()
+            .saturating_add(metadata.schema().fields.size())
+    })
+});
 
 /// Returns the cached footer of `path` with `size` bytes.
 pub(crate) fn get(path: &str, size: u64) -> Option<Arc<ArrowReaderMetadata>> {
-    FOOTERS
-        .load()
-        .iter()
-        .find(|entry| entry.size == size && &*entry.path == path)
-        .map(|entry| Arc::clone(&entry.metadata))
+    FOOTERS.get(path, size)
 }
 
-/// Adds the footer of `path` with `size` bytes and drops the oldest footer when full.
+/// Adds the footer of `path` with `size` bytes.
 pub(crate) fn insert(path: &str, size: u64, metadata: &Arc<ArrowReaderMetadata>) {
-    let path: Arc<str> = Arc::from(path);
-    // The update copies the small list, so a lookup never waits.
-    FOOTERS.rcu(|entries| {
-        let newest = Entry {
-            path: Arc::clone(&path),
-            size,
-            metadata: Arc::clone(metadata),
-        };
-        std::iter::once(newest)
-            .chain(
-                entries
-                    .iter()
-                    .filter(|entry| entry.size != size || entry.path != path)
-                    .cloned(),
-            )
-            .take(CAPACITY)
-            .collect::<Vec<_>>()
-    });
+    FOOTERS.insert(path, size, Arc::clone(metadata));
 }

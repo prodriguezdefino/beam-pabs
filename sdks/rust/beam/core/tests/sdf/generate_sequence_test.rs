@@ -520,6 +520,101 @@ fn rate_limited_outputs_are_not_behind_the_watermark() {
 }
 
 #[test]
+fn rate_limited_bundle_yields_after_sleep_budget_and_catches_up_overdue_elements() {
+    let p = Pipeline::new();
+    let _ = p.apply(
+        "GenerateSequence",
+        GenerateSequence::new(0).with_rate(200, Duration::from_secs(1)),
+    );
+    let started = std::time::Instant::now();
+    let (first, residuals) = process_sized(&p, OffsetRange::new(0, i64::MAX));
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "bundle must yield after its sleep budget instead of sleeping for split_size elements"
+    );
+    assert!(!first.is_empty() && first.len() < 100, "{first:?}");
+    let [residual] = residuals.as_slice() else {
+        panic!("expected one residual, got {}", residuals.len());
+    };
+    assert!(residual.output_watermark.is_some());
+
+    // Simulate a runner scheduling delay so multiple elements become overdue before resume.
+    std::thread::sleep(Duration::from_millis(80));
+    let (second, _) = process_timestamped(&p, &residual.element);
+    assert!(
+        second.len() >= 10,
+        "overdue elements should emit in one catch-up bundle, got {}",
+        second.len()
+    );
+}
+
+#[test]
+fn unbounded_sequence_splits_into_disjoint_strided_restrictions() {
+    let p = Pipeline::new();
+    let _ = p.apply(
+        "GenerateSequence",
+        GenerateSequence::new(0)
+            .with_rate(1_000, Duration::from_secs(1))
+            .with_split_size(3),
+    );
+
+    let (_, handler) = generate_handler(&p);
+    let split_stage = handler
+        .stage_handler(URN_SDF_SPLIT_AND_SIZE_RESTRICTIONS)
+        .expect("SplitAndSize stage handler must exist");
+    let mut split_sink = Vec::<Vec<u8>>::new();
+    let mut split_ctx = HandlerContext::new(&mut split_sink);
+    let initial = (
+        Vec::<u8>::new(),
+        (OffsetRange::new(0, i64::MAX), Vec::<u8>::new()),
+    )
+        .encode()
+        .unwrap();
+    split_stage
+        .instantiate()
+        .process(&initial, &mut split_ctx)
+        .unwrap();
+
+    let splits: Vec<OffsetRange> = split_sink
+        .iter()
+        .map(|b| {
+            let ((_, (r, _)), size) =
+                <((Vec<u8>, (OffsetRange, Vec<u8>)), f64)>::decode(b).unwrap();
+            assert_eq!(size, 1.0);
+            assert!(r.start < r.end && r.end < i64::MAX);
+            r
+        })
+        .collect();
+    assert_eq!(splits.len(), 20);
+
+    let mut emitted = Vec::new();
+    let mut first_residual = None;
+    for (idx, range) in splits.into_iter().enumerate() {
+        let (vals, residuals) = process_sized(&p, range);
+        assert_eq!(vals.len(), 3, "split {idx}: {vals:?}");
+        assert_eq!(residuals.len(), 1);
+        assert!(residuals[0].output_watermark.is_some());
+        if idx == 0 {
+            first_residual = Some(residuals.into_iter().next().unwrap());
+        }
+        emitted.extend(vals);
+    }
+    emitted.sort_unstable();
+    assert_eq!(emitted, (0..60).collect::<Vec<i64>>());
+
+    let residual = first_residual.unwrap();
+    let watermark = residual.output_watermark.unwrap();
+    let (resumed, _) = process_timestamped(&p, &residual.element);
+    assert_eq!(
+        resumed.iter().map(|(v, _)| *v).collect::<Vec<_>>(),
+        [60, 80, 100]
+    );
+    for (val, ts) in resumed {
+        assert!(ts >= watermark, "{val} at {ts:?} < {watermark:?}");
+    }
+}
+
+#[test]
 fn unrated_unbounded_outputs_carry_the_current_time() {
     let before = Instant::now();
     assert_outputs_follow_the_watermark(GenerateSequence::new(0).with_split_size(3));

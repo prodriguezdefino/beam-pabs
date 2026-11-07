@@ -405,11 +405,20 @@ fn streaming_job_type_from_flag_or_unbounded_input() {
 
         assert_eq!(job.job_type, JOB_TYPE_STREAMING);
         assert_eq!(job.environment.version.job_type, FNAPI_STREAMING);
-        assert!(
-            job.environment
-                .experiments
-                .contains(&EXPERIMENT_USE_RUNNER_V2.to_string()),
-            "{name}: streaming jobs must use runner v2"
-        );
+        for expected in [
+            EXPERIMENT_USE_RUNNER_V2,
+            beam_runner_dataflow::EXPERIMENT_STREAMING_ENGINE_STATE_TAG_ENCODING_V2_SUPPORTED,
+            beam_runner_dataflow::EXPERIMENT_ENABLE_STREAMING_ENGINE_STATE_TAG_ENCODING_V2,
+        ] {
+            assert!(
+                job.environment.experiments.contains(&expected.to_string()),
+                "{name}: streaming jobs must include {expected}"
+            );
+        }
     }
+
+    assert_eq!(
+        DataflowOptions::effective_experiments_for_mode(&[], false),
+        vec![EXPERIMENT_USE_RUNNER_V2.to_string()]
+    );
 }

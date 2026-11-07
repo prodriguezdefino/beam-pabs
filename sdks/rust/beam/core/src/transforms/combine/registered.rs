@@ -29,13 +29,18 @@ use beam_model::pipeline as proto;
 use prost::Message;
 
 use super::CombineFn;
-use super::partial::PartialCombineFn;
+use super::fanout::{PassAccumulatorFn, PostCombineFn, PostCombineGroupedValuesFn, PreCombineFn};
+use super::partial::BytesPrecombine;
 use super::per_key::{
-    CombineGroupedValuesFn, ConvertToAccumulatorsFn, ExtractOnlyFn, MergeOnlyFn, typed_stage,
+    CombineGroupedValuesFn, ConvertToAccumulatorsFn, ExtractOnlyFn, MergeOnlyFn, typed_precombine,
 };
-use crate::coders::{Coder, CoderError, CoderRegistry, Context, DefaultCoder, FieldMapCache};
+use crate::coders::{
+    Coder, CoderError, CoderRegistry, Context, DefaultCoder, FieldMap, FieldMapCache,
+    StateStreamReader, URN_KV,
+};
 use crate::coders::{SkipPlan, skips_exactly};
 use crate::pipeline::{Pipeline, URN_RUST_COMBINE_FN_REGISTERED};
+use crate::schema::Schema;
 use crate::transforms::dofn::registered::{self, Registered, RegisteredFields};
 use crate::transforms::dofn::{FinishBundleContext, HandlerContext};
 use crate::transforms::{
@@ -47,7 +52,17 @@ pub struct Combining;
 
 pub use crate::pipeline::constants::{CombineStage, UnknownCombineStage};
 
-/// A standard key type whose combine stages run with its concrete Rust type `K`.
+/// The phase of a fanned-out combine that a registered spec runs. `Full` is a combine without
+/// fanout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, prost::Enumeration)]
+#[repr(i32)]
+pub(super) enum CombinePhase {
+    Full = 0,
+    Pre = 1,
+    Post = 2,
+}
+
+/// A standard key type whose precombine stage runs with its concrete Rust type `K`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, prost::Enumeration)]
 #[repr(i32)]
 enum StandardKey {
@@ -84,6 +99,30 @@ impl StandardKey {
             _ => Self::None,
         }
     }
+
+    /// Returns the variant for `K` when `key_coder_id` encodes `(i32, K)`.
+    fn of_sharded<K: DefaultCoder + 'static>(
+        key_coder_id: &str,
+        coders: &HashMap<String, proto::Coder>,
+    ) -> Self {
+        let Some(proto::Coder {
+            spec: Some(proto::FunctionSpec { urn, .. }),
+            component_coder_ids,
+        }) = coders.get(key_coder_id)
+        else {
+            return Self::None;
+        };
+        if urn != URN_KV {
+            return Self::None;
+        }
+        let [shard_id, inner_id] = component_coder_ids.as_slice() else {
+            return Self::None;
+        };
+        match Self::of::<i32>(shard_id, coders) {
+            Self::I32 => Self::of::<K>(inner_id, coders),
+            _ => Self::None,
+        }
+    }
 }
 
 /// The stages of a registered `CombineFn`, for keys of any coder.
@@ -106,36 +145,172 @@ struct RegisteredCombine<CF> {
 impl<CF: CombineFn> CombineStages for RegisteredCombine<CF> {
     fn stage(&self, stage: CombineStage, key: Arc<KeyCoder>) -> TransformFn {
         let combine_fn = Arc::clone(&self.combine_fn);
-        match key.standard {
-            StandardKey::Unit => typed_stage::<(), CF>(stage, combine_fn),
-            StandardKey::Bool => typed_stage::<bool, CF>(stage, combine_fn),
-            StandardKey::I32 => typed_stage::<i32, CF>(stage, combine_fn),
-            StandardKey::I64 => typed_stage::<i64, CF>(stage, combine_fn),
-            StandardKey::String => typed_stage::<String, CF>(stage, combine_fn),
-            StandardKey::Bytes => typed_stage::<Vec<u8>, CF>(stage, combine_fn),
-            StandardKey::None => match stage {
-                CombineStage::Precombine => Arc::new(ByteKeyed::new(
-                    PartialCombineFn::<EncodedKey, CF>::new(combine_fn),
-                    key,
-                )),
-                CombineStage::Merge => Arc::new(ByteKeyed::new(
-                    MergeOnlyFn::<EncodedKey, CF>::new(combine_fn),
-                    key,
-                )),
-                CombineStage::Extract => Arc::new(ByteKeyed::new(
-                    ExtractOnlyFn::<EncodedKey, CF>::new(combine_fn),
-                    key,
-                )),
-                CombineStage::ConvertToAccumulators => Arc::new(ByteKeyed::new(
-                    ConvertToAccumulatorsFn::<EncodedKey, CF>::new(combine_fn),
-                    key,
-                )),
-                CombineStage::CombineGroupedValues => Arc::new(ByteKeyed::new(
-                    CombineGroupedValuesFn::<EncodedKey, CF>::new(combine_fn),
-                    key,
-                )),
+        // Only the precombine, the stage that a hot key loads, uses the key type. Each key
+        // type adds handlers for every registered `CombineFn` to every binary.
+        match key.phase {
+            CombinePhase::Full => match stage {
+                CombineStage::Precombine => match key.standard {
+                    StandardKey::Unit => typed_precombine::<(), CF>(combine_fn),
+                    StandardKey::Bool => typed_precombine::<bool, CF>(combine_fn),
+                    StandardKey::I32 => typed_precombine::<i32, CF>(combine_fn),
+                    StandardKey::I64 => typed_precombine::<i64, CF>(combine_fn),
+                    StandardKey::String => typed_precombine::<String, CF>(combine_fn),
+                    StandardKey::Bytes => typed_precombine::<Vec<u8>, CF>(combine_fn),
+                    StandardKey::None => byte_keyed_stage::<CF>(stage, combine_fn, key),
+                },
+                CombineStage::Merge
+                | CombineStage::Extract
+                | CombineStage::ConvertToAccumulators
+                | CombineStage::CombineGroupedValues => {
+                    byte_keyed_stage::<CF>(stage, combine_fn, key)
+                }
             },
+            CombinePhase::Pre => {
+                let pre = Arc::new(PreCombineFn(combine_fn));
+                match stage {
+                    CombineStage::Precombine => match key.standard {
+                        StandardKey::Unit => typed_precombine::<(i32, ()), PreCombineFn<CF>>(pre),
+                        StandardKey::Bool => typed_precombine::<(i32, bool), PreCombineFn<CF>>(pre),
+                        StandardKey::I32 => typed_precombine::<(i32, i32), PreCombineFn<CF>>(pre),
+                        StandardKey::I64 => typed_precombine::<(i32, i64), PreCombineFn<CF>>(pre),
+                        StandardKey::String => {
+                            typed_precombine::<(i32, String), PreCombineFn<CF>>(pre)
+                        }
+                        StandardKey::Bytes => {
+                            typed_precombine::<(i32, Vec<u8>), PreCombineFn<CF>>(pre)
+                        }
+                        StandardKey::None => byte_keyed_stage::<PreCombineFn<CF>>(stage, pre, key),
+                    },
+                    CombineStage::Merge
+                    | CombineStage::Extract
+                    | CombineStage::ConvertToAccumulators
+                    | CombineStage::CombineGroupedValues => {
+                        byte_keyed_stage::<PreCombineFn<CF>>(stage, pre, key)
+                    }
+                }
+            }
+            CombinePhase::Post => byte_keyed_post_stage::<CF>(stage, combine_fn, key),
         }
+    }
+}
+
+fn byte_keyed_stage<CF: CombineFn>(
+    stage: CombineStage,
+    combine_fn: Arc<CF>,
+    key: Arc<KeyCoder>,
+) -> TransformFn {
+    match stage {
+        CombineStage::Precombine => Arc::new(ByteKeyedPrecombine::new(combine_fn, key)),
+        CombineStage::Merge => Arc::new(ByteKeyed::new(
+            MergeOnlyFn::<EncodedKey, CF>::new(combine_fn),
+            key,
+        )),
+        CombineStage::Extract => Arc::new(ByteKeyed::new(
+            ExtractOnlyFn::<EncodedKey, CF>::new(combine_fn),
+            key,
+        )),
+        CombineStage::ConvertToAccumulators => Arc::new(ByteKeyed::new(
+            ConvertToAccumulatorsFn::<EncodedKey, CF>::new(combine_fn),
+            key,
+        )),
+        CombineStage::CombineGroupedValues => Arc::new(ByteKeyed::new(
+            CombineGroupedValuesFn::<EncodedKey, CF>::new(combine_fn),
+            key,
+        )),
+    }
+}
+
+fn byte_keyed_post_stage<CF: CombineFn>(
+    stage: CombineStage,
+    combine_fn: Arc<CF>,
+    key: Arc<KeyCoder>,
+) -> TransformFn {
+    match stage {
+        CombineStage::Precombine => {
+            let post = Arc::new(PostCombineFn(combine_fn));
+            match key.standard {
+                StandardKey::Unit => typed_precombine::<(), PostCombineFn<CF>>(post),
+                StandardKey::Bool => typed_precombine::<bool, PostCombineFn<CF>>(post),
+                StandardKey::I32 => typed_precombine::<i32, PostCombineFn<CF>>(post),
+                StandardKey::I64 => typed_precombine::<i64, PostCombineFn<CF>>(post),
+                StandardKey::String | StandardKey::Bytes | StandardKey::None => {
+                    Arc::new(ByteKeyedPrecombine::new(post, key))
+                }
+            }
+        }
+        CombineStage::Merge => Arc::new(ByteKeyed::new(
+            MergeOnlyFn::<EncodedKey, CF>::new(combine_fn),
+            key,
+        )),
+        CombineStage::Extract => Arc::new(ByteKeyed::new(
+            ExtractOnlyFn::<EncodedKey, CF>::new(combine_fn),
+            key,
+        )),
+        CombineStage::ConvertToAccumulators => Arc::new(ByteKeyed::new(
+            PassAccumulatorFn::<EncodedKey, CF::Accum>::new(),
+            key,
+        )),
+        CombineStage::CombineGroupedValues => Arc::new(ByteKeyed::new(
+            PostCombineGroupedValuesFn::<EncodedKey, CF>::new(combine_fn),
+            key,
+        )),
+    }
+}
+
+/// Runs precombine over raw key bytes delimited by [`KeyCoder`], without allocating per hit.
+struct ByteKeyedPrecombine<CF: CombineFn> {
+    inner: BytesPrecombine<CF>,
+    key: Arc<KeyCoder>,
+    buf: Vec<u8>,
+}
+
+impl<CF: CombineFn> ByteKeyedPrecombine<CF> {
+    fn new(combine_fn: Arc<CF>, key: Arc<KeyCoder>) -> Self {
+        Self {
+            inner: BytesPrecombine::new(combine_fn),
+            key,
+            buf: Vec::new(),
+        }
+    }
+}
+
+impl<CF: CombineFn> Clone for ByteKeyedPrecombine<CF> {
+    fn clone(&self) -> Self {
+        Self::new(Arc::clone(self.inner.combine_fn()), Arc::clone(&self.key))
+    }
+}
+
+impl<CF: CombineFn> BundleHandler for ByteKeyedPrecombine<CF> {
+    fn start_bundle(&mut self) -> Result<(), String> {
+        self.inner.start_bundle();
+        Ok(())
+    }
+
+    fn process(&mut self, element: &[u8], ctx: &mut HandlerContext<'_>) -> Result<(), String> {
+        let (key_bytes, value_bytes) = self.key.split(element)?;
+        self.inner
+            .process_split(key_bytes, value_bytes, |_| Ok(()), ctx)
+    }
+
+    fn process_value(
+        &mut self,
+        element: TypedElement<'_>,
+        ctx: &mut HandlerContext<'_>,
+    ) -> Result<(), String> {
+        let mut buf = std::mem::take(&mut self.buf);
+        let result = element
+            .encode_into(&mut buf)
+            .and_then(|()| self.process(&buf, ctx));
+        self.buf = buf;
+        result
+    }
+
+    fn finish_bundle(&mut self, ctx: &mut HandlerContext<'_>) -> Result<(), String> {
+        self.inner.finish_bundle(ctx)
+    }
+
+    fn instantiate(&self) -> HandlerInstance {
+        Box::new(self.clone())
     }
 }
 
@@ -143,6 +318,7 @@ impl<CF: CombineFn> CombineStages for RegisteredCombine<CF> {
 pub struct KeyCoder {
     plan: SkipPlan,
     standard: StandardKey,
+    phase: CombinePhase,
 }
 
 impl KeyCoder {
@@ -207,9 +383,9 @@ impl DefaultCoder for EncodedKey {
 
     fn decode_whole_stream_with_context(
         reader: &mut &[u8],
-        _schema: Option<&Arc<crate::schema::Schema>>,
-        _field_map: Option<&crate::coders::FieldMap>,
-        _state_reader: Option<&Arc<dyn crate::coders::StateStreamReader>>,
+        _schema: Option<&Arc<Schema>>,
+        _field_map: Option<&FieldMap>,
+        _state_reader: Option<&Arc<dyn StateStreamReader>>,
     ) -> Result<Self, CoderError> {
         Self::coder().decode(reader, Context::WholeStream)
     }
@@ -266,23 +442,27 @@ where
     fn process(&mut self, element: &[u8], ctx: &mut HandlerContext<'_>) -> Result<(), String> {
         let (key, value) = self.key.split(element)?;
         let header = ctx.header;
+        let mut invoke = |header: &crate::coders::WindowedHeader| -> Result<(), String> {
+            let value = self
+                .field_map
+                .decode::<V>(value, ctx.input_schema, ctx.state_stream_reader)
+                .map_err(|e| format!("Failed to decode the combine value: {e}"))?;
+            let input = D::In::from_element((EncodedKey(key.to_vec()), value), header)?;
+            let mut pctx = ctx
+                .as_process_context::<D::Out>()
+                .with_header(header)
+                .with_allowed_timestamp_skew(self.func.allowed_timestamp_skew());
+            Ok(self.func.process_element(input, &mut pctx)?)
+        };
+        if !(self.explode && header.is_multi_window()) {
+            return invoke(header);
+        }
         // V does not require Clone, so multi-window elements decode V and copy the key slice once
         // per window; single-window elements run the closure once.
         header
-            .explode_if(self.explode)
+            .explode()
             .map_err(|e| e.to_string())?
-            .try_for_each(|header| {
-                let value = self
-                    .field_map
-                    .decode::<V>(value, ctx.input_schema, ctx.state_stream_reader)
-                    .map_err(|e| format!("Failed to decode the combine value: {e}"))?;
-                let input = D::In::from_element((EncodedKey(key.to_vec()), value), &header)?;
-                let mut pctx = ctx
-                    .as_process_context::<D::Out>()
-                    .with_header(&header)
-                    .with_allowed_timestamp_skew(self.func.allowed_timestamp_skew());
-                Ok(self.func.process_element(input, &mut pctx)?)
-            })
+            .try_for_each(|header| invoke(&header))
     }
 
     fn process_value(
@@ -326,6 +506,8 @@ struct RegisteredCombineSpec {
     coders: HashMap<String, proto::Coder>,
     #[prost(enumeration = "StandardKey", tag = "5")]
     standard_key: i32,
+    #[prost(enumeration = "CombinePhase", tag = "6")]
+    phase: i32,
     /// The [`registered::FIELDS_FORMAT`] that wrote `fields`.
     #[prost(uint32, tag = "7")]
     fields_format: u32,
@@ -337,20 +519,24 @@ pub(super) struct CombineSpecs {
 }
 
 impl CombineSpecs {
-    /// Returns the spec of `combine_fn` for key coder `key_coder_id`, or `None` when the
-    /// combine takes the rebuild path.
+    /// Returns the spec of `combine_fn` for key coder `key_coder_id` and `phase`, or `None`
+    /// when the combine takes the rebuild path.
     pub(super) fn new<K: DefaultCoder + 'static, CF: 'static>(
         pipeline: &Pipeline,
         transform_id: &str,
         combine_fn: &CF,
         key_coder_id: Option<&str>,
+        phase: CombinePhase,
     ) -> Option<Self> {
         let key_coder_id = key_coder_id?;
         let coders = coder_closure(pipeline, key_coder_id);
         if !skips_exactly(key_coder_id, &coders) {
             return None;
         }
-        let standard_key = StandardKey::of::<K>(key_coder_id, &coders) as i32;
+        let standard_key = match phase {
+            CombinePhase::Pre => StandardKey::of_sharded::<K>(key_coder_id, &coders),
+            CombinePhase::Full | CombinePhase::Post => StandardKey::of::<K>(key_coder_id, &coders),
+        } as i32;
         let RegisteredFields { id, fields } =
             registered::registered_fields(pipeline, transform_id, combine_fn)?;
         Some(Self {
@@ -360,6 +546,7 @@ impl CombineSpecs {
                 key_coder_id: key_coder_id.to_string(),
                 coders,
                 standard_key,
+                phase: phase as i32,
                 fields_format: registered::FIELDS_FORMAT,
             },
         })
@@ -401,6 +588,7 @@ pub fn registered_combine_handler(payload: &[u8], stage: &str) -> Result<Transfo
         key_coder_id,
         coders,
         standard_key,
+        phase,
         fields_format,
     } = RegisteredCombineSpec::decode(payload)
         .map_err(|e| format!("Failed to decode the registered combine payload: {e}"))?;
@@ -408,9 +596,12 @@ pub fn registered_combine_handler(payload: &[u8], stage: &str) -> Result<Transfo
         .parse()
         .map_err(|_| format!("registered combine '{id}': unknown stage '{stage}'"))?;
     let standard = StandardKey::try_from(standard_key).unwrap_or(StandardKey::None);
+    let phase = CombinePhase::try_from(phase)
+        .map_err(|_| format!("registered combine '{id}': unknown phase {phase}"))?;
     let key = Arc::new(KeyCoder {
         plan: SkipPlan::new(&key_coder_id, &coders),
         standard,
+        phase,
     });
     match registered::build(&id, fields_format, &fields)? {
         Registered::Combine(stages) => Ok(stages.stage(stage, key)),

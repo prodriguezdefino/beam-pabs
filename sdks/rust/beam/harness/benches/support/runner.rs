@@ -53,6 +53,8 @@ type Replies<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
 
 /// The bytes the worker sent for one bundle, complete once its sink reports `is_last`.
 type OutputWaiters = Arc<Mutex<HashMap<String, (Vec<u8>, Option<oneshot::Sender<Vec<u8>>>)>>>;
+type BagKey = (String, String, Vec<u8>, Vec<u8>);
+type BagStore = Mutex<HashMap<BagKey, Vec<u8>>>;
 
 /// Runner-side state shared by the gRPC services.
 #[derive(Clone)]
@@ -63,8 +65,18 @@ struct Services {
     /// The sender of the worker's data stream, once it connects.
     data: watch::Sender<Option<mpsc::Sender<Result<Elements, Status>>>>,
     outputs: OutputWaiters,
-    /// Bag user state by user key, as Java's `InMemoryBagUserStateHandler`.
-    bags: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
+    /// Bag user state by `(transform_id, state_id, window, user_key)`.
+    bags: Arc<BagStore>,
+    /// Iterable side input payloads by `(transform_id, side_input_id)`.
+    side_inputs: Arc<HashMap<(String, String), Vec<u8>>>,
+}
+
+/// Inbound timer payload for one `(transform_id, timer_family_id)` port of a bundle.
+#[derive(Clone)]
+pub(crate) struct InboundTimers {
+    pub(crate) transform_id: String,
+    pub(crate) timer_family_id: String,
+    pub(crate) timers: Vec<u8>,
 }
 
 #[tonic::async_trait]
@@ -149,10 +161,11 @@ impl BeamFnState for Services {
     ) -> Result<Response<Self::StateStream>, Status> {
         let mut requests = request.into_inner();
         let bags = Arc::clone(&self.bags);
+        let side_inputs = Arc::clone(&self.side_inputs);
         let (tx, rx) = mpsc::channel(64);
         tokio::spawn(async move {
             while let Ok(Some(request)) = requests.message().await {
-                let response = handle_state(&bags, request);
+                let response = handle_state(&bags, &side_inputs, request);
                 if tx.send(Ok(response)).await.is_err() {
                     return;
                 }
@@ -162,10 +175,30 @@ impl BeamFnState for Services {
     }
 }
 
-/// Answers a bag user state request from memory. GET returns the whole bag in one page.
-fn handle_state(bags: &Mutex<HashMap<Vec<u8>, Vec<u8>>>, request: StateRequest) -> StateResponse {
+/// Answers bag user state and iterable side input requests from memory.
+fn handle_state(
+    bags: &BagStore,
+    side_inputs: &HashMap<(String, String), Vec<u8>>,
+    request: StateRequest,
+) -> StateResponse {
     let key = match request.state_key.and_then(|k| k.r#type) {
-        Some(state_key::Type::BagUserState(bag)) => bag.key,
+        Some(state_key::Type::IterableSideInput(si)) => {
+            let data = side_inputs
+                .get(&(si.transform_id, si.side_input_id))
+                .cloned()
+                .unwrap_or_default();
+            return StateResponse {
+                id: request.id,
+                response: Some(state_response::Response::Get(StateGetResponse {
+                    data,
+                    ..Default::default()
+                })),
+                ..Default::default()
+            };
+        }
+        Some(state_key::Type::BagUserState(bag)) => {
+            (bag.transform_id, bag.user_state_id, bag.window, bag.key)
+        }
         other => {
             return StateResponse {
                 id: request.id,
@@ -222,7 +255,7 @@ impl BeamFnLogging for Services {
 }
 
 /// A runner serving a worker that runs in the same process.
-pub struct BenchRunner {
+pub(crate) struct BenchRunner {
     endpoint: String,
     requests: mpsc::Sender<InstructionRequest>,
     services: Services,
@@ -230,8 +263,12 @@ pub struct BenchRunner {
 }
 
 impl BenchRunner {
-    /// Starts the services and a worker with `handlers`. Call from a Tokio runtime.
-    pub async fn start(handlers: HashMap<String, TransformFn>) -> Arc<Self> {
+    /// Starts the services and a worker with `handlers` and `side_inputs`. Call from a Tokio
+    /// runtime.
+    pub(crate) async fn start_with_side_inputs(
+        handlers: HashMap<String, TransformFn>,
+        side_inputs: HashMap<(String, String), Vec<u8>>,
+    ) -> Arc<Self> {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind a local port");
@@ -243,6 +280,7 @@ impl BenchRunner {
             data: watch::channel(None).0,
             outputs: Arc::default(),
             bags: Arc::default(),
+            side_inputs: Arc::new(side_inputs),
         };
         let served = services.clone();
         tokio::spawn(async move {
@@ -272,7 +310,7 @@ impl BenchRunner {
     }
 
     /// The services' address, for the data, state and logging ports of descriptors.
-    pub fn api_service_descriptor(&self) -> ApiServiceDescriptor {
+    pub(crate) fn api_service_descriptor(&self) -> ApiServiceDescriptor {
         ApiServiceDescriptor {
             url: self.endpoint.clone(),
             ..Default::default()
@@ -308,7 +346,7 @@ impl BenchRunner {
     }
 
     /// Registers `descriptors` with the worker.
-    pub async fn register(&self, descriptors: Vec<ProcessBundleDescriptor>) {
+    pub(crate) async fn register(&self, descriptors: Vec<ProcessBundleDescriptor>) {
         let response = self
             .instruct(
                 self.next_id("register"),
@@ -323,20 +361,13 @@ impl BenchRunner {
     /// Runs one bundle of `descriptor_id`: sends `input` to `source`, waits for the response
     /// and for the end of the output, and returns the output bytes. With `cache_state`, the
     /// request carries a user state cache token, so the worker may cache state across bundles.
-    pub async fn process_bundle(
+    pub(crate) async fn process_bundle(
         &self,
         descriptor_id: &str,
         source: &str,
         input: Vec<u8>,
         cache_state: bool,
     ) -> Vec<u8> {
-        let instruction_id = self.next_id("bundle");
-        let (output_tx, output_rx) = oneshot::channel();
-        self.services
-            .outputs
-            .lock()
-            .expect("outputs lock")
-            .insert(instruction_id.clone(), (Vec::new(), Some(output_tx)));
         let cache_tokens = if cache_state {
             vec![CacheToken {
                 token: b"cacheMe".to_vec(),
@@ -345,11 +376,41 @@ impl BenchRunner {
         } else {
             Vec::new()
         };
+        self.process_bundle_ext(descriptor_id, source, input, None, cache_tokens)
+            .await
+    }
+
+    /// Runs one bundle with optional inbound `timers` and explicit `cache_tokens`.
+    pub(crate) async fn process_bundle_ext(
+        &self,
+        descriptor_id: &str,
+        source: &str,
+        input: Vec<u8>,
+        timers: Option<InboundTimers>,
+        cache_tokens: Vec<CacheToken>,
+    ) -> Vec<u8> {
+        let instruction_id = self.next_id("bundle");
+        let (output_tx, output_rx) = oneshot::channel();
+        self.services
+            .outputs
+            .lock()
+            .expect("outputs lock")
+            .insert(instruction_id.clone(), (Vec::new(), Some(output_tx)));
         let request = instruction_request::Request::ProcessBundle(ProcessBundleRequest {
             process_bundle_descriptor_id: descriptor_id.to_string(),
             cache_tokens,
             ..Default::default()
         });
+        let inbound_timers = timers
+            .into_iter()
+            .map(|t| elements::Timers {
+                instruction_id: instruction_id.clone(),
+                transform_id: t.transform_id,
+                timer_family_id: t.timer_family_id,
+                timers: t.timers,
+                is_last: true,
+            })
+            .collect();
         let feed = async {
             let mut data = self.services.data.subscribe();
             let sender = data
@@ -366,7 +427,7 @@ impl BenchRunner {
                         data: input,
                         is_last: true,
                     }],
-                    timers: Vec::new(),
+                    timers: inbound_timers,
                 }))
                 .await
                 .expect("the worker reads its data stream");

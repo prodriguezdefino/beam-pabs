@@ -41,6 +41,8 @@ globset = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 flate2 = { workspace = true }
+foldhash = { workspace = true }
+moka = { workspace = true }
 snap = { workspace = true }
 zstd = { workspace = true }
 sync_wrapper = { workspace = true }

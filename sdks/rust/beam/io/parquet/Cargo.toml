@@ -36,7 +36,6 @@ test = false
 beam = { package = "apache-beam-core", path = "../../core", version = "2.79.0-SNAPSHOT" }
 beam_io_file = { workspace = true }
 beam_io_arrow = { workspace = true }
-arc-swap = { workspace = true }
 parquet = { workspace = true }
 bytes = { workspace = true }
 thiserror = { workspace = true }

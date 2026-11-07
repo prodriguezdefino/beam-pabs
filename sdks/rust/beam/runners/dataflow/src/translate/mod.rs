@@ -95,6 +95,18 @@ pub fn resolve_sdk_container_image(image: &str, overrides: &[String]) -> String 
     beam::options::resolve_container_image(image, overrides)
 }
 
+/// Whether a job is a streaming job: `streaming` is the `--streaming` option, and an
+/// unbounded `PCollection` in `components` has the same effect.
+pub(crate) fn is_streaming(streaming: bool, components: Option<&proto::Components>) -> bool {
+    streaming
+        || components.is_some_and(|components| {
+            components
+                .pcollections
+                .values()
+                .any(|p| p.is_bounded == proto::is_bounded::Enum::Unbounded as i32)
+        })
+}
+
 /// Translates a Beam pipeline protobuf and configuration into a Dataflow v1b3 REST job.
 pub fn translate_job(
     pipeline: &proto::Pipeline,
@@ -178,7 +190,9 @@ pub fn translate_job(
         sdk_harness_container_images
     };
 
-    let experiments = DataflowOptions::effective_experiments(&opts.debug.experiments);
+    let is_streaming = is_streaming(opts.streaming, pipeline.components.as_ref());
+    let experiments =
+        DataflowOptions::effective_experiments_for_mode(&opts.debug.experiments, is_streaming);
 
     let ip_configuration = if opts.dataflow.no_use_public_ips {
         WORKER_IP_PRIVATE
@@ -278,15 +292,6 @@ pub fn translate_job(
                 ))),
             }
         })?;
-
-    let has_unbounded = pipeline.components.as_ref().is_some_and(|components| {
-        components
-            .pcollections
-            .values()
-            .any(|p| p.is_bounded == proto::is_bounded::Enum::Unbounded as i32)
-    });
-
-    let is_streaming = opts.streaming || has_unbounded;
 
     let (job_type, job_type_version) = if is_streaming {
         (JOB_TYPE_STREAMING, FNAPI_STREAMING)

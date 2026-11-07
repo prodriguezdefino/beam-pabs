@@ -25,6 +25,7 @@ use std::sync::Arc;
 use beam_model::pipeline as proto;
 
 use super::CombineFn;
+use super::per_key::merge_vec;
 use crate::coders::DefaultCoder;
 use crate::pipeline::Pipeline;
 use crate::pipeline::constants::{URN_RUST_COMBINE_FN_STATE, URN_USER_STATE_BAG};
@@ -110,12 +111,7 @@ impl<CF: CombineFn> CombiningState<CF> {
 
     /// Reads the combined accumulator. An empty cell gives a new accumulator.
     pub fn read_accumulator(&self) -> crate::Result<CF::Accum> {
-        let mut stored = self.bag.read()?;
-        match stored.len() {
-            0 => self.combine_fn.create_accumulator(),
-            1 => Ok(stored.remove(0)),
-            _ => self.combine_fn.merge_accumulators(stored),
-        }
+        merge_vec(&self.combine_fn, self.bag.read()?)
     }
 
     /// Reads the output for the inputs so far. An empty cell gives the output of a new

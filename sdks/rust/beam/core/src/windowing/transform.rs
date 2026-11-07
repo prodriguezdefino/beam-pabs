@@ -30,10 +30,11 @@ use super::window_fn::{MergeStatus, WindowFn, decode_window_fn};
 use beam_model::pipeline as proto;
 use prost::Message;
 
+use crate::coders::WindowedHeader;
 use crate::internals::HandlerContext;
 use crate::pipeline::PipelineError;
 use crate::pipeline::constants::{URN_WINDOW_FN_SESSION_WINDOWS, URN_WINDOW_INTO};
-use crate::transforms::{BundleHandler, HandlerInstance, PTransform, TransformFn};
+use crate::transforms::{BundleHandler, HandlerInstance, PTransform, TransformFn, TypedElement};
 use crate::values::PCollection;
 
 /// A PTransform that assigns the elements of a [`PCollection`] to windows with a [`WindowFn`].
@@ -247,6 +248,8 @@ pub fn window_into_handler_key(window_fn: &proto::FunctionSpec) -> String {
 pub struct WindowIntoHandler {
     window_fn: Arc<dyn WindowFn>,
     windows: Vec<BoundedWindow>,
+    /// Reused buffer for encoding multi-window elements given by value.
+    encoded: Vec<u8>,
 }
 
 impl WindowIntoHandler {
@@ -254,7 +257,19 @@ impl WindowIntoHandler {
         Self {
             window_fn,
             windows: Vec::new(),
+            encoded: Vec::new(),
         }
+    }
+
+    fn assign_header(&mut self, ctx: &HandlerContext<'_>) -> Result<WindowedHeader, String> {
+        self.windows.clear();
+        self.window_fn.assign_windows_into(
+            crate::Instant::from_millis(ctx.timestamp()),
+            &mut self.windows,
+        );
+        ctx.header
+            .with_windows(&self.windows)
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -264,16 +279,24 @@ impl BundleHandler for WindowIntoHandler {
     }
 
     fn process(&mut self, element: &[u8], ctx: &mut HandlerContext<'_>) -> Result<(), String> {
-        self.windows.clear();
-        self.window_fn.assign_windows_into(
-            crate::Instant::from_millis(ctx.timestamp()),
-            &mut self.windows,
-        );
-        let new_header = ctx
-            .header
-            .with_windows(&self.windows)
-            .map_err(|e| e.to_string())?;
+        let new_header = self.assign_header(ctx)?;
         (0..ctx.header.window_count().max(1))
             .try_for_each(|_| ctx.sink.push_windowed_bytes(&new_header, element))
+    }
+
+    /// Forwards a single-window element by value. A multi-window element encodes once into a
+    /// reused buffer and emits one copy per incoming window.
+    fn process_value(
+        &mut self,
+        element: TypedElement<'_>,
+        ctx: &mut HandlerContext<'_>,
+    ) -> Result<(), String> {
+        let new_header = self.assign_header(ctx)?;
+        let copies = ctx.header.window_count().max(1);
+        if copies == 1 {
+            return ctx.sink.push_value(None, Some(&new_header), element);
+        }
+        element.encode_into(&mut self.encoded)?;
+        (0..copies).try_for_each(|_| ctx.sink.push_windowed_bytes(&new_header, &self.encoded))
     }
 }

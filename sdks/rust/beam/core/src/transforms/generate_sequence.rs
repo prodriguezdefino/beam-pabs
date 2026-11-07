@@ -33,8 +33,8 @@ use crate::transforms::PTransform;
 use crate::transforms::display_data::{DisplayDataBuilder, HasDisplayData};
 use crate::transforms::dofn::context::ProcessContext;
 use crate::transforms::sdf::{
-    OffsetRange, OffsetRangeTracker, ProcessContinuation, RestrictionTracker, SplittableDoFn,
-    SplittableParDo, WatermarkedTracker,
+    OffsetRange, OffsetRangeTracker, ProcessContinuation, RestrictionError, RestrictionProgress,
+    RestrictionTracker, SplittableDoFn, SplittableParDo, WatermarkedTracker,
 };
 use crate::values::IsBounded;
 use crate::values::{PBegin, PCollection};
@@ -42,6 +42,9 @@ use crate::windowing::{ManualWatermarkEstimator, WatermarkEstimator};
 
 /// Default size of the initial splits of a bounded range.
 pub const DEFAULT_SEQUENCE_SPLIT_SIZE: i64 = 10_000;
+
+/// Maximum initial splits of an unbounded sequence.
+const MAX_UNBOUNDED_SPLITS: i64 = 20;
 
 /// Generates a [`PCollection<i64>`] sequence with a [`SplittableDoFn`].
 ///
@@ -177,8 +180,50 @@ impl PTransform<PBegin> for GenerateSequence {
     }
 }
 
+/// Offset tracker that keeps unbounded splits checkpoint-only and unit-sized.
+struct SequenceOffsetTracker {
+    inner: OffsetRangeTracker,
+    unbounded: bool,
+}
+
+impl RestrictionTracker for SequenceOffsetTracker {
+    type Position = i64;
+    type Restriction = OffsetRange;
+
+    fn try_claim(&self, position: &Self::Position) -> bool {
+        self.inner.try_claim(position)
+    }
+
+    fn try_split(
+        &self,
+        fraction_of_remainder: f64,
+    ) -> Option<(Self::Restriction, Self::Restriction)> {
+        if self.unbounded && fraction_of_remainder > 0.0 {
+            return None;
+        }
+        self.inner.try_split(fraction_of_remainder)
+    }
+
+    fn current_restriction(&self) -> Self::Restriction {
+        self.inner.current_restriction()
+    }
+
+    fn current_progress(&self) -> RestrictionProgress {
+        let progress = self.inner.current_progress();
+        if self.unbounded {
+            RestrictionProgress::new(progress.work_completed, 1.0)
+        } else {
+            progress
+        }
+    }
+
+    fn check_done(&self) -> Result<(), RestrictionError> {
+        self.inner.check_done()
+    }
+}
+
 /// The tracker of [`GenerateSequenceFn`]. A checkpoint keeps the watermark with the residual.
-type SequenceTracker = WatermarkedTracker<OffsetRangeTracker, ManualWatermarkEstimator>;
+type SequenceTracker = WatermarkedTracker<SequenceOffsetTracker, ManualWatermarkEstimator>;
 
 /// Moves the watermark of `tracker` forward to `millis`. The watermark never moves back.
 fn advance_watermark(tracker: &SequenceTracker, millis: i64) {
@@ -201,6 +246,32 @@ struct GenerateSequenceFn {
 }
 
 impl GenerateSequenceFn {
+    fn unbounded_splits(&self) -> i64 {
+        if self.end.is_some() {
+            return 1;
+        }
+        let Some((elements, period)) = self.rate else {
+            return MAX_UNBOUNDED_SPLITS;
+        };
+        let secs = period.as_secs_f64();
+        if secs <= 0.0 {
+            return MAX_UNBOUNDED_SPLITS;
+        }
+        let rate_per_sec = ((elements.max(1) as f64) / secs).ceil() as i64;
+        rate_per_sec.clamp(1, MAX_UNBOUNDED_SPLITS)
+    }
+
+    /// Returns `(splits, segment_len)` when this unbounded sequence partitions its initial range.
+    fn unbounded_striding(&self) -> Option<(i64, i128)> {
+        let splits = self.unbounded_splits();
+        if splits <= 1 {
+            return None;
+        }
+        let span = i128::from(i64::MAX - 1) - i128::from(self.start);
+        let seg_len = span / i128::from(splits);
+        (seg_len > 0).then_some((splits, seg_len))
+    }
+
     fn current_time_millis() -> i64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -242,44 +313,48 @@ impl GenerateSequenceFn {
     fn check_delay(
         target_time_millis: i64,
         now_millis: i64,
+        slept_millis: &mut i64,
         emitted: bool,
-        ctx: &mut ProcessContext<'_, <Self as SplittableDoFn>::Out>,
-    ) -> crate::Result<Option<ProcessContinuation>> {
-        const MAX_IN_BUNDLE_SLEEP_MILLIS: i64 = 2000;
-        if target_time_millis > now_millis {
-            let delay_millis = target_time_millis - now_millis;
-            if delay_millis <= MAX_IN_BUNDLE_SLEEP_MILLIS {
-                if emitted {
-                    ctx.flush_output()?;
-                }
-                std::thread::sleep(Duration::from_millis(delay_millis as u64));
-                Ok(None)
-            } else {
-                Ok(Some(ProcessContinuation::ResumeAfter(
-                    Duration::from_millis(delay_millis as u64),
-                )))
-            }
+    ) -> Option<ProcessContinuation> {
+        const MAX_FIRST_ELEMENT_SLEEP_MILLIS: i64 = 2_000;
+        const MAX_BUNDLE_SLEEP_MILLIS: i64 = 50;
+        if target_time_millis <= now_millis {
+            return None;
+        }
+        let delay_millis = target_time_millis - now_millis;
+        let can_sleep = if emitted {
+            *slept_millis + delay_millis <= MAX_BUNDLE_SLEEP_MILLIS
         } else {
-            Ok(None)
+            delay_millis <= MAX_FIRST_ELEMENT_SLEEP_MILLIS
+        };
+        let delay = Duration::from_millis(u64::try_from(delay_millis).unwrap_or(0));
+        if can_sleep {
+            std::thread::sleep(delay);
+            *slept_millis += delay_millis;
+            None
+        } else {
+            Some(ProcessContinuation::ResumeAfter(delay))
         }
     }
 
     fn process_rate_limited<I>(
         &self,
         candidates: I,
+        stride: i64,
         elements: i64,
         period: Duration,
         tracker: &<Self as SplittableDoFn>::Tracker,
         ctx: &mut ProcessContext<'_, <Self as SplittableDoFn>::Out>,
     ) -> crate::Result<ProcessContinuation>
     where
-        I: Iterator<Item = i64>,
+        I: Iterator<Item = (i64, i64)>,
     {
         let interval_millis = period.as_millis() as f64 / (elements as f64);
         let batch_size = self.split_size.max(1) as usize;
         let mut count = 0usize;
+        let mut slept_millis = 0i64;
 
-        for cur in candidates {
+        for (pos, seq) in candidates {
             // Start the clock first so `now` is never earlier than the start time.
             self.get_or_init_start_time();
             let now_millis = Self::current_time_millis();
@@ -287,23 +362,25 @@ impl GenerateSequenceFn {
                 return Ok(cont);
             }
 
-            let target_time = self.target_time_millis(cur, interval_millis);
-            if let Some(cont) = Self::check_delay(target_time, now_millis, count > 0, ctx)? {
+            let target_time = self.target_time_millis(seq, interval_millis);
+            if let Some(cont) =
+                Self::check_delay(target_time, now_millis, &mut slept_millis, count > 0)
+            {
                 advance_watermark(tracker, target_time);
                 return Ok(cont);
             }
 
-            if !tracker.try_claim(&cur) {
+            if !tracker.try_claim(&pos) {
                 return Ok(ProcessContinuation::Stop);
             }
 
             // A worker that restarts the clock computes earlier target times. The watermark
             // of the restored checkpoint is a lower bound for them.
             let timestamp = target_time.max(tracker.estimator.current_watermark().as_millis());
-            ctx.output(cur)
+            ctx.output(seq)
                 .at(crate::Instant::from_millis(timestamp))
                 .emit()?;
-            let next_target = self.target_time_millis(cur.saturating_add(1), interval_millis);
+            let next_target = self.target_time_millis(seq.saturating_add(stride), interval_millis);
             advance_watermark(tracker, next_target);
             count += 1;
 
@@ -323,33 +400,33 @@ impl GenerateSequenceFn {
         ctx: &mut ProcessContext<'_, <Self as SplittableDoFn>::Out>,
     ) -> crate::Result<ProcessContinuation>
     where
-        I: Iterator<Item = i64>,
+        I: Iterator<Item = (i64, i64)>,
     {
         let limit = batch_limit.unwrap_or(usize::MAX);
         // Only an unbounded sequence has a batch limit.
         let unbounded = batch_limit.is_some();
         let mut emitted = 0usize;
-        for cur in candidates.take(limit) {
+        for (pos, seq) in candidates.take(limit) {
             // Start the clock first so `now` is never earlier than the start time.
             self.get_or_init_start_time();
             let now_millis = Self::current_time_millis();
             if let Some(cont) = self.check_expiration(now_millis) {
                 return Ok(cont);
             }
-            if !tracker.try_claim(&cur) {
+            if !tracker.try_claim(&pos) {
                 return Ok(ProcessContinuation::Stop);
             }
             if unbounded {
                 // The clock can move back, so the timestamp is at least the watermark.
                 let timestamp = now_millis.max(tracker.estimator.current_watermark().as_millis());
-                ctx.output(cur)
+                ctx.output(seq)
                     .at(crate::Instant::from_millis(timestamp))
                     .emit()?;
                 tracker
                     .estimator
                     .set_watermark(crate::Instant::from_millis(timestamp));
             } else {
-                ctx.emit(cur)?;
+                ctx.emit(seq)?;
             }
             emitted += 1;
         }
@@ -383,10 +460,24 @@ impl SplittableDoFn for GenerateSequenceFn {
         _element: &Self::In,
         restriction: &Self::Restriction,
     ) -> Vec<Self::Restriction> {
-        match self.end {
-            Some(_) => restriction.sized_splits(self.split_size),
-            None => vec![*restriction],
+        if self.end.is_some() {
+            return restriction.sized_splits(self.split_size);
         }
+        if let Some((splits, seg_len)) = self.unbounded_striding()
+            && restriction.start == self.start
+            && restriction.end == i64::MAX
+        {
+            return (0..splits)
+                .filter_map(|k| {
+                    let start =
+                        i64::try_from(i128::from(self.start) + i128::from(k) * seg_len).ok()?;
+                    let end =
+                        i64::try_from(i128::from(self.start) + i128::from(k + 1) * seg_len).ok()?;
+                    (start < end).then_some(OffsetRange::new(start, end))
+                })
+                .collect();
+        }
+        vec![*restriction]
     }
 
     fn restriction_size(&self, _element: &Self::In, restriction: &Self::Restriction) -> f64 {
@@ -397,7 +488,10 @@ impl SplittableDoFn for GenerateSequenceFn {
     }
 
     fn create_tracker(&self, restriction: &Self::Restriction) -> Self::Tracker {
-        let tracker = OffsetRangeTracker::new(*restriction);
+        let tracker = SequenceOffsetTracker {
+            inner: OffsetRangeTracker::new(*restriction),
+            unbounded: self.end.is_none(),
+        };
         let estimator = ManualWatermarkEstimator::default();
         WatermarkedTracker::new(tracker, estimator).with_boundedness(self.boundedness())
     }
@@ -408,22 +502,35 @@ impl SplittableDoFn for GenerateSequenceFn {
         tracker: &Self::Tracker,
         ctx: &mut ProcessContext<'_, Self::Out>,
     ) -> crate::Result<ProcessContinuation> {
-        let candidates = || {
-            std::iter::successors(Some(tracker.current_restriction().start), |&c| {
-                c.checked_add(1)
-            })
-        };
+        let range = tracker.current_restriction();
+        let striding = self.unbounded_striding().filter(|_| range.end < i64::MAX);
+        let stride = striding.map_or(1, |(splits, _)| splits);
+        let start = self.start;
+        let candidates = std::iter::successors(Some(range.start), |&pos| pos.checked_add(1))
+            .take_while(move |&pos| pos < range.end)
+            .map(move |pos| {
+                let Some((splits, seg_len)) = striding else {
+                    return (pos, pos);
+                };
+                let rel = i128::from(pos) - i128::from(start);
+                let split_idx = rel / seg_len;
+                let step = rel % seg_len;
+                let seq = i64::try_from(i128::from(start) + step * i128::from(splits) + split_idx)
+                    .unwrap_or(i64::MAX);
+                (pos, seq)
+            });
 
-        self.rate
-            .map(|(elements, period)| {
-                self.process_rate_limited(candidates(), elements, period, tracker, ctx)
-            })
-            .unwrap_or_else(|| {
+        match self.rate {
+            Some((elements, period)) => {
+                self.process_rate_limited(candidates, stride, elements, period, tracker, ctx)
+            }
+            None => {
                 let batch_limit = self
                     .end
                     .is_none()
                     .then_some(self.split_size.max(1) as usize);
-                self.process_unrated(candidates(), batch_limit, tracker, ctx)
-            })
+                self.process_unrated(candidates, batch_limit, tracker, ctx)
+            }
+        }
     }
 }

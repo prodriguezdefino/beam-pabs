@@ -37,6 +37,7 @@ mod handler_lookup_test;
 mod harness_monitoring_test;
 mod inbound_wait_test;
 mod nullable_framing_test;
+mod partial_element_test;
 mod processor_cache_test;
 mod roots_test;
 mod row_framing_test;

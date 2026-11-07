@@ -48,6 +48,36 @@ pub(super) struct KeyAccumulator<A> {
     last_used: u64,
 }
 
+impl<A> KeyAccumulator<A> {
+    fn new(accumulator: A, timestamp: i64, clock: u64) -> Self {
+        Self {
+            accumulator: Some(accumulator),
+            min_timestamp: timestamp,
+            last_used: clock,
+        }
+    }
+
+    fn fold<CF: CombineFn<Accum = A>>(
+        &mut self,
+        combine_fn: &CF,
+        value: CF::Input,
+        timestamp: i64,
+        clock: u64,
+    ) -> crate::Result<&A> {
+        // `add_input` takes the accumulator by value: take it out and put it back,
+        // so the key and window are not copied.
+        let accumulator = match self.accumulator.take() {
+            Some(accumulator) => accumulator,
+            None => combine_fn.create_accumulator()?,
+        };
+        let accumulator = combine_fn.add_input(accumulator, value)?;
+        self.min_timestamp = self.min_timestamp.min(timestamp);
+        self.last_used = clock;
+        let accumulator = self.accumulator.insert(accumulator);
+        Ok(accumulator)
+    }
+}
+
 /// The accumulators of every key seen in one window assignment.
 struct WindowGroup<K, A> {
     /// A header from one input element. Output copies its encoded windows, because the
@@ -172,76 +202,13 @@ impl<K: Eq + Hash, A> WindowGroup<K, A> {
     }
 }
 
-impl<K, A> AccumulatorTable<K, A>
-where
-    K: DefaultCoder + Eq + Hash,
-    A: DefaultCoder,
-{
+impl<K, A> AccumulatorTable<K, A> {
     pub(super) fn estimated_bytes(&self) -> usize {
         self.len.saturating_mul(self.weigher.entry_bytes())
     }
+}
 
-    pub(super) fn add<CF: CombineFn<Accum = A>>(
-        &mut self,
-        combine_fn: &CF,
-        window: &[u8],
-        header: &WindowedHeader,
-        key: K,
-        value: CF::Input,
-        timestamp: i64,
-    ) -> crate::Result {
-        let Self {
-            groups,
-            len,
-            clock,
-            weigher,
-            ..
-        } = self;
-        *clock += 1;
-
-        // One lookup for a known window. A new window copies its bytes once.
-        let group = match groups.get_mut(window) {
-            Some(group) => group,
-            None => groups
-                .entry(window.to_vec())
-                .or_insert_with(|| WindowGroup::new(header)),
-        };
-
-        match group.keys.get_mut(&key) {
-            Some(entry) => {
-                // `add_input` takes the accumulator by value: take it out and put it back,
-                // so the key and window are not copied.
-                let accumulator = match entry.accumulator.take() {
-                    Some(accumulator) => accumulator,
-                    None => combine_fn.create_accumulator()?,
-                };
-                let accumulator = combine_fn.add_input(accumulator, value)?;
-                if weigher.should_sample() {
-                    weigher.record(encoded_len(&key) + encoded_len(&accumulator));
-                }
-                entry.accumulator = Some(accumulator);
-                entry.min_timestamp = entry.min_timestamp.min(timestamp);
-                entry.last_used = *clock;
-            }
-            None => {
-                let accumulator = combine_fn.add_input(combine_fn.create_accumulator()?, value)?;
-                if weigher.should_sample() {
-                    weigher.record(encoded_len(&key) + encoded_len(&accumulator));
-                }
-                group.keys.insert(
-                    key,
-                    KeyAccumulator {
-                        accumulator: Some(accumulator),
-                        min_timestamp: timestamp,
-                        last_used: *clock,
-                    },
-                );
-                *len += 1;
-            }
-        }
-        Ok(())
-    }
-
+impl<K: Eq + Hash, A> AccumulatorTable<K, A> {
     /// Removes the least recently used tenth of the entries and gives each to `emit`. A
     /// linear-time selection finds the cutoff, so the amortized cost per key is constant.
     pub(super) fn evict_coldest(
@@ -292,5 +259,112 @@ where
                 .into_iter()
                 .try_for_each(|(key, entry)| emit(&output, key, entry))
         })
+    }
+}
+
+impl<K, A> AccumulatorTable<K, A>
+where
+    K: DefaultCoder + Eq + Hash,
+    A: DefaultCoder,
+{
+    pub(super) fn add<CF: CombineFn<Accum = A>>(
+        &mut self,
+        combine_fn: &CF,
+        window: &[u8],
+        header: &WindowedHeader,
+        key: K,
+        value: CF::Input,
+        timestamp: i64,
+    ) -> crate::Result {
+        let Self {
+            groups,
+            len,
+            clock,
+            weigher,
+            ..
+        } = self;
+        *clock += 1;
+
+        // One lookup for a known window. A new window copies its bytes once.
+        let group = match groups.get_mut(window) {
+            Some(group) => group,
+            None => groups
+                .entry(window.to_vec())
+                .or_insert_with(|| WindowGroup::new(header)),
+        };
+
+        match group.keys.get_mut(&key) {
+            Some(entry) => {
+                let accumulator = entry.fold(combine_fn, value, timestamp, *clock)?;
+                if weigher.should_sample() {
+                    weigher.record(encoded_len(&key) + encoded_len(accumulator));
+                }
+            }
+            None => {
+                let accumulator = combine_fn.add_input(combine_fn.create_accumulator()?, value)?;
+                if weigher.should_sample() {
+                    weigher.record(encoded_len(&key) + encoded_len(&accumulator));
+                }
+                group
+                    .keys
+                    .insert(key, KeyAccumulator::new(accumulator, timestamp, *clock));
+                *len += 1;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<A: DefaultCoder> AccumulatorTable<Box<[u8]>, A> {
+    /// Folds `value` into the entry for `key_bytes`, borrowing `key_bytes` on a hit. On a
+    /// miss, checks `key_bytes` with `validate_on_miss` before storing a boxed copy.
+    pub(super) fn add_bytes<CF: CombineFn<Accum = A>>(
+        &mut self,
+        combine_fn: &CF,
+        header: &WindowedHeader,
+        key_bytes: &[u8],
+        validate_on_miss: impl FnOnce(&[u8]) -> crate::Result,
+        value: CF::Input,
+    ) -> crate::Result {
+        let Self {
+            groups,
+            len,
+            clock,
+            weigher,
+            ..
+        } = self;
+        *clock += 1;
+
+        let window = header.window_bytes();
+        let timestamp = header.timestamp_millis();
+        // One lookup for a known window. A new window copies its bytes once.
+        let group = match groups.get_mut(window) {
+            Some(group) => group,
+            None => groups
+                .entry(window.to_vec())
+                .or_insert_with(|| WindowGroup::new(header)),
+        };
+
+        match group.keys.get_mut(key_bytes) {
+            Some(entry) => {
+                let accumulator = entry.fold(combine_fn, value, timestamp, *clock)?;
+                if weigher.should_sample() {
+                    weigher.record(key_bytes.len() + encoded_len(accumulator));
+                }
+            }
+            None => {
+                validate_on_miss(key_bytes)?;
+                let accumulator = combine_fn.add_input(combine_fn.create_accumulator()?, value)?;
+                if weigher.should_sample() {
+                    weigher.record(key_bytes.len() + encoded_len(&accumulator));
+                }
+                group.keys.insert(
+                    Box::from(key_bytes),
+                    KeyAccumulator::new(accumulator, timestamp, *clock),
+                );
+                *len += 1;
+            }
+        }
+        Ok(())
     }
 }
