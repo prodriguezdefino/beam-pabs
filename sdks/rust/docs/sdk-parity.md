@@ -56,6 +56,8 @@ This page compares the Rust SDK with the other Beam SDKs.
 | Display data | ✅ | ✅ | 🟡 | ❌ | ✅ |
 
 Notes:
+- **Combine**: Java, Python and Rust also split skewed keys across intermediate shards
+  (`withHotKeyFanout` / `withFanout`, `with_hot_key_fanout` / `with_fanout`).
 - **Distinct**: Java and Rust also keep one element per representative value
   (`Distinct.withRepresentativeValueFn`, `DistinctBy`).
   Python `Distinct` and Go `filter.Distinct` compare whole elements.

@@ -261,6 +261,11 @@ fn test_composite_and_wrapper_transforms_record_display_data() {
             .with_limit(4),
     );
     let _ = numbers.apply("Shuffled", Reshuffle::new().with_num_buckets(7));
+    let _ = numbers.apply("Total", CombineGlobally::new(Sum::new()).with_fanout(3));
+    let _ = left.apply(
+        "TotalPerKey",
+        CombinePerKey::new(Sum::new()).with_hot_key_fanout(4),
+    );
 
     let components = p.to_proto().components.expect("components present");
     for (unique_name, kind) in [
@@ -314,6 +319,19 @@ fn test_composite_and_wrapper_transforms_record_display_data() {
         Some("Reshuffle")
     );
     assert_eq!(shuffled.get("num_buckets").map(String::as_str), Some("7"));
+
+    for (unique_name, kind, fanout) in [
+        ("Total", "CombineGlobally", "3"),
+        ("TotalPerKey", "CombinePerKey", "4"),
+    ] {
+        let items = display_data_for(&components, unique_name);
+        assert_eq!(items.get("transform").map(String::as_str), Some(kind));
+        assert!(
+            items.get("combine_fn").is_some_and(|f| f.contains("Sum")),
+            "{unique_name}: {items:?}"
+        );
+        assert_eq!(items.get("fanout").map(String::as_str), Some(fanout));
+    }
 }
 
 #[test]

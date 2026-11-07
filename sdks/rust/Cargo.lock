@@ -277,6 +277,7 @@ dependencies = [
  "arrow-ipc",
  "arrow-schema",
  "chrono",
+ "criterion",
  "thiserror 2.0.21",
 ]
 

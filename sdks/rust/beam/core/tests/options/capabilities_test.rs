@@ -146,6 +146,25 @@ fn test_advertised_protocols() {
 }
 
 #[test]
+fn test_pipeline_proto_environment_advertises_state_caching() {
+    use beam::pipeline::{PROTOCOL_STATE_CACHING, Pipeline, URN_ENV_DOCKER};
+
+    let p = Pipeline::new();
+    p.set_docker_environment("apache/beam_rust_sdk:latest");
+    let components = p.to_proto().components.expect("components");
+    let env = components
+        .environments
+        .values()
+        .find(|e| e.urn == URN_ENV_DOCKER)
+        .expect("the pipeline proto has the Docker environment");
+    assert!(
+        env.capabilities.iter().any(|c| c == PROTOCOL_STATE_CACHING),
+        "a runner sends user state and side input cache tokens only to an environment that \
+         declares the capability, and without tokens each bundle reads each side input again"
+    );
+}
+
+#[test]
 fn test_advertised_transforms() {
     use beam::pipeline::{URN_SDF_TRUNCATE_SIZED_RESTRICTIONS, URN_TO_STRING};
 

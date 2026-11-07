@@ -43,6 +43,7 @@ use crate::windowing::is_globally_windowed;
 pub struct CombineGlobally<CF> {
     combine_fn: Arc<CF>,
     insert_default: bool,
+    fanout: usize,
 }
 
 impl<CF: CombineFn> CombineGlobally<CF> {
@@ -51,6 +52,7 @@ impl<CF: CombineFn> CombineGlobally<CF> {
         Self {
             combine_fn: Arc::new(combine_fn),
             insert_default: true,
+            fanout: 1,
         }
     }
 
@@ -64,12 +66,24 @@ impl<CF: CombineFn> CombineGlobally<CF> {
         self.insert_default = false;
         self
     }
+
+    /// Splits the input across `fanout` intermediate shards before the final merge.
+    ///
+    /// Each bundle picks one shard in `0..fanout`, so the spread grows with the number of
+    /// bundles. Values `0` and `1` turn fanout off.
+    pub fn with_fanout(mut self, fanout: usize) -> Self {
+        self.fanout = fanout;
+        self
+    }
 }
 
 impl<CF: CombineFn> HasDisplayData for CombineGlobally<CF> {
     fn populate_display_data(&self, builder: &mut DisplayDataBuilder) {
         builder.add_text("transform", "CombineGlobally");
         builder.add_text("combine_fn", std::any::type_name::<CF>());
+        if self.fanout > 1 {
+            builder.add_integer("fanout", i64::try_from(self.fanout).unwrap_or(i64::MAX));
+        }
     }
 }
 
@@ -125,8 +139,8 @@ where
         let name = pipeline.scope_name().unwrap_or_default();
         let output = self.expand_steps(&name, input);
 
-        // The composite carries the payload of its `CombinePerKey`, so a runner can see the
-        // global combine and its combine function.
+        // Single-stage global combines carry the payload of their `CombinePerKey`. A
+        // fanned-out combine leaves the outer spec unset so runners keep both stages.
         let payload = {
             let lock = pipeline.lock();
             let first = lock
@@ -139,12 +153,13 @@ where
                 .filter_map(|t| t.spec.as_ref())
                 .find(|spec| spec.urn == URN_COMBINE_PER_KEY)
                 .map(|spec| spec.payload.clone())
-                .unwrap_or_default()
         };
-        pipeline.set_scope_spec(FunctionSpec {
-            urn: URN_COMBINE_GLOBALLY.to_string(),
-            payload,
-        });
+        if let Some(payload) = payload {
+            pipeline.set_scope_spec(FunctionSpec {
+                urn: URN_COMBINE_GLOBALLY.to_string(),
+                payload,
+            });
+        }
         let mut builder = DisplayDataBuilder::with_namespace(name);
         self.populate_display_data(&mut builder);
         pipeline.set_scope_display_data(builder.into_proto());
@@ -159,7 +174,8 @@ impl<CF: CombineFn> CombineGlobally<CF> {
             .apply("KeyWithVoid", Map::new(|element: CF::Input| ((), element)))
             .apply(
                 "Combine",
-                CombinePerKey::shared(Arc::clone(&self.combine_fn)),
+                CombinePerKey::shared(Arc::clone(&self.combine_fn))
+                    .with_hot_key_fanout(self.fanout),
             )
             .apply(
                 "ExtractValues",

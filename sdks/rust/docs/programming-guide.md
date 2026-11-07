@@ -541,6 +541,9 @@ the `CombineFn` in its payload. A runner that lifts it (Prism, Dataflow) runs a
 partial combine before the shuffle. Then about one accumulator per key per
 bundle crosses the shuffle. On windowed input, use
 `CombineGlobally::new(..).without_defaults()` (fluent: `.combine_globally_without_defaults`).
+For skewed keys, call `.with_hot_key_fanout(n)` on `CombinePerKey` or `.with_fanout(n)` on
+`CombineGlobally`. Each bundle picks one of the `n` shards, so the spread grows with the
+number of bundles.
 The fluent `fold_per_key` / `fold_globally` build a `CombineFn` from a zero, a
 fold closure and a merge closure. `fold_values(name, zero, fold)` has no merge
 closure: it groups with `GroupByKey` and folds each group in sequence, so all

@@ -268,7 +268,7 @@ tasks.register('profileCompare') {
 // Benchmarks of the harness crate (benches/), run on this machine. criterion writes its reports
 // to target/criterion/ and keeps named baselines there. chain_throughput is not criterion: it
 // prints ns/word and takes no criterion flags.
-def harnessBenches = ['process_bundle', 'data_plane', 'user_state', 'chain_throughput']
+def harnessBenches = ['process_bundle', 'data_plane', 'user_state', 'side_input', 'chain_throughput', 'window_into', 'row_coder', 'logging']
 tasks.register('harnessBenchmark', Exec) {
   group = 'Verification'
   description = 'Run the criterion benchmarks of the harness crate ' +

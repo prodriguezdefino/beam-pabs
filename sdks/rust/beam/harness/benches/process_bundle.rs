@@ -27,6 +27,9 @@
 //! - `state_without_caching`, `state_with_caching`: four bundles of one element each through a
 //!   bag state DoFn, as `testStateWithoutCaching` and `testStateWithCaching`.
 //! - `tiny_bundle_latency`: one task, so the time is one bundle's round trip.
+//! - `small_bundle`, `small_bundle_oversubscribed`: bundles of 10 elements from 16 or 256
+//!   tasks, as the small bundles of a streaming runner. With 256 tasks, more bundles run at
+//!   the same time than the machine has CPUs.
 //!
 //! The `process_bundle_cpu` group runs the same benchmarks and reports the CPU time of the
 //! process per operation.
@@ -300,6 +303,7 @@ fn process_bundle<M: Measurement<Value = Duration>>(
     });
     let tiny = encode([Vec::<u8>::new()]);
     let large = encode(vec![Vec::<u8>::new(); 1_000]);
+    let small = encode(vec![Vec::<u8>::new(); 10]);
 
     let mut group = c.benchmark_group(group_name);
     group.throughput(Throughput::Elements(1));
@@ -307,6 +311,8 @@ fn process_bundle<M: Measurement<Value = Duration>>(
         ("tiny_bundle", &tiny, 3, THREADS),
         ("large_bundle", &large, 3_000, THREADS),
         ("tiny_bundle_latency", &tiny, 3, 1),
+        ("small_bundle", &small, 30, THREADS),
+        ("small_bundle_oversubscribed", &small, 30, 256),
     ] {
         group.bench_function(name, |b| {
             b.to_async(&rt).iter_custom(|iterations| {

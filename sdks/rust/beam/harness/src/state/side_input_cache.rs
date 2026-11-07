@@ -17,14 +17,14 @@
  * under the License.
  */
 
-use super::cache::{CachedPart, CachedValue, StateCache};
+use super::cache::{CacheKey, CacheKeyParts, CacheKeyRef, CachedPart, CachedValue, StateCache};
 use super::channel::StateChannel;
 use super::framing::RunnerFraming;
-use super::tables::{FastHashMap, StateCellKey, StateCellKeyParts};
+use super::tables::{FastHashMap, StateCellKey, StateCellKeyParts, StateCellRef};
 use bytes::{Buf, Bytes, BytesMut};
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use beam::internals::{SideInputElements, SideInputError, SideInputReader, extract_side_inputs};
 use beam::values::{SideInputWindowing, URN_SIDE_INPUT_MULTIMAP};
@@ -37,29 +37,31 @@ const SIDE_INPUT_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
 struct SideInputMeta {
     transform_id: String,
     side_input_id: String,
-    elem_coder_id: String,
-    key_coder_id: Option<String>,
-    value_coder_id: String,
+    /// The framing of the elements of an iterable read.
+    elem_framing: RunnerFraming,
+    /// The framing of a multimap key. `None` for a side input that is not a multimap.
+    key_framing: Option<RunnerFraming>,
+    /// The framing of the values of a multimap read.
+    value_framing: RunnerFraming,
     /// The `window_mapping_fn` of the side input, decoded once for the descriptor.
     windowing: Result<SideInputWindowing, String>,
 }
 
-/// The side inputs that the transforms of a descriptor read, with their coders. A processor
-/// builds it once and its bundles share it.
+/// The side inputs that the transforms of a descriptor read, with their framings. A
+/// processor builds it once and its bundles share it.
 pub struct SideInputSpecs {
     metas: Vec<SideInputMeta>,
     /// Maps a transform id and a tag to an index in `metas`.
     by_transform_and_tag: FastHashMap<String, FastHashMap<String, usize>>,
     /// Maps a tag to an index in `metas`, for a read that does not name its transform.
     by_tag: FastHashMap<String, usize>,
-    coders: Arc<HashMap<String, Coder>>,
 }
 
 impl SideInputSpecs {
     /// The side inputs of `descriptor`, or `None` if no transform reads one.
     pub fn from_descriptor(
         descriptor: &ProcessBundleDescriptor,
-        coders: Arc<HashMap<String, Coder>>,
+        coders: &Arc<HashMap<String, Coder>>,
     ) -> Option<Self> {
         let metas: Vec<SideInputMeta> = descriptor
             .transforms
@@ -72,21 +74,21 @@ impl SideInputSpecs {
                         let elem_coder_id = descriptor
                             .pcollections
                             .get(pcol_id)
-                            .map(|p| p.coder_id.clone())
-                            .unwrap_or_default();
+                            .map_or("", |p| p.coder_id.as_str());
                         let components = descriptor
                             .coders
-                            .get(&elem_coder_id)
+                            .get(elem_coder_id)
                             .map_or(&[][..], |c| c.component_coder_ids.as_slice());
+                        let value_coder_id =
+                            components.get(1).map_or(elem_coder_id, String::as_str);
                         let is_multimap = side_input
                             .access_pattern
                             .as_ref()
                             .is_some_and(|p| p.urn == URN_SIDE_INPUT_MULTIMAP);
-                        let key_coder_id = components.first().filter(|_| is_multimap).cloned();
-                        let value_coder_id = components
-                            .get(1)
-                            .cloned()
-                            .unwrap_or_else(|| elem_coder_id.clone());
+                        let key_framing = components
+                            .first()
+                            .filter(|_| is_multimap)
+                            .map(|key_coder_id| RunnerFraming::new(key_coder_id, coders));
                         let windowing = side_input
                             .window_mapping_fn
                             .as_ref()
@@ -95,9 +97,9 @@ impl SideInputSpecs {
                         Some(SideInputMeta {
                             transform_id: t_id.clone(),
                             side_input_id: tag,
-                            elem_coder_id,
-                            key_coder_id,
-                            value_coder_id,
+                            elem_framing: RunnerFraming::new(elem_coder_id, coders),
+                            key_framing,
+                            value_framing: RunnerFraming::new(value_coder_id, coders),
                             windowing,
                         })
                     })
@@ -127,7 +129,6 @@ impl SideInputSpecs {
             metas,
             by_transform_and_tag,
             by_tag,
-            coders,
         })
     }
 
@@ -148,6 +149,60 @@ impl SideInputSpecs {
     }
 }
 
+/// The kind of a side input cell. An iterable cell and a multimap cell of the same side
+/// input and window are different cells.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum CellKind {
+    Iterable,
+    Multimap,
+}
+
+impl CellKind {
+    fn state_key_fn(self) -> fn(&StateCellKey) -> StateKey {
+        match self {
+            Self::Iterable => StateCellKey::iterable_side_input_key,
+            Self::Multimap => StateCellKey::multimap_side_input_key,
+        }
+    }
+}
+
+/// The last cell of one page that a bundle read for one side input. A `DoFn` reads the side
+/// input for each element, and consecutive elements are mostly in one window. A hit skips
+/// the lock and the LRU update of the [`StateCache`]. A cell of more pages goes through the
+/// cache only, so that the cache limit holds for large side inputs.
+struct PageMemo {
+    kind: CellKind,
+    window: Vec<u8>,
+    key: Vec<u8>,
+    data: Bytes,
+}
+
+/// The memo of one side input. Only the thread of the bundle uses it, so `try_lock` does not
+/// fail. If it fails, the read uses the [`StateCache`] and stays correct.
+#[derive(Default)]
+struct MemoSlot(Mutex<Option<PageMemo>>);
+
+impl MemoSlot {
+    fn recall(&self, kind: CellKind, window: &[u8], key: &[u8]) -> Option<Bytes> {
+        let memo = self.0.try_lock().ok()?;
+        memo.as_ref()
+            .filter(|m| m.kind == kind && m.window == window && m.key == key)
+            // A clone of `Bytes` only increments a reference count.
+            .map(|m| m.data.clone())
+    }
+
+    fn remember(&self, kind: CellKind, window: &[u8], key: &[u8], data: &Bytes) {
+        if let Ok(mut memo) = self.0.try_lock() {
+            *memo = Some(PageMemo {
+                kind,
+                window: window.to_vec(),
+                key: key.to_vec(),
+                data: data.clone(),
+            });
+        }
+    }
+}
+
 /// Reads the side inputs of one bundle from the runner, and caches their pages.
 pub struct FnApiSideInputReader {
     specs: Arc<SideInputSpecs>,
@@ -159,17 +214,22 @@ pub struct FnApiSideInputReader {
     bundle_pages: StateCache,
     /// Pages of side inputs with a cache token. They live across bundles.
     shared_pages: Option<Arc<StateCache>>,
+    /// The memo of each side input, in the order of the specs. It lives for one bundle,
+    /// as the reader does.
+    memos: Box<[MemoSlot]>,
 }
 
 impl FnApiSideInputReader {
     /// A reader for one bundle. Without `channel`, every read returns an error.
     pub fn new(specs: Arc<SideInputSpecs>, channel: Option<StateChannel>) -> Self {
+        let memos = specs.metas.iter().map(|_| MemoSlot::default()).collect();
         Self {
             specs,
             channel,
             cache_tokens: Vec::new(),
             bundle_pages: StateCache::new(SIDE_INPUT_CACHE_MAX_BYTES),
             shared_pages: None,
+            memos,
         }
     }
 
@@ -193,15 +253,18 @@ impl FnApiSideInputReader {
         self
     }
 
-    /// Starts a lazy read of one side input cell, from the cache or from the runner.
+    /// Starts a read of one side input cell. The first page comes from the memo, the cache
+    /// or the runner at once, so a cell of one cached page needs no owned key. Later pages
+    /// come when the iterator reaches them.
     fn read_cell<'a>(
         &'a self,
-        tag: &str,
         index: usize,
-        cell: StateCellKey,
-        state_key_fn: fn(&StateCellKey) -> StateKey,
-        coder_id: &'a str,
+        meta: &'a SideInputMeta,
+        cell: StateCellRef<'_>,
+        kind: CellKind,
+        framing: &'a RunnerFraming,
     ) -> Result<SideInputElements<'a>, SideInputError> {
+        let tag = meta.side_input_id.as_str();
         let channel = self
             .channel
             .as_ref()
@@ -209,23 +272,49 @@ impl FnApiSideInputReader {
                 tag: tag.to_string(),
                 reason: "ProcessBundleDescriptor has no state_api_service_descriptor".to_string(),
             })?;
-        let tag: Arc<str> = Arc::from(tag);
         let (store, cache_token) = match (&self.shared_pages, self.cache_tokens.get(index)) {
             (Some(shared), Some(Some(token))) => (shared.as_ref(), token.clone()),
             _ => (&self.bundle_pages, Bytes::new()),
         };
-        let pages = CachedPageIterator {
+        let mut pages = CachedPageIterator {
             store,
             cache_token,
             channel,
-            state_key_fn,
-            cell: Arc::new(cell),
-            next_token: Some(Bytes::new()),
-            tag: Arc::clone(&tag),
+            kind,
+            tag,
+            first: None,
+            rest: None,
         };
+        let (transform_id, state_id, window, key) = cell;
+        let memo = self.memos.get(index);
+        let first = match memo.and_then(|memo| memo.recall(kind, window, key)) {
+            Some(data) => Ok(data),
+            None => {
+                let mut owned = None;
+                pages
+                    .load(cell, &mut owned, &Bytes::new())
+                    .map(|(data, next_token)| {
+                        pages.rest = match (next_token, memo) {
+                            (Some(token), _) => {
+                                let cell = owned.unwrap_or_else(|| {
+                                    Arc::new(StateCellKey::new(transform_id, state_id, window, key))
+                                });
+                                Some((cell, token))
+                            }
+                            (None, Some(memo)) => {
+                                memo.remember(kind, window, key, &data);
+                                None
+                            }
+                            (None, None) => None,
+                        };
+                        data
+                    })
+            }
+        };
+        pages.first = Some(first);
         Ok(Box::new(ElementFramingIterator {
             pages,
-            framing: RunnerFraming::new(coder_id, &self.specs.coders),
+            framing,
             buffer: Bytes::new(),
             tag,
         }))
@@ -238,68 +327,89 @@ struct CachedPageIterator<'a> {
     /// The runner cache token of the side input, or empty for a cache of one bundle.
     cache_token: Bytes,
     channel: &'a StateChannel,
-    state_key_fn: fn(&StateCellKey) -> StateKey,
-    cell: Arc<StateCellKey>,
-    /// The token of the next page; `None` after the last page.
-    next_token: Option<Bytes>,
-    tag: Arc<str>,
+    kind: CellKind,
+    tag: &'a str,
+    /// The first page, which the read loads when it starts.
+    first: Option<Result<Bytes, SideInputError>>,
+    /// The owned key of the cell and the token of the next page; `None` after the last page.
+    rest: Option<(Arc<StateCellKey>, Bytes)>,
+}
+
+impl CachedPageIterator<'_> {
+    /// The page of `cell` at `page_token` and the token of the next page, from the cache or
+    /// from the runner. A page from the runner goes into the cache under the owned key in
+    /// `owned`, which this call makes if it is `None`.
+    fn load(
+        &self,
+        cell: StateCellRef<'_>,
+        owned: &mut Option<Arc<StateCellKey>>,
+        page_token: &Bytes,
+    ) -> Result<(Bytes, Option<Bytes>), SideInputError> {
+        let part = CachedPart::SideInputPage(self.kind, page_token.clone());
+        let key = CacheKeyRef {
+            token: &self.cache_token,
+            cell,
+            part: &part,
+        };
+        // Only pages are stored under a page key, so another value is a miss too.
+        if let Some(CachedValue::Page { data, next_token }) =
+            self.store.get(&key as &dyn CacheKeyParts)
+        {
+            return Ok((data, next_token));
+        }
+        let (transform_id, state_id, window, user_key) = cell;
+        let owned = owned.get_or_insert_with(|| {
+            Arc::new(StateCellKey::new(transform_id, state_id, window, user_key))
+        });
+        let state_key = (self.kind.state_key_fn())(owned);
+        let (data, next_token) = self
+            .channel
+            .fetch_page(&state_key, page_token.to_vec())
+            .map_err(|reason| SideInputError::Runner {
+                tag: self.tag.to_string(),
+                reason,
+            })?;
+        let data = Bytes::from(data);
+        let next_token = next_token.map(Bytes::from);
+        self.store.insert(
+            CacheKey {
+                token: self.cache_token.clone(),
+                cell: Arc::clone(owned),
+                part,
+            },
+            CachedValue::Page {
+                data: data.clone(),
+                next_token: next_token.clone(),
+            },
+        );
+        Ok((data, next_token))
+    }
 }
 
 impl Iterator for CachedPageIterator<'_> {
     type Item = Result<Bytes, SideInputError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let page_token = self.next_token.take()?;
-        let part = CachedPart::SideInputPage(page_token.clone());
-        let (data, next_token) = match self.store.get(&crate::state::cache::CacheKeyRef {
-            token: &self.cache_token,
-            cell: self.cell.parts(),
-            part: &part,
+        if let Some(first) = self.first.take() {
+            return Some(first);
         }
-            as &dyn crate::state::cache::CacheKeyParts)
-        {
-            Some(CachedValue::Page { data, next_token }) => (data, next_token),
-            // Only pages are stored under a page key, so another value is a miss too.
-            Some(CachedValue::Bag(_) | CachedValue::Map(_)) | None => {
-                let state_key = (self.state_key_fn)(&self.cell);
-                let (data, next_token) =
-                    match self.channel.fetch_page(&state_key, page_token.to_vec()) {
-                        Ok(page) => page,
-                        Err(reason) => {
-                            return Some(Err(SideInputError::Runner {
-                                tag: self.tag.to_string(),
-                                reason,
-                            }));
-                        }
-                    };
-                let data = Bytes::from(data);
-                let next_token = next_token.map(Bytes::from);
-                self.store.insert(
-                    crate::state::cache::CacheKey {
-                        token: self.cache_token.clone(),
-                        cell: Arc::clone(&self.cell),
-                        part,
-                    },
-                    CachedValue::Page {
-                        data: data.clone(),
-                        next_token: next_token.clone(),
-                    },
-                );
-                (data, next_token)
-            }
-        };
-        self.next_token = next_token;
-        Some(Ok(data))
+        let (cell, page_token) = self.rest.take()?;
+        let mut owned = Some(Arc::clone(&cell));
+        let loaded = self.load(cell.parts(), &mut owned, &page_token);
+        Some(loaded.map(|(data, next_token)| {
+            self.rest = next_token.map(|token| (cell, token));
+            data
+        }))
     }
 }
 
 /// The elements of a side input cell. An element can span pages.
 struct ElementFramingIterator<'a> {
     pages: CachedPageIterator<'a>,
-    framing: RunnerFraming,
+    framing: &'a RunnerFraming,
     /// Bytes of the current page that are not yet returned.
     buffer: Bytes,
-    tag: Arc<str>,
+    tag: &'a str,
 }
 
 impl Iterator for ElementFramingIterator<'_> {
@@ -396,13 +506,12 @@ impl SideInputReader for FnApiSideInputReader {
         let (index, meta) = self
             .specs
             .resolve((!transform_id.is_empty()).then_some(transform_id), tag)?;
-        let cell = StateCellKey::new(&meta.transform_id, &meta.side_input_id, window_bytes, &[]);
         self.read_cell(
-            tag,
             index,
-            cell,
-            StateCellKey::iterable_side_input_key,
-            &meta.elem_coder_id,
+            meta,
+            (&meta.transform_id, &meta.side_input_id, window_bytes, &[]),
+            CellKind::Iterable,
+            &meta.elem_framing,
         )
     }
 
@@ -416,27 +525,26 @@ impl SideInputReader for FnApiSideInputReader {
         let (index, meta) = self
             .specs
             .resolve((!transform_id.is_empty()).then_some(transform_id), tag)?;
-        let framed_key = match &meta.key_coder_id {
-            Some(key_coder_id) => RunnerFraming::new(key_coder_id, &self.specs.coders)
-                .frame(Cow::Borrowed(key_bytes))
-                .map_err(|reason| SideInputError::Framing {
+        let framed_key = match &meta.key_framing {
+            Some(framing) => framing.frame(Cow::Borrowed(key_bytes)).map_err(|reason| {
+                SideInputError::Framing {
                     tag: tag.to_string(),
                     reason: format!("Failed to frame the multimap key: {reason}"),
-                })?,
+                }
+            })?,
             None => Cow::Borrowed(key_bytes),
         };
-        let cell = StateCellKey::new(
-            &meta.transform_id,
-            &meta.side_input_id,
-            window_bytes,
-            &framed_key,
-        );
         self.read_cell(
-            tag,
             index,
-            cell,
-            StateCellKey::multimap_side_input_key,
-            &meta.value_coder_id,
+            meta,
+            (
+                &meta.transform_id,
+                &meta.side_input_id,
+                window_bytes,
+                &framed_key,
+            ),
+            CellKind::Multimap,
+            &meta.value_framing,
         )
     }
 }

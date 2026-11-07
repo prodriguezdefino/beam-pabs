@@ -63,6 +63,12 @@ const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
 /// Timeout before closing a connection that does not acknowledge a keepalive ping.
 const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Initial HTTP/2 flow-control window per stream (1 MiB).
+const STREAM_WINDOW_BYTES: u32 = 1 << 20;
+
+/// Initial HTTP/2 flow-control window across all streams on one connection (4 MiB).
+const CONNECTION_WINDOW_BYTES: u32 = 4 << 20;
+
 /// Opens a channel to `endpoint`, which may be given with or without a scheme.
 pub async fn channel(endpoint: &str) -> Result<Channel, ChannelError> {
     let uri = with_scheme(endpoint);
@@ -72,7 +78,10 @@ pub async fn channel(endpoint: &str) -> Result<Channel, ChannelError> {
             source,
         })?
         .connect_timeout(CONNECT_TIMEOUT)
+        .tcp_nodelay(true)
         .tcp_keepalive(Some(KEEPALIVE_INTERVAL))
+        .initial_stream_window_size(Some(STREAM_WINDOW_BYTES))
+        .initial_connection_window_size(Some(CONNECTION_WINDOW_BYTES))
         .http2_keep_alive_interval(KEEPALIVE_INTERVAL)
         .keep_alive_timeout(KEEPALIVE_TIMEOUT)
         .connect()

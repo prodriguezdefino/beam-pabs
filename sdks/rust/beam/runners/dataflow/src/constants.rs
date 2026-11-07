@@ -43,6 +43,10 @@ pub const FNAPI_STREAMING: &str = "FNAPI_STREAMING";
 
 /// Runner v2 Experiment Flags
 pub const EXPERIMENT_USE_RUNNER_V2: &str = "use_runner_v2";
+pub const EXPERIMENT_STREAMING_ENGINE_STATE_TAG_ENCODING_V2_SUPPORTED: &str =
+    "streaming_engine_state_tag_encoding_v2_supported";
+pub const EXPERIMENT_ENABLE_STREAMING_ENGINE_STATE_TAG_ENCODING_V2: &str =
+    "enable_streaming_engine_state_tag_encoding_v2";
 
 /// Worker Pool Configuration Constants
 pub const WORKER_POOL_KIND_HARNESS: &str = "harness";

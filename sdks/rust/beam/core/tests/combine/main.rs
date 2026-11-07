@@ -26,6 +26,7 @@ mod combine_fn_test;
 mod combine_table_test;
 mod combining_state_test;
 mod compose_test;
+mod fanout_test;
 mod registered_combine_test;
 mod registered_library_combine_test;
 mod statistics_combine_test;

@@ -20,130 +20,21 @@
 //! A registered `CombineFn`: its stages travel in the graph, with the key coder, so the
 //! worker needs no rebuilt pipeline for them.
 
-use std::io::{Read, Write};
-
-use beam::coders::{BeamIterable, Coder, CoderError, CoderRegistry, Context, DefaultCoder};
+use beam::coders::{BeamIterable, DefaultCoder, URN_BYTES, URN_KV};
 use beam::internals::{
     BundleHandler, HandlerContext, PipelineInternals, TypedElement, registered_combine_handler,
 };
 use beam::pipeline::{
     CombineStage, URN_COMBINE_GLOBALLY, URN_COMBINE_GROUPED_VALUES, URN_COMBINE_PER_KEY,
-    URN_FLATTEN, URN_PAR_DO, URN_RUST_COMBINE_FN, URN_RUST_COMBINE_FN_REGISTERED, stage_key,
+    URN_FLATTEN, URN_RUST_COMBINE_FN, URN_RUST_COMBINE_FN_REGISTERED, stage_key,
 };
 use beam::prelude::*;
-use beam_model::pipeline as proto;
 use beam_testing::{TestPipeline, passert};
-use prost::Message;
 use serde::{Deserialize, Serialize};
 
-/// Sums the values of a key, each times `factor`.
-#[derive(Clone, Serialize, Deserialize, Register)]
-struct ScaledSum {
-    factor: i64,
-}
-
-impl CombineFn for ScaledSum {
-    type Input = i64;
-    type Accum = i64;
-    type Output = i64;
-
-    fn create_accumulator(&self) -> Result<i64> {
-        Ok(0)
-    }
-
-    fn add_input(&self, acc: i64, input: i64) -> Result<i64> {
-        Ok(acc + input * self.factor)
-    }
-
-    fn merge_accumulators(&self, accs: Vec<i64>) -> Result<i64> {
-        Ok(accs.into_iter().sum())
-    }
-
-    fn extract_output(&self, acc: i64) -> Result<i64> {
-        Ok(acc)
-    }
-}
-
-/// A key whose coder has a URN that the worker cannot delimit.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct OpaqueKey(i64);
-
-struct OpaqueKeyCoder;
-
-impl Coder<OpaqueKey> for OpaqueKeyCoder {
-    fn urn(&self) -> &'static str {
-        "beam:coder:test:opaque_key:v1"
-    }
-
-    fn encode(
-        &self,
-        value: &OpaqueKey,
-        writer: &mut Vec<u8>,
-        _context: Context,
-    ) -> Result<(), CoderError> {
-        Ok(writer.write_all(&value.0.to_be_bytes())?)
-    }
-
-    fn decode(&self, reader: &mut &[u8], _context: Context) -> Result<OpaqueKey, CoderError> {
-        let mut bytes = [0; 8];
-        reader.read_exact(&mut bytes)?;
-        Ok(OpaqueKey(i64::from_be_bytes(bytes)))
-    }
-}
-
-impl DefaultCoder for OpaqueKey {
-    type Coder = OpaqueKeyCoder;
-
-    fn coder() -> Self::Coder {
-        OpaqueKeyCoder
-    }
-
-    fn encode_element(&self, writer: &mut Vec<u8>) -> Result<(), CoderError> {
-        OpaqueKeyCoder.encode(self, writer, Context::Nested)
-    }
-
-    fn decode_element(reader: &mut &[u8]) -> Result<Self, CoderError> {
-        OpaqueKeyCoder.decode(reader, Context::Nested)
-    }
-
-    fn register_coder<R: CoderRegistry + ?Sized>(registry: &R) -> String {
-        registry.register_coder(OpaqueKeyCoder.urn(), Vec::new())
-    }
-}
-
-/// The transform named `name`.
-fn transform(p: &Pipeline, name: &str) -> proto::PTransform {
-    p.to_proto()
-        .components
-        .expect("components")
-        .transforms
-        .into_values()
-        .find(|t| t.unique_name == name)
-        .expect("transform exists")
-}
-
-/// The `combine_fn` spec of the `CombinePerKey` named `name`.
-fn combine_fn_spec(p: &Pipeline, name: &str) -> proto::FunctionSpec {
-    let spec = transform(p, name).spec.expect("spec");
-    proto::CombinePayload::decode(spec.payload.as_slice())
-        .expect("CombinePayload")
-        .combine_fn
-        .expect("combine_fn")
-}
-
-/// The `do_fn` spec of the `ParDo` named `name`.
-fn do_fn_spec(p: &Pipeline, name: &str) -> proto::FunctionSpec {
-    let spec = transform(p, name).spec.expect("spec");
-    assert_eq!(spec.urn, URN_PAR_DO);
-    proto::ParDoPayload::decode(spec.payload.as_slice())
-        .expect("ParDoPayload")
-        .do_fn
-        .expect("do_fn")
-}
-
-fn kvs(pairs: &[(&str, i64)]) -> Vec<(String, i64)> {
-    pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
-}
+use super::common::{
+    OpaqueKey, RowKey, ScaledSum, combine_fn_spec, do_fn_spec, kvs, run_bundle, transform,
+};
 
 #[tokio::test]
 async fn registered_combine_fn_runs_on_prism_without_registered_handlers() {
@@ -227,23 +118,6 @@ fn a_key_coder_the_worker_cannot_delimit_keeps_the_rebuild_path() {
     assert_eq!(p.validate(), Ok(()));
 }
 
-/// Runs `handler` over `elements` as one bundle and returns what it emitted.
-fn run_bundle(handler: &dyn BundleHandler, elements: &[Vec<u8>]) -> Vec<Vec<u8>> {
-    let mut instance = handler.instantiate();
-    let mut sink = Vec::<Vec<u8>>::new();
-    instance.setup().expect("setup");
-    instance.start_bundle().expect("start_bundle");
-    {
-        let mut ctx = HandlerContext::new(&mut sink);
-        for element in elements {
-            instance.process(element, &mut ctx).expect("process");
-        }
-        instance.finish_bundle(&mut ctx).expect("finish_bundle");
-    }
-    instance.teardown().expect("teardown");
-    sink
-}
-
 /// Runs `handler` over `elements` via `process_value` and asserts whether each slot was taken.
 fn run_fused_bundle<T: DefaultCoder>(
     handler: &dyn BundleHandler,
@@ -307,10 +181,33 @@ fn standard_keys_take_fused_values_without_encoding() {
     assert_standard_key_takes_fused(b"a".to_vec(), b"b".to_vec());
 }
 
-#[derive(BeamRow, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct RowKey {
-    group: String,
-    bucket: i32,
+/// The fast path decodes a standard key with the default coder of its type. A `String` key
+/// whose coder is the bytes coder must take the general path, which does not take fused values.
+#[test]
+fn a_standard_key_type_with_another_coder_takes_the_general_path() {
+    let p = Pipeline::new();
+    let input = p.apply("Create", Create::new(kvs(&[("a", 1)])));
+    let keyed = input
+        .apply(
+            "Identity",
+            ParDo::from_fn(|kv: (String, i64), ctx| ctx.emit(kv)),
+        )
+        .with_coder_derived_from(&input, |pipeline, _| {
+            let key = pipeline.register_coder(URN_BYTES, Vec::new());
+            let value = <i64 as DefaultCoder>::register_coder(pipeline);
+            pipeline.register_coder(URN_KV, vec![key, value])
+        });
+    let _ = keyed.apply("Sum", CombinePerKey::new(ScaledSum { factor: 10 }));
+    let combine_fn = combine_fn_spec(&p, "Sum");
+    let precombine =
+        registered_combine_handler(&combine_fn.payload, CombineStage::Precombine.as_str())
+            .expect("precombine");
+
+    let partials = run_fused_bundle(precombine.as_ref(), kvs(&[("a", 1), ("a", 2)]), false)
+        .iter()
+        .map(|bytes| <(String, i64)>::decode(bytes).expect("decode"))
+        .collect::<Vec<_>>();
+    assert_eq!(partials, kvs(&[("a", 30)]));
 }
 
 #[test]

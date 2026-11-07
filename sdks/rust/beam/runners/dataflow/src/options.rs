@@ -139,9 +139,12 @@ impl PipelineOptionGroup for DataflowOptions {
 }
 
 impl DataflowOptions {
-    /// Returns the effective list of experiments, guaranteeing `use_runner_v2` is present.
-    pub fn effective_experiments(experiments: &[String]) -> Vec<String> {
-        if experiments
+    /// Returns the effective experiments for batch or streaming execution.
+    pub fn effective_experiments_for_mode(
+        experiments: &[String],
+        is_streaming: bool,
+    ) -> Vec<String> {
+        let mut out = if experiments
             .iter()
             .any(|e| e == crate::constants::EXPERIMENT_USE_RUNNER_V2)
         {
@@ -150,7 +153,18 @@ impl DataflowOptions {
             std::iter::once(crate::constants::EXPERIMENT_USE_RUNNER_V2.to_string())
                 .chain(experiments.iter().cloned())
                 .collect()
+        };
+        if is_streaming {
+            for flag in [
+                crate::constants::EXPERIMENT_STREAMING_ENGINE_STATE_TAG_ENCODING_V2_SUPPORTED,
+                crate::constants::EXPERIMENT_ENABLE_STREAMING_ENGINE_STATE_TAG_ENCODING_V2,
+            ] {
+                if !out.iter().any(|e| e == flag) {
+                    out.push(flag.to_string());
+                }
+            }
         }
+        out
     }
 
     /// Parses labels into a key-value map.

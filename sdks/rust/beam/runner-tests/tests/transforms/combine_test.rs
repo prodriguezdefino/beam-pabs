@@ -142,3 +142,29 @@ fn test_combine_per_key_composite_representation() {
     assert_eq!(composite.outputs.get("out"), Some(&out.id().to_string()));
     assert!(!composite_id.is_empty());
 }
+
+#[tokio::test]
+async fn test_combine_globally_with_fanout_empty_default_and_without_defaults() {
+    use beam::testing::{TestPipeline, passert};
+
+    let p = TestPipeline::new();
+    let empty_with_default = p
+        .apply("EmptyDefault", Create::new(Vec::<i64>::new()))
+        .apply(
+            "SumDefault",
+            CombineGlobally::new(Sum::new()).with_fanout(4),
+        );
+    let empty_no_default = p
+        .apply("EmptyNoDefault", Create::new(Vec::<i64>::new()))
+        .apply(
+            "SumNoDefault",
+            CombineGlobally::new(Sum::new())
+                .without_defaults()
+                .with_fanout(4),
+        );
+    passert::that("DefaultZero", &empty_with_default).contains_in_any_order([0i64]);
+    passert::that("EmptyOut", &empty_no_default).empty();
+    p.run_with(&PrismRunner::new())
+        .await
+        .expect("fanout empty input cases must pass");
+}
