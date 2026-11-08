@@ -1028,3 +1028,455 @@ impl StatefulDoFn for EndOfGlobalWindowDoFn {
         ctx.emit(("expiration".to_string(), timer_ran && fire_ok && hold_ok))
     }
 }
+
+/// Event-time timer of [`SetAndClearEventTimeTimerDoFn`].
+#[derive(Timers)]
+pub enum SetAndClearEventTimer {
+    #[timer(event_time)]
+    Cleared,
+}
+
+/// Sets and clears an event-time timer in `process_element`. Emits `fired:<key>` if it fires.
+#[derive(Clone)]
+pub struct SetAndClearEventTimeTimerDoFn;
+
+impl StatefulDoFn for SetAndClearEventTimeTimerDoFn {
+    type Key = String;
+    type Value = i64;
+    type Out = String;
+    type State = ();
+    type Timer = SetAndClearEventTimer;
+
+    fn process_element(
+        &mut self,
+        key: &Self::Key,
+        _value: Self::Value,
+        _state: &mut Self::State,
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        ctx.timer(SetAndClearEventTimer::Cleared)
+            .at(Instant::from_millis(1_000))?;
+        ctx.timer(SetAndClearEventTimer::Cleared).clear()?;
+        ctx.emit(format!("processed:{key}"))
+    }
+
+    fn on_timer(
+        &mut self,
+        timer: Self::Timer,
+        key: &Self::Key,
+        _state: &mut Self::State,
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        match timer {
+            SetAndClearEventTimer::Cleared => ctx.emit(format!("fired:{key}")),
+        }
+    }
+}
+
+/// Event-time timers of [`ClearEventTimeTimerInTimerDoFn`].
+#[derive(Timers)]
+pub enum TwoEventTimers {
+    #[timer(event_time)]
+    First,
+    #[timer(event_time)]
+    Second,
+}
+
+/// Sets two event-time timers, and clears `Second` when `First` fires.
+#[derive(Clone)]
+pub struct ClearEventTimeTimerInTimerDoFn;
+
+impl StatefulDoFn for ClearEventTimeTimerInTimerDoFn {
+    type Key = String;
+    type Value = i64;
+    type Out = String;
+    type State = ();
+    type Timer = TwoEventTimers;
+
+    fn process_element(
+        &mut self,
+        _key: &Self::Key,
+        _value: Self::Value,
+        _state: &mut Self::State,
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        ctx.timer(TwoEventTimers::First)
+            .at(Instant::from_millis(1_000))?;
+        ctx.timer(TwoEventTimers::Second)
+            .at(Instant::from_millis(2_000))
+    }
+
+    fn on_timer(
+        &mut self,
+        timer: Self::Timer,
+        key: &Self::Key,
+        _state: &mut Self::State,
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        match timer {
+            TwoEventTimers::First => {
+                ctx.timer(TwoEventTimers::Second).clear()?;
+                ctx.emit(format!("{key}:first"))
+            }
+            TwoEventTimers::Second => ctx.emit(format!("{key}:second")),
+        }
+    }
+}
+
+/// Processing-time timer of [`SetAndClearProcessingTimeTimerDoFn`].
+#[derive(Timers)]
+pub enum SetAndClearProcessingTimer {
+    #[timer(processing_time)]
+    Cleared,
+}
+
+/// Sets and clears a processing-time timer in `process_element`.
+#[derive(Clone)]
+pub struct SetAndClearProcessingTimeTimerDoFn;
+
+impl StatefulDoFn for SetAndClearProcessingTimeTimerDoFn {
+    type Key = String;
+    type Value = i64;
+    type Out = String;
+    type State = ();
+    type Timer = SetAndClearProcessingTimer;
+
+    fn process_element(
+        &mut self,
+        key: &Self::Key,
+        _value: Self::Value,
+        _state: &mut Self::State,
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        ctx.timer(SetAndClearProcessingTimer::Cleared)
+            .after(Duration::from_secs(5))?;
+        ctx.timer(SetAndClearProcessingTimer::Cleared).clear()?;
+        ctx.emit(format!("processed:{key}"))
+    }
+
+    fn on_timer(
+        &mut self,
+        timer: Self::Timer,
+        key: &Self::Key,
+        _state: &mut Self::State,
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        match timer {
+            SetAndClearProcessingTimer::Cleared => ctx.emit(format!("fired:{key}")),
+        }
+    }
+}
+
+/// Processing-time timers of [`ClearProcessingTimeTimerInTimerDoFn`].
+#[derive(Timers)]
+pub enum TwoProcessingTimers {
+    #[timer(processing_time)]
+    First,
+    #[timer(processing_time)]
+    Second,
+}
+
+/// Sets two processing-time timers, and clears `Second` when `First` fires.
+#[derive(Clone)]
+pub struct ClearProcessingTimeTimerInTimerDoFn;
+
+impl StatefulDoFn for ClearProcessingTimeTimerInTimerDoFn {
+    type Key = String;
+    type Value = i64;
+    type Out = String;
+    type State = ();
+    type Timer = TwoProcessingTimers;
+
+    fn process_element(
+        &mut self,
+        _key: &Self::Key,
+        _value: Self::Value,
+        _state: &mut Self::State,
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        ctx.timer(TwoProcessingTimers::First)
+            .after(Duration::from_secs(5))?;
+        ctx.timer(TwoProcessingTimers::Second)
+            .after(Duration::from_secs(10))
+    }
+
+    fn on_timer(
+        &mut self,
+        timer: Self::Timer,
+        key: &Self::Key,
+        _state: &mut Self::State,
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        match timer {
+            TwoProcessingTimers::First => {
+                ctx.timer(TwoProcessingTimers::Second).clear()?;
+                ctx.emit(format!("{key}:first"))
+            }
+            TwoProcessingTimers::Second => ctx.emit(format!("{key}:second")),
+        }
+    }
+}
+
+/// Event-time timer of [`UpstreamHoldDoFn`].
+#[derive(Timers)]
+pub enum UpstreamHoldTimer {
+    #[timer(event_time)]
+    Release,
+}
+
+/// Holds the output watermark at 5 s on value `1` until its 20 s timer emits `3`.
+#[derive(Clone)]
+pub struct UpstreamHoldDoFn;
+
+impl StatefulDoFn for UpstreamHoldDoFn {
+    type Key = String;
+    type Value = i64;
+    type Out = (String, i64);
+    type State = ();
+    type Timer = UpstreamHoldTimer;
+
+    fn process_element(
+        &mut self,
+        key: &Self::Key,
+        value: Self::Value,
+        _state: &mut Self::State,
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        if value == 1 {
+            ctx.timer(UpstreamHoldTimer::Release)
+                .hold(Instant::from_millis(5_000))
+                .at(Instant::from_millis(20_000))?;
+        }
+        ctx.emit((key.clone(), value))
+    }
+
+    fn on_timer(
+        &mut self,
+        timer: Self::Timer,
+        key: &Self::Key,
+        _state: &mut Self::State,
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        match timer {
+            UpstreamHoldTimer::Release => ctx.emit((key.clone(), 3)),
+        }
+    }
+}
+
+/// Buffered values of [`DownstreamCollectTimerDoFn`].
+#[derive(State)]
+pub struct DownstreamHoldState {
+    pub values: BagState<i64>,
+}
+
+/// Event-time timer of [`DownstreamCollectTimerDoFn`].
+#[derive(Timers)]
+pub enum DownstreamFlushTimer {
+    #[timer(event_time)]
+    Flush,
+}
+
+/// Buffers values per key and flushes them sorted when its 10 s event-time timer fires.
+#[derive(Clone)]
+pub struct DownstreamCollectTimerDoFn;
+
+impl StatefulDoFn for DownstreamCollectTimerDoFn {
+    type Key = String;
+    type Value = i64;
+    type Out = (String, Vec<i64>);
+    type State = DownstreamHoldState;
+    type Timer = DownstreamFlushTimer;
+
+    fn process_element(
+        &mut self,
+        _key: &Self::Key,
+        value: Self::Value,
+        state: &mut Self::State,
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        state.values.append(&value)?;
+        ctx.timer(DownstreamFlushTimer::Flush)
+            .at(Instant::from_millis(10_000))
+    }
+
+    fn on_timer(
+        &mut self,
+        timer: Self::Timer,
+        key: &Self::Key,
+        state: &mut Self::State,
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        match timer {
+            DownstreamFlushTimer::Flush => {
+                let mut values = state.values.read()?;
+                state.values.clear()?;
+                values.sort_unstable();
+                ctx.emit((key.clone(), values))
+            }
+        }
+    }
+}
+
+/// Event-time timer family of [`AlignedTimerDoFn`].
+#[derive(Timers)]
+pub enum AlignedTimer {
+    #[timer(event_time)]
+    Snap,
+}
+
+/// Sets an event-time timer with `.with_align(period).after(offset)` and emits `(3, ts)` on
+/// the element and `(42, ts)` when the timer fires.
+#[derive(Clone)]
+pub struct AlignedTimerDoFn {
+    pub period: Duration,
+    pub offset: Duration,
+}
+
+impl StatefulDoFn for AlignedTimerDoFn {
+    type Key = String;
+    type Value = i64;
+    type Out = (i64, Instant);
+    type State = ();
+    type Timer = AlignedTimer;
+
+    fn process_element(
+        &mut self,
+        _key: &Self::Key,
+        _val: Self::Value,
+        _state: &mut Self::State,
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        ctx.timer(AlignedTimer::Snap)
+            .with_align(self.period)
+            .after(self.offset)?;
+        let ts = ctx.timestamp();
+        ctx.emit((3, ts))
+    }
+
+    fn on_timer(
+        &mut self,
+        timer: Self::Timer,
+        _key: &Self::Key,
+        _state: &mut Self::State,
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        match timer {
+            AlignedTimer::Snap => {
+                let ts = ctx.timestamp();
+                ctx.emit((42, ts))
+            }
+        }
+    }
+}
+
+/// State cell of [`TimerWithoutHoldDoFn`].
+#[derive(State)]
+pub struct WithoutHoldState {
+    pub outcome: ValueState<String>,
+}
+
+/// Event-time timers of [`TimerWithoutHoldDoFn`].
+#[derive(Timers)]
+pub enum WithoutHoldTimers {
+    #[timer(event_time)]
+    NoHold,
+    #[timer(event_time)]
+    Verify,
+}
+
+/// Sets a `without_hold()` timer before a verification timer and checks that `on_timer` of
+/// `NoHold` rejects default-timestamp emission.
+#[derive(Clone)]
+pub struct TimerWithoutHoldDoFn;
+
+impl StatefulDoFn for TimerWithoutHoldDoFn {
+    type Key = String;
+    type Value = i64;
+    type Out = String;
+    type State = WithoutHoldState;
+    type Timer = WithoutHoldTimers;
+
+    fn process_element(
+        &mut self,
+        _key: &Self::Key,
+        _val: Self::Value,
+        _state: &mut Self::State,
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        let ts = ctx.timestamp();
+        ctx.timer(WithoutHoldTimers::NoHold)
+            .without_hold()
+            .at(ts + Duration::from_millis(10))?;
+        ctx.timer(WithoutHoldTimers::Verify)
+            .at(ts + Duration::from_millis(20))
+    }
+
+    fn on_timer(
+        &mut self,
+        timer: Self::Timer,
+        key: &Self::Key,
+        state: &mut Self::State,
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        match timer {
+            WithoutHoldTimers::NoHold => match ctx.emit("unexpected".to_string()) {
+                Ok(()) => Err(Error::msg("expected without_hold emission to fail")),
+                Err(err) if err.to_string().contains("Cannot output with timestamp") => {
+                    state.outcome.write(&format!("{key}:rejected"))
+                }
+                Err(err) => Err(err),
+            },
+            WithoutHoldTimers::Verify => {
+                let outcome = state.outcome.read()?.unwrap_or_default();
+                state.outcome.clear()?;
+                ctx.emit(outcome)
+            }
+        }
+    }
+}
+
+/// State cell of [`UpstreamWithoutHoldDoFn`].
+#[derive(State)]
+pub struct UpstreamNoHoldState {
+    pub cleaned: ValueState<bool>,
+}
+
+/// Sets a 20 s `without_hold()` timer on value `1` so the stage watermark is not held back.
+#[derive(Clone)]
+pub struct UpstreamWithoutHoldDoFn;
+
+impl StatefulDoFn for UpstreamWithoutHoldDoFn {
+    type Key = String;
+    type Value = i64;
+    type Out = (String, i64);
+    type State = UpstreamNoHoldState;
+    type Timer = UpstreamHoldTimer;
+
+    fn process_element(
+        &mut self,
+        key: &Self::Key,
+        value: Self::Value,
+        state: &mut Self::State,
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        if value == 1 {
+            state.cleaned.write(&false)?;
+            ctx.timer(UpstreamHoldTimer::Release)
+                .without_hold()
+                .at(Instant::from_millis(20_000))?;
+        }
+        ctx.emit((key.clone(), value))
+    }
+
+    fn on_timer(
+        &mut self,
+        timer: Self::Timer,
+        _key: &Self::Key,
+        state: &mut Self::State,
+        _ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        match timer {
+            UpstreamHoldTimer::Release => state.cleaned.clear(),
+        }
+    }
+}

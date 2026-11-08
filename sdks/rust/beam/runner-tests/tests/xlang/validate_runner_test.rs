@@ -27,27 +27,10 @@
 use beam::testing::TestPipeline;
 use beam_runner_tests::*;
 
-use crate::common::{runner, skip_without_docker};
+use crate::common::{TestService, run_against};
 
-/// Environment variable with the `host:port` of the Java test expansion service.
-const EXPANSION_ADDR_VAR: &str = "BEAM_JAVA_TEST_EXPANSION_ADDR";
-
-/// Builds the pipeline of `test` against the service of `EXPANSION_ADDR_VAR` and runs it on
-/// Prism. Skips when the variable is not set or Docker is not reachable.
 async fn run(test: &str, build: fn(&TestPipeline, &str)) {
-    let Ok(endpoint) = std::env::var(EXPANSION_ADDR_VAR) else {
-        eprintln!(
-            "Skipping {test}: {EXPANSION_ADDR_VAR} is not set. Run \
-             ./gradlew :sdks:rust:validatesCrossLanguageRunnerJavaServicePrism."
-        );
-        return;
-    };
-    if skip_without_docker(test) {
-        return;
-    }
-    let p = test_pipeline();
-    build(&p, &endpoint);
-    Expectation::Succeeds.check(test, RunnerKind::Prism, p.run_with(&runner()).await);
+    run_against(TestService::Java, test, build).await;
 }
 
 #[tokio::test]

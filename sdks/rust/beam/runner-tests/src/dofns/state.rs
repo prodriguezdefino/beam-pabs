@@ -936,3 +936,113 @@ impl StatefulDoFn for TimeSortedDeltaDoFn {
         ctx.emit(value - last)
     }
 }
+
+/// Event-time timer of [`OrderedListRangeDeleteDoFn`].
+#[derive(Timers)]
+pub enum OrderedListDeleteTimer {
+    #[timer(event_time)]
+    Delete,
+}
+
+/// Adds timestamped events to an ordered list, clears `[0, 43 ms)` when its 42 ms timer fires,
+/// and emits the remaining entries when the window expires.
+#[derive(Clone)]
+pub struct OrderedListRangeDeleteDoFn;
+
+impl StatefulDoFn for OrderedListRangeDeleteDoFn {
+    type Key = String;
+    type Value = (i64, String);
+    type Out = (i64, String);
+    type State = OrderedListLogState;
+    type Timer = OrderedListDeleteTimer;
+    const ON_WINDOW_EXPIRATION: bool = true;
+
+    fn process_element(
+        &mut self,
+        _key: &Self::Key,
+        (timestamp, value): Self::Value,
+        state: &mut Self::State,
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        state.events.add(Instant::from_millis(timestamp), &value)?;
+        ctx.timer(OrderedListDeleteTimer::Delete)
+            .at(Instant::from_millis(42))
+    }
+
+    fn on_timer(
+        &mut self,
+        timer: Self::Timer,
+        _key: &Self::Key,
+        state: &mut Self::State,
+        _ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        match timer {
+            OrderedListDeleteTimer::Delete => state
+                .events
+                .clear_range(Instant::EPOCH..Instant::from_millis(43)),
+        }
+    }
+
+    fn on_window_expiration(
+        &mut self,
+        _key: &Self::Key,
+        state: &mut Self::State,
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        state
+            .events
+            .read()?
+            .into_iter()
+            .try_for_each(|(ts, value)| ctx.emit((ts.as_millis(), value)))
+    }
+}
+
+/// The state of [`WriteIfAbsentDoFn`]. The field names are the state ids.
+#[derive(State)]
+pub struct WriteIfAbsentState {
+    pub values: MapState<String, i64>,
+    pub keys: SetState<String>,
+    pub count: ValueState<i64>,
+}
+
+/// Writes each value with `put_if_absent` (key `a`) or `compute_if_absent` (other keys), and
+/// each key with `insert_if_absent`. After the fourth element, emits `key=value` for each map
+/// entry and `set=` with the keys of the set.
+#[derive(Clone)]
+pub struct WriteIfAbsentDoFn;
+
+impl StatefulDoFn for WriteIfAbsentDoFn {
+    type Key = String;
+    type Value = (String, i64);
+    type Out = String;
+    type State = WriteIfAbsentState;
+    type Timer = NoTimers;
+
+    fn process_element(
+        &mut self,
+        _key: &String,
+        (key, value): (String, i64),
+        state: &mut WriteIfAbsentState,
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        let _previous = if key == "a" {
+            state.values.put_if_absent(&key, &value)?
+        } else {
+            state.values.compute_if_absent(&key, |_| value)?
+        };
+        state.keys.insert_if_absent(&key)?;
+        let count = state.count.read()?.unwrap_or(0) + 1;
+        state.count.write(&count)?;
+        if count < 4 {
+            return Ok(());
+        }
+        let mut entries = state.values.entries()?;
+        entries.sort();
+        entries
+            .into_iter()
+            .try_for_each(|(key, value)| ctx.emit(format!("{key}={value}")))?;
+        let mut keys = state.keys.read()?;
+        keys.sort();
+        ctx.emit(format!("set={}", keys.join("+")))
+    }
+}

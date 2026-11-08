@@ -41,16 +41,21 @@ This page compares the Rust SDK with the other Beam SDKs.
 | Reshuffle (random keys, fixed number of key buckets) | ✅ | ✅ | 🟡 (no buckets) | ❌ | ✅ |
 | Redistribute (standalone transform) | ✅ | ❌ | ❌ | ❌ | 🔜 |
 | WithTimestamps (standalone transform) | ✅ | ❌ | ❌ | ✅ | 🔜 |
+| Allowed timestamp skew (check of output timestamps) | ✅ | ❌ | ❌ | ❌ | 🔜 |
 | Flatten / Partition | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Flatten of an empty list (gives an empty collection) | ✅ | ✅ | ❌ | ✅ | 🔜 |
 | Distinct | ✅ | ✅ | ✅ | ❌ | ✅ |
+| Keys / Values / Latest / Reify | ✅ | ✅ | 🟡 | ❌ | 🔜 |
 | Deduplicate (in a time interval) | ✅ | ✅ | ❌ | ❌ | 🔜 |
 | GroupIntoBatches (size, byte size, buffering time, sharded keys) | ✅ | ✅ | ✅ | ❌ | ✅ |
 | Set operations (union / intersect / except, distinct and all) | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Composite transforms | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Hierarchical transform names (composite scopes, duplicate sibling names rejected) | ✅ | ✅ | ✅ (Scope) | ✅ | ✅ |
 | Side inputs (singleton / iterable / multimap) | ✅ | ✅ | ✅ | 🟡 | ✅ |
-| Map side input that rejects duplicate keys (`as_map`) | ✅ | ✅ | ❌ | ❌ | 🔜 |
-| Multimap keys side input (`MultimapKeysSideInput`) | ✅ | ❌ | ❌ | ❌ | ❌ |
+| List side input with index access | ✅ | ✅ | ✅ | ❌ | 🔜 |
+| Singleton side input with a default value | ✅ | ✅ | ❌ | ✅ | ✅ |
+| Map side input that rejects duplicate keys (`as_map`) | ✅ | ✅ | ❌ | ❌ | ✅ |
+| Multimap keys side input (`MultimapKeysSideInput`) | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Per-key element order (`PerKeyOrdering` tests) | ✅ | ? | ? | ? | ❌ |
 | Display data | ✅ | ✅ | 🟡 | ❌ | ✅ |
 
@@ -58,9 +63,14 @@ Notes:
 - **Combine**: Java, Python and Rust also split skewed keys across intermediate shards (`withHotKeyFanout` / `withFanout`, `with_hot_key_fanout` / `with_fanout`).
 - **Distinct**: Java and Rust also keep one element per representative value (`Distinct.withRepresentativeValueFn`, `DistinctBy`). Python `Distinct` and Go `filter.Distinct` compare whole elements.
 - **Redistribute and WithTimestamps**: Rust uses `Reshuffle` to spread elements across workers. It sets event time in a `ParDo` with `ctx.output(v).at(ts).emit()`. TypeScript has `assignTimestamps`.
+- **Allowed timestamp skew**: Java rejects an output timestamp earlier than the input timestamp minus `getAllowedTimestampSkew`. The other SDKs and Rust do not check output timestamps.
+- **Flatten of an empty list**: the caller names the pipeline: Java `PCollectionList.empty(p)`, Python `pipeline=`, TypeScript `root`. Go and Rust fail at construction.
+- **Keys / Values / Latest / Reify**: Go has `DropValue` and `DropKey`, but no `Latest` or `Reify`. In Rust, use `map` or `par_do_fn`.
 - **Deduplicate**: Java and Python `Deduplicate` drop a repeated element during a processing-time or event-time duration. `Distinct` keeps one element per window.
-- **`as_map`**: Java `View.asMap` and Python `AsDict` fail on a duplicate key. Rust `MultimapView` accepts duplicate keys.
-- **Multimap keys side input**: a function reads only the keys of a multimap side input. The Java harness reads them with the `MultimapKeysSideInput` state key.
+- **`as_map`**: Java `View.asMap`, Python `AsDict` and Rust `as_map` fail on a duplicate key. Java and Rust fail when a read finds a second value for the key. Rust has no `inMemory` form. For a key coder that is not deterministic, Java compares structural values; Rust looks up keys by their encoding.
+- **List side input**: a function gets elements by index. Java `View.asList`, Python `AsList`, Go a `[]T` parameter. Rust `IterView` gives a lazy iterator.
+- **Singleton default**: an empty singleton side input gives a default value (Java `withDefaultValue`, Python `default_value`, TypeScript `defaultValue`, Rust `with_default`). Go fails when the side input does not have exactly one value.
+- **Multimap keys side input**: a function reads only the keys of a multimap side input. The Java and Rust harnesses read them with the `MultimapKeysSideInput` state key (Rust `keys` and `entries` on `SideMap` and `SideDict`).
 - **Per-key element order**: Java `PerKeyOrderingTest` checks that a runner keeps the order of the elements of a key between steps. The other SDKs have no such test.
 - **Set operations**: Java `Sets` and Rust `Sets` (`union_distinct`, `intersect_all`, `except_distinct`, ...). Rust takes two collections; combine more by chaining.
 - **Hierarchical transform names**: the children of a composite get the name of the composite as a prefix (`Outer/Inner/Leaf`). All SDKs name a transform at the call site: Java `apply(name, t)`, Python `"Label" >> t`, Go `Scope`, TypeScript `withName(name, t)` and Rust `apply(name, t)`. Two siblings with the same full name fail `Pipeline::validate`; Java warns by default, Python and TypeScript raise an error.
@@ -73,6 +83,7 @@ Notes:
 | Top (largest / smallest / custom order) | ✅ | ✅ | ✅ | ❌ | ✅ |
 | Sample (uniform fixed size, any) | ✅ | ✅ | ❌ | ❌ | ✅ |
 | Composed combine (several combiners in one pass) | ✅ | ✅ | ❌ | ✅ | ✅ |
+| Combine function with side inputs | ✅ | ✅ | ❌ | ❌ | 🔜 |
 | ApproximateUnique | ✅ | ✅ | ❌ | ❌ | ✅ |
 | ApproximateQuantiles | ✅ | ✅ | ✅ | ❌ | ✅ |
 | HLL++ sketches (BigQuery `HLL_COUNT` compatible) | ✅ ext | ❌ | ❌ | ❌ | 🔜 |
@@ -81,6 +92,7 @@ Notes:
 Notes:
 - **Java** keeps the sketch combiners in extension modules (`extensions/zetasketch`, `extensions/sketching`), because they depend on sketch libraries. The other combiners are in the core SDK in all SDKs.
 - **Composed combine**: Java `CombineFns.compose`, Python `TupleCombineFn`, TypeScript `groupBy(..).combining(..)`. Rust `Compose` takes 2 to 6 parts and nests for more; each part reads its value from the element with `on`.
+- **Combine function with side inputs**: Java `CombineFnWithContext`, Python extra arguments to `CombinePerKey` / `CombineGlobally`. Go rejects side inputs on a combine.
 - **Quantiles**: Java, Python and Rust use the deterministic Munro-Paterson algorithm, with the same buffer sizes, so they give the same quantiles. Go uses randomized compactors.
 - **ApproximateUnique**: Java, Python and Rust keep the largest distinct hashes. Each SDK uses its own hash function, so their estimates differ.
 - **HLL++ in Rust**: the plan is a cross-language wrapper of the Java `HllCount`, or a separate crate that reads and writes ZetaSketch sketches.
@@ -93,12 +105,15 @@ Notes:
 | Custom user-defined `WindowFn` | ✅ | ✅ | ❌ | ✅ | 🟡 |
 | Custom window types (window encodings other than global and interval) | ✅ | ✅ | ❌ | ✅ | ❌ |
 | Triggers | ✅ | ✅ | ✅ | ❌ | ✅ |
+| Change the trigger and keep the windows (`Window.configure`) | ✅ | 🟡 | 🟡 | ❌ | 🔜 |
 | Accumulation modes | ✅ | ✅ | ✅ | ❌ | ✅ |
 | Allowed lateness | ✅ | ✅ | ✅ | ❌ | ✅ |
 
 Notes:
 - **Go** has no user-extensible `WindowFn`. `window.Fn` is a closed struct over the four built-in kinds.
 - **TypeScript** hardcodes the default trigger, `DISCARDING`, and zero lateness.
+- **Finishing triggers**: Java and Rust reject a `GroupByKey` input whose root trigger can finish before the window expires. Python also rejects it, unless `--allow_unsafe_triggers` is set. Java and Rust have no opt-out. Python accepts `AfterAll` and `AfterAny` with subtriggers that never finish. Java and Rust follow the Runner API, where both always finish.
+- **Change the trigger**: Java `Window.configure()` changes the trigger, lateness or accumulation mode and keeps the windows. Python, Go and Rust `WindowInto` need a window function and assign windows again.
 - **Rust** has a public `WindowFn` trait for any assignment logic, for example fiscal calendars or business shifts. Each window must be an `IntervalWindow` or a `GlobalWindow`, and the function must not merge. Rust does not support other window types, for example 2D spatial windows or windows with custom metadata. There are three causes:
   - `BoundedWindow` is an enum of Global/Interval.
   - The Fn API harness decodes only the standard window coder URNs.
@@ -113,18 +128,22 @@ Notes:
 | MapState | ✅ | ❌ | ✅ | ❌ | ✅ |
 | MultimapState | ✅ | ❌ | ❌ | ❌ | ✅ |
 | SetState | ✅ | ✅ | ✅ | ❌ | ✅ |
+| Write if absent, without a read (`putIfAbsent`, `addIfAbsent`) | ✅ | ❌ | ❌ | ❌ | ✅ |
 | CombiningState | ✅ | ✅ | ✅ | ❌ | ✅ |
 | OrderedListState | ✅ | ✅ | ✅ | ❌ | ✅ |
 | Event-time timers | ✅ | ✅ | ✅ | ❌ | ✅ |
 | Processing-time timers | ✅ | ✅ | ✅ | ❌ | ✅ |
 | Timer families (dynamic tags) | ✅ | ✅ | ✅ | ❌ | ✅ |
-| Timer `align` / `offset` | ✅ | ❌ | ❌ | ❌ | 🔜 |
+| Timer `align` / `offset` | ✅ | ❌ | ❌ | ❌ | ✅ |
+| Timer with no output timestamp (no watermark hold) | ✅ | ❌ | ✅ | ❌ | ✅ |
 | OnWindowExpiration | ✅ | ❌ | ❌ | ❌ | ✅ |
 
 Notes:
 - **Python** has `BagStateSpec`, `SetStateSpec`, `ReadModifyWriteStateSpec`, `CombiningValueStateSpec` and `OrderedListStateSpec`, but no `MapState`.
 - **TypeScript** has no state or timer support.
-- **Timer `align` / `offset`**: Java `Timer.align(period)` and `Timer.offset(duration)` move the target time of `setRelative` to a period boundary. In Rust, compute the instant and call `at`.
+- **Timer `align` / `offset`**: Java `Timer.align(period).offset(d).setRelative()` and Rust `ctx.timer(t).with_align(period).after(d)` snap the relative target time to a period boundary, clamping event-time targets to window expiration.
+- **Write if absent**: Java `MapState.putIfAbsent`, `computeIfAbsent` and `SetState.addIfAbsent` write a value only if the key is absent. They return a deferred read. Rust `put_if_absent`, `compute_if_absent` and `insert_if_absent` read at once and return the value before the call (`insert_if_absent`: whether it inserted).
+- **Timer with no output timestamp**: the timer does not hold the output watermark, and emitting from `on_timer` with the default timestamp fails. Java `withNoOutputTimestamp`, Go `WithNoOutputTimestamp`, Rust `ctx.timer(t).without_hold()`.
 - **OnWindowExpiration**: Java and Rust declare an event-time timer family and name it in `ParDoPayload.on_window_expiration_timer_family_spec`. The runner fires it once per key and window. Java marks the method with `@OnWindowExpiration`; Rust sets `const ON_WINDOW_EXPIRATION: bool = true` and implements `on_window_expiration`.
 - **MultimapState**: Java and Rust use `MultimapStateSpec` and the multimap state keys of the Fn API. In Rust, `entries` skips keys with no values, because Prism keeps a removed key as an empty entry. On Dataflow streaming, Streaming Engine returns no values for a key that earlier bundles only appended to, for Java and Rust alike (see [validates-runner.md](validates-runner.md)).
 - **`CombiningState`**: every SDK declares a `CombiningStateSpec` with the accumulator coder and the bag protocol, and combines in the SDK harness. Java and Rust keep one accumulator: an add reads it, adds the input and writes it back. Python sometimes appends a one-input accumulator instead and merges on read. Go keeps the accumulator as a value. Rust builds the `CombineFn` with `Default`, because a `#[derive(State)]` cell has no instance; Java, Python and Go take a `CombineFn` instance in the spec.
@@ -158,6 +177,9 @@ Notes:
 | DataFrame / relational API | ✅ xlang | ✅ | ✅ xlang | ❌ | ❌ |
 | Tuple coders (3+ values) | ❌ | ✅ | ❌ | ❌ | ✅ |
 | Nullable elements across stages (`beam:coder:nullable:v1`) | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Schema field access, `Select` and `Convert` in DoFn parameters | ✅ | 🟡 | ❌ | ❌ | 🔜 |
+
+Java DoFns read selected schema fields (`@FieldAccess`) and convert rows to types (`Convert`). Python has the `Select` transform only.
 
 Rust infers schemas through `#[derive(BeamRow)]`, including generic structs whose type parameters satisfy `BeamField` and `DefaultCoder`. `ToRows` and `FromRows` convert between `PCollection<T>` and `PCollection<Row>`, matching fields by Beam name when schemas differ. User state cells (`ValueState<Row>`, `BagState<Row>`, `MapState`, `MultimapState`, `OrderedListState`, `CombiningState`) support dynamic `Row` values without extra state attributes. Beam SQL is native only in Java. All other SDKs use it through cross-language.
 
@@ -189,14 +211,14 @@ Decimals:
 | Resource hints, per-transform | ✅ | ✅ | ❌ | ❌ | ✅ |
 | Resource hints, pipeline-level | ✅ | ✅ | ✅ | ❌ | ✅ |
 | Managed I/O | ✅ | ✅ | ❌ | ❌ | ✅ xlang |
-| Lineage reporting | ✅ | ✅ | ❌ | ❌ | ❌ |
+| Lineage reporting | ✅ | ✅ | ❌ | ❌ | ✅ |
 | Worker runs user code without rebuilding the pipeline | ✅ | ✅ | ✅ | ✅ | 🟡 |
 
 Notes:
 - **Coder versions**: the Rust harness decodes only `beam:coder:windowed_value:v1` and `beam:coder:timer:v1`. A bundle that uses `beam:coder:windowed_value:v2` or `beam:coder:timer:v2` at a data port or a timer family fails at setup.
 - **Worker without rebuilding the pipeline**: Java and Python serialize DoFns into the pipeline proto. Go looks up functions that the user registers by name. Rust uses both paths. A `DoFn`, `StatefulDoFn`, `SplittableDoFn` or `CombineFn` type with `#[derive(Register)]` travels in the pipeline graph as an id and its serialized fields. `Create` carries its elements. The SDK cannot serialize closures and the generic SDK transforms. While a pipeline has any of them, the worker rebuilds it. [static-registration.md](static-registration.md) describes both paths.
 - **Providing** transforms means that the SDK ships an expansion service, so other SDKs can call its transforms. Go and TypeScript have only the generated gRPC stubs, not a server implementation. Rust ships `apache-beam-expansion` and the `beam-expansion-service` binary.
-- **Consuming** cross-language transforms: the `beam:transforms:xlang:test:*` cases of `ValidateRunnerXlangTest.java` run as Rust pipelines on Prism against the Java test expansion service (`validatesCrossLanguageRunnerJavaServicePrism`, see [validates-runner.md](validates-runner.md#cross-language-suites)). The Python test expansion service is not in that task.
+- **Consuming** cross-language transforms: the `beam:transforms:xlang:test:*` cases of `ValidateRunnerXlangTest.java` run as Rust pipelines on Prism. They run against the Java test expansion service (`validatesCrossLanguageRunnerJavaServicePrism`). They also run against the Python test expansion service (`validatesCrossLanguageRunnerPythonServicePrism`, which also runs `python_bs4`). See [validates-runner.md](validates-runner.md#cross-language-suites).
 - Java does not download its *own* expansion service, because the downloaded service is the Java expansion service.
 - For all SDKs, Flex Template support is mostly tooling outside this repository, so the source does not show the Go value.
 - **Managed I/O** has the same model as Python. `beam::io::managed::{ManagedRead, ManagedWrite}` expand Java's `beam:transform:managed:v1` with the connector config as YAML (Iceberg, Iceberg CDC read, Kafka, BigQuery, Postgres, MySQL, SQL Server, Delta Lake; constants in `beam::io::managed`, e.g. `managed::ICEBERG`). The typed Kafka and BigQuery transforms also expand through Managed, so runners such as Dataflow can manage and upgrade them. The BigQuery Storage Write v2 and File Loads methods have no Managed equivalent, so they expand directly.
@@ -257,6 +279,7 @@ Notes:
 | Capability | Java | Python | Go | TypeScript | **Rust** |
 |---|:--:|:--:|:--:|:--:|:--:|
 | `RunInference` / ML | ✅ xlang | ✅ | ✅ xlang | ❌ | ✅ |
+| `RunInference` model update from a side input | ❌ | ✅ | ❌ | ❌ | 🔜 |
 | Beam YAML | ✅ | ✅ | ❌ | ❌ | 🔜 |
 | Interactive / notebooks | ❌ | ✅ | ❌ | ❌ | ❌ |
 | Package registry | Maven | PyPI | pkg.go.dev | npm | ❌ none |
@@ -269,3 +292,4 @@ Notes:
   - handlers for ONNX Runtime (`OnnxModelHandler`, `ml-onnx*`), Candle (`CandleModelHandler`, `BertEmbeddingModelHandler`, `ml-candle*`) and remote endpoints (`RemoteModelHandler` with a Vertex AI Gemini adapter, `ml-remote`)
 
   See [accelerated-workloads.md](accelerated-workloads.md).
+- **Model update**: Python `RunInference` loads a new model when a side input emits `ModelMetadata`, for example from `WatchFilePattern`. The Java and Go cross-language wrappers take no side input.

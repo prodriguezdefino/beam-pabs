@@ -27,17 +27,19 @@ use beam::testing::{TestPipeline, TestPipelineError, passert};
 
 use crate::RunnerKind;
 
-/// Builds a pipeline that updates counter, distribution, gauge and string-set metrics.
-/// See [`check_user_metrics`] for the outcome checks.
+/// Builds a pipeline that updates counter, distribution, gauge, string-set and bounded-trie
+/// metrics. See [`check_user_metrics`] for the outcome checks.
 pub fn build_user_metrics(p: &TestPipeline) {
     let out = p
         .apply("Create", Create::new(vec![10i64, 20, 30]))
         .map("RecordMetrics", |x: i64| {
+            let bucket = if x < 25 { "low" } else { "high" };
             Metrics::counter("vr_metrics", "elements").inc();
             Metrics::counter("vr_metrics", "total").inc_by(x);
             Metrics::distribution("vr_metrics", "values").update(x);
             Metrics::gauge("vr_metrics", "last_value").set(x);
-            Metrics::string_set("vr_metrics", "buckets").add(if x < 25 { "low" } else { "high" });
+            Metrics::string_set("vr_metrics", "buckets").add(bucket);
+            Metrics::bounded_trie("vr_metrics", "paths").add(&["vr", bucket, &x.to_string()]);
             x * 2
         });
 
@@ -47,8 +49,9 @@ pub fn build_user_metrics(p: &TestPipeline) {
 /// Checks the user metrics of [`build_user_metrics`] after a successful run.
 ///
 /// Covers `MetricsTest`: the `testAttempted*Metrics` and `testCommitted*Metrics` cases for
-/// counters, distributions, gauges and string sets. See [`Phases::settled`] for the phases
-/// that each runner reports. Dataflow returns no gauges, so there the gauge is optional.
+/// counters, distributions, gauges, string sets and bounded tries. See [`Phases::settled`] for
+/// the phases that each runner reports. Dataflow returns no gauges, and neither Dataflow nor
+/// Prism returns bounded tries yet, so missing cells of those kinds pass.
 pub fn check_user_metrics(
     runner: RunnerKind,
     result: std::result::Result<PipelineResult, TestPipelineError>,
@@ -79,6 +82,20 @@ pub fn check_user_metrics(
             // The gauge keeps the latest value, and the elements have no order.
             assert!([10, 20, 30].contains(latest), "last_value: {latest}");
         }
+    }
+
+    let tries = metrics.query_bounded_tries(&filter("paths"));
+    if !tries.is_empty() {
+        let paths = phases(tries).map(|trie| trie.paths());
+        let expected = [
+            (["vr", "high", "30"], false),
+            (["vr", "low", "10"], false),
+            (["vr", "low", "20"], false),
+        ]
+        .into_iter()
+        .map(|(segments, truncated)| (segments.map(String::from).to_vec(), truncated))
+        .collect();
+        assert_eq!(paths.settled("paths", runner), &expected);
     }
 }
 

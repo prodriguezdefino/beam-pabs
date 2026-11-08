@@ -28,11 +28,13 @@ use beam_core::internals::extract_side_input_tags;
 use beam_core::internals::*;
 use beam_core::pipeline::{PipelineError, URN_PAR_DO};
 use beam_core::prelude::*;
+use beam_core::schema::{FieldType, FieldValue};
 use beam_core::values::{
     SideInputKind, SideInputWindowing, URN_SIDE_INPUT_ITERABLE, URN_SIDE_INPUT_MULTIMAP,
     URN_WINDOW_MAPPING_GLOBAL, URN_WINDOW_MAPPING_WINDOW_FN,
 };
 use beam_core::windowing::{BoundedWindow, WindowFn};
+use beam_testing::{TestPipeline, passert};
 
 struct MockSideInputReader {
     iterables: HashMap<String, Vec<Vec<u8>>>,
@@ -594,4 +596,168 @@ fn test_view_fn_urns() {
     );
     assert_eq!(iter.view_fn_urn(), URN_VIEW_FN_ITERABLE);
     assert_eq!(iter.to_proto().view_fn.unwrap().urn, URN_VIEW_FN_ITERABLE);
+}
+
+#[test]
+fn distinct_view_kinds_on_one_collection_use_distinct_tags() {
+    let p = Pipeline::new();
+    let pairs = p.apply("Pairs", Create::new(vec![("a".to_string(), 1_i32)]));
+
+    let single = pairs.as_singleton();
+    let iter_a = pairs.as_iter();
+    let iter_b = pairs.as_iter();
+    let mmap = pairs.as_multimap();
+
+    assert_eq!(iter_a.tag(), iter_b.tag());
+    assert_ne!(single.tag(), iter_a.tag());
+    assert_ne!(single.tag(), mmap.tag());
+    assert_ne!(iter_a.tag(), mmap.tag());
+}
+
+/// A side input of dynamic `Row`s decodes with the schema of its coder, as a singleton, an
+/// iterable and a multimap value.
+#[tokio::test]
+async fn dynamic_row_side_inputs_decode_with_their_schema() {
+    let schema = Arc::new(
+        Schema::builder()
+            .field("factor", FieldType::int64())
+            .build(),
+    );
+    let row = |factor: i64| {
+        Row::new(Arc::clone(&schema), vec![Some(FieldValue::Int64(factor))])
+            .expect("the value matches the schema")
+    };
+    let factor = |row: &Row| row.get_i64("factor").unwrap().unwrap();
+
+    let p = TestPipeline::new();
+    let single = p.apply("Single", Create::new(vec![row(10)])).as_singleton();
+    let many = p.apply("Many", Create::new(vec![row(1), row(2)])).as_iter();
+    let keyed = p
+        .apply("Keyed", Create::new(vec![("k".to_string(), row(100))]))
+        .as_multimap();
+    let out = p.apply("Input", Create::new(vec![1i64])).apply(
+        "Read",
+        ParDo::from_fn_with_side_inputs(
+            (single, many, keyed),
+            move |x: i64, (single, many, keyed), ctx| {
+                let sum: i64 = many.to_vec()?.iter().map(factor).sum();
+                let keyed = keyed.get(&"k".to_string())?.map_or(0, |row| factor(&row));
+                ctx.emit(x * factor(&single) + sum + keyed)
+            },
+        ),
+    );
+    passert::that("AssertRead", &out).contains_in_any_order([113i64]);
+    p.run().await.expect("pipeline and assertions");
+}
+
+#[test]
+fn singleton_view_uses_get_singleton_without_calling_get_iterable() {
+    struct SingletonOnlyReader {
+        result: SingletonBytes,
+        expected_transform: Option<&'static str>,
+    }
+
+    impl SideInputReader for SingletonOnlyReader {
+        fn get_iterable<'a>(
+            &'a self,
+            tag: &str,
+            _window: &[u8],
+        ) -> std::result::Result<SideInputElements<'a>, SideInputError> {
+            Err(SideInputError::Runner {
+                tag: tag.to_string(),
+                reason: "get_iterable must not be called for singleton reads".to_string(),
+            })
+        }
+
+        fn get_singleton(
+            &self,
+            _tag: &str,
+            _window: &[u8],
+        ) -> std::result::Result<SingletonBytes, SideInputError> {
+            Ok(self.result.clone())
+        }
+
+        fn get_singleton_for_transform(
+            &self,
+            transform_id: &str,
+            tag: &str,
+            window: &[u8],
+        ) -> std::result::Result<SingletonBytes, SideInputError> {
+            if let Some(expected) = self.expected_transform {
+                assert_eq!(transform_id, expected);
+            }
+            self.get_singleton(tag, window)
+        }
+
+        fn get_multimap<'a>(
+            &'a self,
+            tag: &str,
+            _window: &[u8],
+            _key: &[u8],
+        ) -> std::result::Result<SideInputElements<'a>, SideInputError> {
+            Err(SideInputError::MissingReader {
+                tag: tag.to_string(),
+            })
+        }
+
+        fn get_multimap_keys<'a>(
+            &'a self,
+            tag: &str,
+            _window: &[u8],
+        ) -> std::result::Result<SideInputElements<'a>, SideInputError> {
+            Err(SideInputError::MissingReader {
+                tag: tag.to_string(),
+            })
+        }
+
+        fn window_mapping(
+            &self,
+            tag: &str,
+        ) -> std::result::Result<&SideInputWindowing, SideInputError> {
+            Err(SideInputError::MissingReader {
+                tag: tag.to_string(),
+            })
+        }
+    }
+
+    let p = Pipeline::new();
+    let view = p.apply("Single", Create::new(vec![1_i64])).as_singleton();
+    let with_default = view.clone().with_default(&99);
+    let header = WindowedHeader::global(0, PaneInfo::NO_FIRING);
+
+    let read = |reader: &dyn SideInputReader, v: &SingletonView<i64>| {
+        let mut sink: Vec<Vec<u8>> = Vec::new();
+        let mut hctx = HandlerContext::new(&mut sink)
+            .with_side_inputs(Some(reader))
+            .with_header(&header);
+        hctx.as_process_context::<()>().side_input(v)
+    };
+
+    let one = SingletonOnlyReader {
+        result: SingletonBytes::One(bytes::Bytes::from(42_i64.encode().unwrap())),
+        expected_transform: Some("scoped_step"),
+    };
+    let scoped = ScopedSideInputReader::new(&one, "scoped_step");
+    assert_eq!(read(&scoped, &view).unwrap(), 42);
+
+    let empty = SingletonOnlyReader {
+        result: SingletonBytes::Empty,
+        expected_transform: None,
+    };
+    assert_eq!(read(&empty, &with_default).unwrap(), 99);
+    let empty_err = read(&empty, &view).unwrap_err().to_string();
+    assert!(
+        empty_err.contains("Empty singleton side input"),
+        "{empty_err}"
+    );
+
+    let multiple = SingletonOnlyReader {
+        result: SingletonBytes::Multiple,
+        expected_transform: None,
+    };
+    let multi_err = read(&multiple, &view).unwrap_err().to_string();
+    assert!(
+        multi_err.contains("more than one element accessed as a singleton"),
+        "{multi_err}"
+    );
 }

@@ -31,6 +31,7 @@ use beam_external::{
 
 use crate::xlang_transforms::{
     URN_CGBK, URN_COMGL, URN_COMPK, URN_FLATTEN, URN_GBK, URN_MULTI, URN_PARTITION, URN_PREFIX,
+    URN_PYTHON_BS4,
 };
 
 /// Identifier of the `GenerateSequence` SchemaTransform.
@@ -226,6 +227,31 @@ pub fn build_xlang_partition(p: &TestPipeline, endpoint: &str) {
     let parts = expand_multi(p, "Partition", transform, ["0", "1"]);
     passert::that("AssertEven", &output::<i64>(&parts, "0")).contains_in_any_order([2i64, 4, 6]);
     passert::that("AssertOdd", &output::<i64>(&parts, "1")).contains_in_any_order([1i64, 3, 5]);
+}
+
+/// `beam:transforms:xlang:test:python_bs4` extracts the HTML `<title>` text with BeautifulSoup,
+/// staged as a PyPI artifact by the Python test expansion service.
+pub fn build_xlang_python_bs4(p: &TestPipeline, endpoint: &str) {
+    let html = concat!(
+        "<html><head><title>The Dormouse's story</title></head>\n",
+        "<body>\n",
+        "<p class=\"title\"><b>The Dormouse's story</b></p>\n\n",
+        "<p class=\"story\">Once upon a time there were three little sisters; and their names were\n",
+        "<a href=\"http://example.com/elsie\" class=\"sister\" id=\"link1\">Elsie</a>,\n",
+        "<a href=\"http://example.com/lacie\" class=\"sister\" id=\"link2\">Lacie</a> and\n",
+        "<a href=\"http://example.com/tillie\" class=\"sister\" id=\"link3\">Tillie</a>;\n",
+        "and they lived at the bottom of a well.</p>\n\n",
+        "<p class=\"story\">...</p>",
+    );
+    let input = p.apply("CreateHtml", Create::new(strings(&[html])));
+    let transform = test_transform(
+        URN_PYTHON_BS4,
+        endpoint,
+        Vec::new(),
+        [("input", input.id())],
+    );
+    let titles = expand_single::<String>(p, "ExtractTitle", transform);
+    passert::that("AssertTitle", &titles).contains_in_any_order(strings(&["The Dormouse's story"]));
 }
 
 /// Builds a cross-language source: the `GenerateSequence` SchemaTransform,

@@ -466,5 +466,42 @@ class RustXlangTasks {
       }
     }
 
+    project.tasks.register('validatesCrossLanguageRunnerPythonServicePrism') { Task task ->
+      task.group = 'Verification'
+      task.description = 'Run the Rust cross-language suite against the Python test expansion service on Prism ' +
+          '([-Pfilter=<test name>] [-PtestThreads=<n>] [-PincludeIgnored] [-PpythonVersion=3.12] [-PbuildPythonContainer])'
+      task.dependsOn('setupXlangPythonEnv', 'fetchPrism')
+      if (project.hasProperty('buildPythonContainer')) {
+        task.dependsOn(":sdks:python:container:py${imagePythonVersion.replace('.', '')}:docker")
+      }
+      task.doLast {
+        if (!dockerReachable()) {
+          throw new GradleException(
+              'Docker is not reachable. The cross-language suite needs it to start the Python SDK container.')
+        }
+        String venvPy = "${xlangVenv.absolutePath}/bin/python"
+        ByteArrayOutputStream pyVerOut = new ByteArrayOutputStream()
+        project.exec({ ExecSpec spec ->
+          spec.commandLine(venvPy, '-c', 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+          spec.standardOutput = pyVerOut
+        } as Action<ExecSpec>)
+        String venvPyVersion = pyVerOut.toString('UTF-8').trim()
+        String localPythonSdkImage = "${BeamModuleExtras.dockerDefaultRepoRoot(project)}/" +
+            "${BeamModuleExtras.dockerDefaultRepoPrefix(project)}python${venvPyVersion}_sdk:${build.versions.sdkVersion}"
+        if (!imageExists(localPythonSdkImage)) {
+          String pyTaskVer = venvPyVersion.replace('.', '')
+          throw new GradleException("${localPythonSdkImage} is not available locally. Build it with " +
+              "./gradlew :sdks:python:container:py${pyTaskVer}:docker, or add " +
+              "-PpythonVersion=${venvPyVersion} -PbuildPythonContainer.")
+        }
+        runXlangTestsAgainstService(
+            'Python',
+            [venvPy, '-m', 'apache_beam.runners.portability.expansion_service_test',
+             '--fully_qualified_name_glob', '*', '-p'],
+            pythonDir,
+            'BEAM_PYTHON_TEST_EXPANSION_ADDR',
+            ['python_service_test'])
+      }
+    }
   }
 }
