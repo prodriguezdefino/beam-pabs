@@ -447,6 +447,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "apache-beam-nexmark"
+version = "2.79.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "serde",
+]
+
+[[package]]
 name = "apache-beam-runner-dataflow"
 version = "2.79.0-SNAPSHOT"
 dependencies = [

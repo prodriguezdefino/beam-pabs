@@ -157,9 +157,11 @@ test code (non-blank, non-comment lines, no tools needed), per area with a
 test/prod ratio and per SDK tree:
 
 - Rust: `#[cfg(test)]` items inside sources, plus `tests/`, `benches/`,
-  `runner-tests/`, `test-utils/` (and `testing/` crates in the tree totals);
-- Go: `*_test.go`;
-- Python: `*_test.py`, `test_*.py`, `tests/` (and `testing/` in the tree totals).
+  `runner-tests/`, `test-utils/` (and `testing/` crates in the tree totals;
+  `benchmarks/` crates split `src/` vs `tests/` like other crates);
+- Go: `*_test.go` (and `test/` in the tree totals);
+- Python: `*_test.py`, `test_*.py`, `tests/` (and `testing/`, excluding
+  `testing/benchmarks/`, in the tree totals).
 
 Java and TypeScript have no per-area mapping. They appear only in the whole-tree
 test/prod totals, with `--with-java-ts`.

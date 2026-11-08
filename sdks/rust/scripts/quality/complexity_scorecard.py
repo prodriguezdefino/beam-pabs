@@ -317,8 +317,9 @@ def _walk(base, exts):
 def _rust_split(path):
     """(prod, test) lines of a Rust file over the whole tree; test crates count as test."""
     text = Path(path).read_text(errors="ignore")
-    if (re.search(r"/(tests|benches)/", path) or "/runner-tests/" in path
-            or "/test-utils/" in path or "/testing/" in path):
+    norm = path.replace(os.sep, "/")
+    if (re.search(r"/(tests|benches)/", norm) or "/runner-tests/" in norm
+            or "/test-utils/" in norm or "/testing/" in norm):
         return 0, code_line_count(text, ("//",))
     lines = text.split("\n")
     prod = test = 0
@@ -356,24 +357,29 @@ def _generic(base, exts, test_pred, comment):
     return prod, test
 
 
+def _is_python_tree_test(path):
+    norm = path.replace(os.sep, "/")
+    base = os.path.basename(norm)
+    return (base.endswith("_test.py") or "_it_test" in norm or "/tests/" in norm
+            or ("/testing/" in norm and "/testing/benchmarks/" not in norm))
+
+
 def sdk_test_totals(with_java_ts=False):
     """Whole-tree production vs test lines per SDK, plus a per-crate Rust breakdown."""
     rows = {}
     crates = defaultdict(lambda: [0, 0])
     for p in _walk(str(RUST), (".rs",)):
         rel = os.path.relpath(p, RUST).split(os.sep)
-        key = ("/".join(rel[:3]) if rel[0] == "beam" and len(rel) > 2
-               and rel[1] in ("runners", "io") else "/".join(rel[:2]))
+        key = ("/".join(rel[:3])
+               if len(rel) > 2 and (rel[:2] in (["beam", "runners"], ["beam", "io"], ["benchmarks", "io"]))
+               else "/".join(rel[:2]))
         a, b = _rust_split(p)
         crates[key][0] += a
         crates[key][1] += b
     rows["rust"] = (sum(v[0] for v in crates.values()), sum(v[1] for v in crates.values()))
     rows["go"] = _generic(str(REPO / "sdks/go"), (".go",),
-                          lambda p: p.endswith("_test.go") or "/test/" in p, ("//",))
-    rows["python"] = _generic(
-        str(PY), (".py",),
-        lambda p: (os.path.basename(p).endswith("_test.py") or "/testing/" in p or "_it_test" in p),
-        ("#",))
+                          lambda p: p.endswith("_test.go") or "/test/" in p.replace(os.sep, "/"), ("//",))
+    rows["python"] = _generic(str(PY), (".py",), _is_python_tree_test, ("#",))
     if with_java_ts:
         for sub in ("sdks/java/core", "sdks/java/harness", "sdks/java/io", "runners"):
             rows["java:" + sub.split("/")[-1]] = _generic(
