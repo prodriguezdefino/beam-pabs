@@ -41,12 +41,15 @@ Run builds and tests through Gradle. The rest of the Beam repository uses it too
 # Pipeline Launchers
 ./gradlew :sdks:rust:prism             # Launch on PrismRunner (-Pexample=wordcount|gaming [-Pdocker])
 ./gradlew :sdks:rust:dataflow          # Launch on Google Cloud Dataflow (-Pexample=gaming)
+./gradlew :sdks:rust:nexmarkPrism      # Launch Nexmark on PrismRunner ([-Psuite=SMOKE] [-Pquery=0] [-Pstreaming])
+./gradlew :sdks:rust:nexmarkDataflow   # Launch Nexmark on Dataflow ([-Psuite=DEFAULT] [-Pquery=0] [-Pstreaming])
 ./gradlew :sdks:rust:profilePrism      # Profile locally on Prism (-Pexample=wordcount [-Pmode=cpu|memory|both] ...)
 
 # Container & Validations
 ./gradlew :sdks:rust:docker                    # Build the SDK base container (apache/beam_rust_sdk)
 ./gradlew :sdks:rust:prebakedImage             # Example image with its binary pre-baked (-Pexample=wordcount [-Pdocker-repository-root=...])
 ./gradlew :sdks:rust:buildWorker               # Linux worker binary for an example (-Pexample=wordcount)
+./gradlew :sdks:rust:buildNexmarkWorker        # Linux worker binary for Nexmark
 ./gradlew :sdks:rust:expansionServiceImage     # Expansion service image; the binary is also the worker
 ./gradlew :sdks:rust:validatesRunnerPrism      # ValidatesRunner conformance suite on Prism
 ./gradlew :sdks:rust:validatesRunnerPrismStreaming     # The same suite on Prism in streaming mode
@@ -107,7 +110,8 @@ directory: it holds the function names.
 
 ## Benchmarks
 
-[gradle/benchmarks.gradle](../gradle/benchmarks.gradle) defines the benchmarks. Each runs
+[gradle/benchmarks.gradle](../gradle/benchmarks.gradle) defines the benchmarks, and
+[gradle/nexmark.gradle](../gradle/nexmark.gradle) the Nexmark tasks. Each benchmark runs
 some rounds (`-Pruns`, default 3), one after the other, and writes `results.json` and
 `report.md` to `build/reports/benchmarks/<task>-<timestamp>/`. The report gives each run and
 the medians. The scripts are in [benchmarks/tools/](../benchmarks/tools/).
@@ -124,6 +128,11 @@ with an earlier result. `-PdryRun` prints the commands and runs nothing.
 ./gradlew :sdks:rust:wordcountBenchmark -Pshards=100
 ./gradlew :sdks:rust:wordcountBenchmark -Pbaseline=origin/master -Pruns=3
 
+# Nexmark on Prism or Dataflow (`benchmarks/nexmark`).
+./gradlew :sdks:rust:nexmarkPrism -Psuite=SMOKE -PextraArgs="--num_events=500"
+./gradlew :sdks:rust:nexmarkDataflow -Pquery=0 -PextraArgs="--num_events=1000000"
+./gradlew :sdks:rust:nexmarkBenchmark -Pquery=0 -PnumEvents=1000000 -Pbaseline=origin/master
+
 # A Rust example or bench on Prism with profilePrism (worker profile, CPU mode).
 gsutil cp gs://apache-beam-samples/wikipedia_edits/wiki_data-000000000000.json build/bench-input/
 ./gradlew :sdks:rust:profileCompare -Pinput='build/bench-input/*.json' -Pbaseline=HEAD~1
@@ -134,6 +143,11 @@ gsutil cp gs://apache-beam-samples/wikipedia_edits/wiki_data-000000000000.json b
 ./gradlew :sdks:rust:harnessBenchmark -Pbench=data_plane -PbaselineName=before
 ```
 
+- `nexmarkPrism` and `nexmarkDataflow` run the [Nexmark suite](../benchmarks/nexmark/README.md)
+  (`-Psuite=DEFAULT|SMOKE|STRESS|FULL_THROTTLE`, `-Pquery=0..16`, `-Pstreaming`, `-PextraArgs`).
+  `nexmarkBenchmark` runs one query across rounds on Dataflow (`-Pquery=0`,
+  `-PnumEvents=1000000`, `-Pstreaming`, `-Pbaseline=<git ref>`) and reports CPU and
+  `events.elements` throughput.
 - `harnessBenchmark` runs the criterion benches in
   [harness/benches/](../beam/harness/benches/). `process_bundle` runs bundles through a worker
   and an in-process runner over gRPC, with the pipelines and 16 concurrent callers of Java's
@@ -166,7 +180,8 @@ gsutil cp gs://apache-beam-samples/wikipedia_edits/wiki_data-000000000000.json b
   a job that autoscaled beyond its initial workers, and stockout or quota warnings. Do not pin a
   platform with `-PminCpuPlatform` unless necessary: a pinned platform can stock out.
 - To add a Dataflow benchmark of a Rust example, call `registerRustBenchmark` (see
-  `wordcountBenchmark`). For other launchers, give launch commands to `runDataflowBenchmark`.
+  `wordcountBenchmark`). For other launchers, give launch commands to `runDataflowBenchmark`
+  (see `nexmarkBenchmark`).
 - `profileCompare` takes `-Pexample` (`wordcount`) or the target properties of `profilePrism`.
   It alternates the order of the variants in each round. `profilePrism` builds before it
   records, so the profile does not include the build. The report gives the Rust and Prism

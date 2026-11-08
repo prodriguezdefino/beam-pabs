@@ -37,6 +37,11 @@ pub(crate) fn side_input_table(row_count: i32) -> impl Iterator<Item = (i64, Str
     (0..i64::from(row_count.max(1))).map(|id| (id, id.to_string()))
 }
 
+/// One `id,label` line of the text table.
+pub(crate) fn format_side_input_line((id, label): &(i64, String)) -> String {
+    format!("{id},{label}")
+}
+
 fn parse_side_input_line(line: &str) -> std::result::Result<(i64, String), String> {
     let (id, label) = line
         .split_once(',')

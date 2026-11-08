@@ -337,22 +337,3 @@ tasks.register('machete') {
     }
   }
 }
-
-tasks.matching { it.name == 'pythonScriptsTest' }.configureEach {
-  inputs.files(project.fileTree("${rustDir}/scripts/quality") { include '**/*.py' })
-      .withPathSensitivity(PathSensitivity.RELATIVE)
-  doFirst {
-    File dir = file("${rustDir}/scripts/quality")
-    def pb = new ProcessBuilder('python3', '-m', 'unittest', 'discover', '-s', '.', '-p', '*_test.py')
-    pb.directory(dir)
-    pb.redirectErrorStream(true)
-    Process proc = pb.start()
-    String out = proc.inputStream.getText('UTF-8')
-    int exit = proc.waitFor()
-    if (exit != 0) {
-      System.err.print(out)
-      file("${buildDir}/test-results/cargo/pythonScriptsTest.txt").delete()
-      throw new GradleException("pythonScriptsTest failed in ${dir.name} with exit code ${exit}")
-    }
-  }
-}

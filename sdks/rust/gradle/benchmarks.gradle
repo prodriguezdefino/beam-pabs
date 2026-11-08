@@ -22,28 +22,36 @@
 //
 // A benchmark runs variants. A variant is a launch command: see benchmarks/tools/report.py.
 // gitRefVariants gives the current checkout and, with -Pbaseline=<git ref>, that ref from a
-// temporary git worktree under build/benchmarks/. Other sources of variants, for example
-// pipelines of other SDKs, give their own launch commands to runDataflowBenchmark. The scripts
+// temporary git worktree under build/benchmarks/. Other sources of variants, for example the
+// readers and writers of the I/O benchmarks (gradle/benchmarks/io.gradle), give their own
+// launch commands to runDataflowBenchmark. The scripts
 // in benchmarks/tools/ run the rounds and write results.json and report.md to
 // build/reports/benchmarks/<task>-<timestamp>/. See docs/development.md.
 
 def benchScripts = "${rustDir}/benchmarks/tools"
 // -P properties that a Dataflow benchmark gives to the `dataflow` task of each variant as is.
-def dataflowPassthrough = ['gcpProject', 'gcpRegion', 'gcpTempLocation', 'sdkContainerImage',
-                           'network', 'subnetwork', 'serviceAccountEmail', 'usePublicIps',
-                           'diskSizeGb', 'workerDiskType', 'autoscalingAlgorithm',
-                           'dataflowServiceOptions', 'numberOfWorkerHarnessThreads',
-                           'workerTargetCpu', 'exampleFeatures']
+ext.dataflowPassthrough = ['gcpProject', 'gcpRegion', 'gcpTempLocation', 'sdkContainerImage',
+                               'network', 'subnetwork', 'serviceAccountEmail', 'usePublicIps',
+                               'diskSizeGb', 'workerDiskType', 'autoscalingAlgorithm',
+                               'dataflowServiceOptions', 'numberOfWorkerHarnessThreads',
+                               'workerTargetCpu', 'exampleFeatures']
 // -P properties that profileCompare gives to the `profilePrism` task of each variant as is.
 def profilePassthrough = ['pkg', 'bin', 'cargoExample', 'cargoBench', 'exampleFeatures']
 
-def isSet = { String name ->
+ext.isSet = { String name ->
   def value = project.findProperty(name)
   value != null && value.toString() != 'false'
 }
 
-def passthrough = { List<String> names ->
+ext.passthrough = { List<String> names ->
   names.findAll { project.findProperty(it) != null }.collect { "-P${it}=${project.findProperty(it)}".toString() }
+}
+
+// Combines -Pexperiments and -PminCpuPlatform into one comma-separated --experiments value.
+ext.minCpuExperiments = { ->
+  def minCpu = project.findProperty('minCpuPlatform')?.toString()
+  ([project.findProperty('experiments')?.toString()] +
+      (minCpu ? ["min_cpu_platform=${minCpu}".toString()] : [])).findAll { it }.join(',')
 }
 
 def gitOutput = { List<String> args ->
@@ -72,12 +80,14 @@ def commonArgs = { Object defaultRuns = 3 ->
       (isSet('dryRun') ? ['--dry-run'] : [])
 }
 
-def writeVariants = { String task, List<Map> variants ->
-  def path = file("${buildDir}/tmp/benchmarks/${task}-variants.json")
+def writeJson = { String name, Object payload ->
+  def path = file("${buildDir}/tmp/benchmarks/${name}.json")
   path.parentFile.mkdirs()
-  path.text = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(variants))
+  path.text = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(payload))
   path
 }
+
+def writeVariants = { String task, List<Map> variants -> writeJson("${task}-variants", variants) }
 
 // Calls `body` with the checkouts to compare: maps [label:, root:, describe:], the baseline
 // first. With -Pbaseline, a detached git worktree at build/benchmarks/baseline holds that ref.
@@ -128,9 +138,11 @@ ext.gitRefVariants = { Closure body ->
 // Runs Dataflow jobs of `variants` (launch commands, see benchmarks/tools/report.py) for
 // -Pruns rounds and writes the report. `cfg` holds task:, describe:, and optionally
 // countOutput:, countName:, counter:, namePrefix: (the start of the job names), current: (the
-// variant that the report compares with the others), workers: (the workers of a job), runs:
-// (the default of -Pruns), and gcpProject: and region: (by default from the `dataflow`
-// properties). See benchmarks/tools/dataflow_job.py.
+// variant that the report compares with the others), workers: (the workers of a job), io: (see
+// benchmarks/tools/io_report.py), producer: (an optional companion load job started once the
+// measured jobs run), shared: (dir: and tasks: of a producer that several tasks share), runs:
+// (the default of -Pruns), and gcpProject: and region:
+// (by default from the `dataflow` properties). See benchmarks/tools/dataflow_job.py.
 ext.runDataflowBenchmark = { Map cfg, List<Map> variants ->
   def resolve = propsFor('dataflow')
   def gcpProject = cfg.gcpProject ?: gcpProjectFrom(resolve) ?: (isSet('dryRun') ? '<gcpProject>' : null)
@@ -151,6 +163,9 @@ ext.runDataflowBenchmark = { Map cfg, List<Map> variants ->
       (cfg.namePrefix ? ["--name-prefix=${cfg.namePrefix}"] : []) +
       (cfg.current ? ["--current=${cfg.current}"] : []) +
       (cfg.workers ? ["--workers=${cfg.workers}"] : []) +
+      (cfg.io ? ["--io=${groovy.json.JsonOutput.toJson(cfg.io)}"] : []) +
+      (cfg.producer ? ["--producer=${writeJson("${cfg.task}-producer", cfg.producer)}"] : []) +
+      (cfg.shared ? ["--shared-producer=${cfg.shared.dir}", "--shared-tasks=${cfg.shared.tasks}"] : []) +
       (isSet('prepareOnly') ? ['--prepare-only'] : []) + commonArgs(cfg.runs ?: 3)
   project.exec { commandLine cmd*.toString() }
 }
@@ -198,8 +213,7 @@ ext.registerRustBenchmark = { Map cfg ->
       def machine = (project.findProperty('workerMachineType') ?: 'n2-standard-4').toString()
       // Do not pin a CPU platform by default: a pinned platform can stock out in a region.
       def minCpu = project.findProperty('minCpuPlatform')?.toString()
-      def experiments = ([project.findProperty('experiments')?.toString()] +
-          (minCpu ? ["min_cpu_platform=${minCpu}"] : [])).findAll { it }.join(',')
+      def experiments = minCpuExperiments()
       def props = (input ? ["-Pinput=${input}"] : []) +
           ["-PnumWorkers=${workers}", "-PmaxNumWorkers=${maxWorkers}", "-PworkerMachineType=${machine}"] +
           (experiments ? ["-Pexperiments=${experiments}"] : []) + passthrough(dataflowPassthrough)
@@ -319,24 +333,30 @@ abstract class PythonTestWorkAction implements org.gradle.workers.WorkAction<Pyt
   }
 }
 
+def pythonScriptDirs = ['benchmarks/tools', 'scripts/profiling', 'scripts/quality']
+    .collect { file("${rustDir}/${it}") }
+
 tasks.register('pythonScriptsTest') {
   group = 'Verification'
-  description = 'Run the unit tests (*_test.py) of the Python scripts in benchmarks/tools and scripts/profiling'
+  description = 'Run the unit tests (*_test.py) of the Python scripts in benchmarks/tools, scripts/profiling and scripts/quality'
   mustRunAfter 'fmt'
-  inputs.files(
-      project.fileTree("${rustDir}/benchmarks/tools") { include '**/*.py' },
-      project.fileTree("${rustDir}/scripts/profiling") { include '**/*.py' },
-  ).withPathSensitivity(PathSensitivity.RELATIVE)
+  inputs.files(pythonScriptDirs.collect { dir ->
+    project.fileTree(dir) { include '**/*.py' }
+  }).withPathSensitivity(PathSensitivity.RELATIVE)
   def stampFile = file("${buildDir}/test-results/cargo/pythonScriptsTest.txt")
   outputs.file(stampFile)
 
   doLast {
-    def dirs = [file("${rustDir}/benchmarks/tools"), file("${rustDir}/scripts/profiling")]
     rustWorkerExecutor.noIsolation().submit(PythonTestWorkAction) { p ->
-      p.dirs.set(dirs)
+      p.dirs.set(pythonScriptDirs)
       p.stampFile.set(stampFile)
     }
   }
 }
 
 check.dependsOn 'pythonScriptsTest'
+
+apply from: "${rustDir}/gradle/benchmarks/nexmark.gradle"
+if (file("${rustDir}/gradle/benchmarks/io.gradle").exists()) {
+  apply from: "${rustDir}/gradle/benchmarks/io.gradle"
+}

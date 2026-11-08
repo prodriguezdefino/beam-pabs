@@ -1,0 +1,147 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Nexmark: the Linux worker, the Prism and Dataflow launchers, and the Dataflow benchmark
+// of `benchmarks/nexmark`. Applied from gradle/benchmarks.gradle.
+
+registerWorkerTask(
+    name: 'buildNexmarkWorker',
+    description: 'Build Linux worker binary for Nexmark container/Dataflow execution (-PexampleArch=amd64)',
+    bin: 'nexmark',
+    pkg: 'apache-beam-nexmark',
+    supplyKey: 'nexmark',
+)
+
+def nexmarkCliFlags = { Closure resolve ->
+  def flags = []
+  def suite = resolve('suite')?.toString()
+  if (suite) flags << "--suite=${suite}"
+  def query = resolve('query')?.toString()
+  if (query != null && !query.isEmpty()) flags << "--query=${query}"
+  if (isSet('streaming')) flags << '--streaming'
+  flags.addAll((resolve('extraArgs') ?: '').toString().tokenize(' '))
+  flags
+}
+
+tasks.register('nexmarkPrism', Exec) {
+  group = 'Application'
+  description = 'Run the Nexmark benchmark suite on the local Prism Runner ' +
+      '([-Psuite=SMOKE] [-Pquery=0] [-Pstreaming] [-Pdocker] [-PextraArgs=<flags>])'
+  workingDir rustDir
+  dependsOn 'fetchPrism'
+
+  def dockerMode = project.findProperty('docker').with { it instanceof CharSequence && it.toString() != 'false' }
+  if (dockerMode && !suppliedWorkerBinary('nexmark')) {
+    dependsOn 'buildNexmarkWorker'
+  }
+
+  doFirst {
+    def resolve = propsFor('nexmark')
+    def defaultEnv = "${project.docker_image_default_repo_root}/${project.docker_image_default_repo_prefix}rust_sdk:${beamSdkVersion}".toString()
+    def envConfig = dockerMode ? resolve('environmentConfig', null, defaultEnv) : null
+    def supplied = suppliedWorkerBinary('nexmark')
+    def workerFlag = !dockerMode ? []
+        : supplied == 'none' ? []
+        : supplied ? ["--worker_binary=${supplied}"]
+        : ["--worker_binary=${workerBinaryFor('nexmark', workerArch).absolutePath}"]
+    def gcpArgs = portableGcpArgs(resolve)
+    def cmd = [
+      'cargo', 'run', '--release', '-p', 'apache-beam-nexmark', '--bin', 'nexmark', '--',
+      '--runner=PrismRunner',
+      *(dockerMode
+          ? ['--environment_type=DOCKER', "--environment_config=${envConfig}"] + workerFlag
+          : ['--environment_type=LOOPBACK']),
+      *gcpArgs,
+      *nexmarkCliFlags(resolve),
+    ].collect { it.toString() }
+
+    environment launchEnvironment()
+    commandLine cmd
+  }
+}
+
+tasks.register('nexmarkDataflow', Exec) {
+  group = 'Application'
+  description = 'Run the Nexmark benchmark suite on Google Cloud Dataflow ' +
+      '([-Psuite=DEFAULT] [-Pquery=0] [-Pstreaming] [-PextraArgs=<flags>])'
+  workingDir rustDir
+  if (!suppliedWorkerBinary('nexmark')) {
+    dependsOn 'buildNexmarkWorker'
+  }
+
+  doFirst {
+    def resolve = propsFor('nexmark')
+    environment launchEnvironment()
+    commandLine buildDataflowArgs('nexmark', null, [
+        pkg: 'apache-beam-nexmark',
+        bin: 'nexmark',
+        skipIoFlags: true,
+        extraFlags: nexmarkCliFlags(resolve),
+    ])
+  }
+}
+
+tasks.register('nexmarkBenchmark') {
+  group = 'Verification'
+  description = 'Run a Nexmark query on Dataflow for some rounds and report its CPU and throughput metrics ' +
+      '([-Pquery=0] [-PnumEvents=1000000] [-Pstreaming] [-Pruns=3] [-Pbaseline=<git ref>] ' +
+      '[-PcompareTo=<results.json>] [-PnumWorkers=1] [-PmaxNumWorkers=10] ' +
+      '[-PworkerMachineType=n2-standard-4] [-PminCpuPlatform=<platform>] ' +
+      '[-PextraArgs=<pipeline flags>] [-PdryRun])'
+
+  doLast {
+    def query = (project.findProperty('query') ?: '0').toString()
+    def numEvents = (project.findProperty('numEvents') ?: '1000000').toString()
+    def streaming = isSet('streaming')
+    def workers = (project.findProperty('numWorkers') ?: '1').toString()
+    def maxWorkers = (project.findProperty('maxNumWorkers') ?: '10').toString()
+    def machine = (project.findProperty('workerMachineType') ?: 'n2-standard-4').toString()
+    def minCpu = project.findProperty('minCpuPlatform')?.toString()
+    def experiments = minCpuExperiments()
+    def props = ["-Pquery=${query}", "-PnumWorkers=${workers}", "-PmaxNumWorkers=${maxWorkers}",
+                 "-PworkerMachineType=${machine}"] +
+        (streaming ? ['-Pstreaming'] : []) +
+        (experiments ? ["-Pexperiments=${experiments}"] : []) +
+        passthrough(dataflowPassthrough)
+    def extraArgs = ["--num_events=${numEvents}", project.findProperty('extraArgs')].findAll { it }.join(' ')
+    def mode = streaming ? 'streaming' : 'batch'
+    def summary = "Nexmark query ${query} (${mode}), ${numEvents} events, ${machine}, " +
+        "${workers} to ${maxWorkers} workers" + (minCpu ? ", minimum CPU platform ${minCpu}" : '') + '.'
+
+    gitRefVariants { List<Map> checkouts ->
+      def variants = checkouts.collect { Map checkout ->
+        def flags = { List<String> first -> (first + (extraArgs ? [extraArgs] : [])).join(' ') }
+        def task = { List<String> first ->
+          (["${checkout.root}/gradlew", '--console=plain', ':sdks:rust:nexmarkDataflow'] +
+              props + ["-PextraArgs=${flags(first)}"])*.toString()
+        }
+        [label: checkout.label, describe: checkout.describe, cwd: checkout.root,
+         prepare: task(["--dataflow_job_file={out_dir}/${checkout.label}-prepare-job.json".toString()]),
+         argv: task(['--job_name={job_name}', '--labels={labels}'])]
+      }
+      runDataflowBenchmark([
+          task: 'nexmarkBenchmark',
+          describe: summary,
+          workers: workers,
+          countOutput: 'MonitorEvents',
+          countName: 'events',
+          counter: 'events.elements',
+      ], variants)
+    }
+  }
+}
