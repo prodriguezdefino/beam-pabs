@@ -59,7 +59,8 @@ class BeamRustPlugin implements Plugin<Project> {
     RustXlangTasks.register(containers)
     RustQualityTasks.register(containers)
     RustProfilingTasks.register(config)
-    RustBenchmarkTasks.register(dataflow)
+    RustBenchmarkTasks benchmarks = RustBenchmarkTasks.register(dataflow)
+    RustNexmarkTasks.register(containers, benchmarks)
 
     project.tasks.named('build').configure { Task task -> task.dependsOn('buildWorkspace') }
     project.tasks.named('check').configure { Task task ->
