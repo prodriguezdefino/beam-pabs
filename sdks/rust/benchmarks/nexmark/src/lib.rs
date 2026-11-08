@@ -20,6 +20,9 @@
 //! Nexmark benchmark suite for the Apache Beam Rust SDK.
 
 pub mod config;
+pub mod correctness;
 pub mod generator;
 pub mod model;
+pub mod models;
+pub mod queries;
 pub mod source;

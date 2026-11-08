@@ -452,6 +452,8 @@ version = "2.79.0-SNAPSHOT"
 dependencies = [
  "apache-beam",
  "serde",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
