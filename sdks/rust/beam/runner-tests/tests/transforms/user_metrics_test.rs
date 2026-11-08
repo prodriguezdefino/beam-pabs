@@ -118,3 +118,36 @@ async fn string_set_metrics_are_reported_to_the_runner() {
         ["a/b", "a/c", "d"]
     );
 }
+
+#[ignore = "Prism drops bounded trie cells from the job metrics"]
+#[tokio::test]
+async fn bounded_trie_metrics_are_reported_to_the_runner() {
+    let p = Pipeline::new();
+    let _ = p
+        .apply(
+            "Create",
+            Create::new(vec!["a/b".to_string(), "a/c".to_string(), "d".to_string()]),
+        )
+        .map("Record", |path: String| {
+            let segments: Vec<&str> = path.split('/').collect();
+            Metrics::bounded_trie("test", "tree").add(&segments);
+            path
+        });
+
+    let result = p
+        .run_with_runner(&PrismRunner::new())
+        .await
+        .expect("pipeline failed");
+    let metrics = result.metrics().expect("prism reports metrics");
+    let tree = metrics
+        .bounded_trie("test", "tree")
+        .expect("bounded trie reported");
+    let expected = [
+        (vec!["a".to_string(), "b".to_string()], false),
+        (vec!["a".to_string(), "c".to_string()], false),
+        (vec!["d".to_string()], false),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(tree.paths(), expected);
+}

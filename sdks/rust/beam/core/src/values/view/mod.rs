@@ -84,6 +84,14 @@ pub enum SideInputKind {
 }
 
 impl SideInputKind {
+    const fn tag_prefix(self) -> &'static str {
+        match self {
+            Self::Singleton => "side_singleton",
+            Self::Iter => "side_iter",
+            Self::Multimap => "side_multimap",
+        }
+    }
+
     const fn access_pattern(self) -> &'static str {
         match self {
             Self::Singleton | Self::Iter => URN_SIDE_INPUT_ITERABLE,
@@ -252,8 +260,8 @@ impl sealed::Sealed for Iter {}
 impl sealed::Sealed for Multimap {}
 
 impl<T: DefaultCoder> PCollection<T> {
-    /// A view read through `Kind`. The tag derives from the PCollection id, so two views of one
-    /// collection share a materialization.
+    /// A view read through `Kind`. The tag derives from `Kind` and the PCollection id, so two
+    /// views of the same kind on one collection share a materialization.
     fn view<Kind: ViewKind>(&self) -> PCollectionView<T, Kind> {
         let pipeline = self.pipeline();
         let p = pipeline.lock();
@@ -276,7 +284,7 @@ impl<T: DefaultCoder> PCollection<T> {
         drop(p);
 
         PCollectionView {
-            tag: format!("side_{}", self.id()),
+            tag: format!("{}_{}", Kind::KIND.tag_prefix(), self.id()),
             pcollection_id: self.id().to_string(),
             coder_id: self.coder_id().to_string(),
             windowing,

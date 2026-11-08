@@ -279,6 +279,37 @@ def imageExists = { String image ->
   }.exitValue == 0
 }
 
+// Starts a test expansion service, runs the Rust xlang tests against it, and stops it.
+def runXlangTestsAgainstService = { String name, List<String> command, File dir, String addrVar,
+                                    List<String> defaultFilters ->
+  def port = new ServerSocket(0).withCloseable { it.localPort }
+  def log = file("${buildDir}/xlang-${name.toLowerCase()}-test-expansion-service.log")
+  log.parentFile.mkdirs()
+  def service = new ProcessBuilder((command + [port.toString()])*.toString())
+      .directory(dir)
+      .redirectErrorStream(true)
+      .redirectOutput(log)
+      .start()
+  try {
+    waitForPort(port, 120)
+    def filters = project.findProperty('filter')?.toString()?.tokenize() ?: defaultFilters
+    def threads = project.findProperty('testThreads')?.toString()
+    def testArgs = filters + [threads ? "--test-threads=${threads}".toString() : null,
+                              project.hasProperty('includeIgnored') ? '--include-ignored' : null].findAll { it }
+    project.exec {
+      workingDir rustDir
+      environment addrVar, "localhost:${port}"
+      environment 'BEAM_PRISM_PATH', prismHostBinary.absolutePath
+      commandLine(['cargo', 'test', '-p', 'apache-beam-runner-tests', '--test', 'xlang'] +
+          (testArgs ? ['--'] + testArgs : []))
+    }
+  } finally {
+    service.destroy()
+    service.waitFor()
+    logger.lifecycle("${name} test expansion service log: ${log}")
+  }
+}
+
 tasks.register('validatesCrossLanguageRunnerJavaServicePrism') {
   group = 'Verification'
   description = 'Run the Rust cross-language suite against the Java test expansion service on Prism ' +
@@ -299,31 +330,44 @@ tasks.register('validatesCrossLanguageRunnerJavaServicePrism') {
     }
     def jar = project.project(javaTestServiceProject).tasks
         .named('buildTestExpansionServiceJar').get().archiveFile.get().asFile
-    def port = new ServerSocket(0).withCloseable { it.localPort }
-    def log = file("${buildDir}/xlang-java-test-expansion-service.log")
-    log.parentFile.mkdirs()
     def java = "${System.getProperty('java.home')}/bin/java"
-    def service = new ProcessBuilder(java, '-jar', jar.absolutePath, port.toString())
-        .redirectErrorStream(true)
-        .redirectOutput(log)
-        .start()
-    try {
-      waitForPort(port, 120)
-      def filters = project.findProperty('filter')?.toString()?.tokenize() ?: []
-      def threads = project.findProperty('testThreads')?.toString()
-      def testArgs = filters + [threads ? "--test-threads=${threads}".toString() : null,
-                                project.hasProperty('includeIgnored') ? '--include-ignored' : null].findAll { it }
-      project.exec {
-        workingDir rustDir
-        environment 'BEAM_JAVA_TEST_EXPANSION_ADDR', "localhost:${port}"
-        environment 'BEAM_PRISM_PATH', prismHostBinary.absolutePath
-        commandLine(['cargo', 'test', '-p', 'apache-beam-runner-tests', '--test', 'xlang'] +
-            (testArgs ? ['--'] + testArgs : []))
-      }
-    } finally {
-      service.destroy()
-      service.waitFor()
-      logger.lifecycle("Java test expansion service log: ${log}")
+    runXlangTestsAgainstService('Java', [java, '-jar', jar.absolutePath], rustDir,
+        'BEAM_JAVA_TEST_EXPANSION_ADDR', [])
+  }
+}
+
+tasks.register('validatesCrossLanguageRunnerPythonServicePrism') {
+  group = 'Verification'
+  description = 'Run the Rust cross-language suite against the Python test expansion service on Prism ' +
+      '([-Pfilter=<test name>] [-PtestThreads=<n>] [-PincludeIgnored] [-PpythonVersion=3.12] [-PbuildPythonContainer])'
+  dependsOn 'setupXlangPythonEnv', 'fetchPrism'
+  if (project.hasProperty('buildPythonContainer')) {
+    dependsOn ":sdks:python:container:py${imagePythonVersion.replace('.', '')}:docker"
+  }
+
+  doLast {
+    if (!dockerReachable()) {
+      throw new GradleException('Docker is not reachable. The cross-language suite needs it to start ' +
+          'the Python SDK container.')
     }
+    def venvPy = "${xlangVenv}/bin/python"
+    def pyVerOut = new ByteArrayOutputStream()
+    project.exec {
+      commandLine venvPy, '-c', 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'
+      standardOutput = pyVerOut
+    }
+    def venvPyVersion = pyVerOut.toString().trim()
+    def localPythonSdkImage = "${project.docker_image_default_repo_root}/" +
+        "${project.docker_image_default_repo_prefix}python${venvPyVersion}_sdk:${beamSdkVersion}"
+    if (!imageExists(localPythonSdkImage)) {
+      def pyTaskVer = venvPyVersion.replace('.', '')
+      throw new GradleException("${localPythonSdkImage} is not available locally. Build it with " +
+          "./gradlew :sdks:python:container:py${pyTaskVer}:docker, or add " +
+          "-PpythonVersion=${venvPyVersion} -PbuildPythonContainer.")
+    }
+    runXlangTestsAgainstService('Python',
+        [venvPy, '-m', 'apache_beam.runners.portability.expansion_service_test',
+         '--fully_qualified_name_glob', '*', '-p'],
+        pythonDir, 'BEAM_PYTHON_TEST_EXPANSION_ADDR', ['python_service_test'])
   }
 }

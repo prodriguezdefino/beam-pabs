@@ -289,3 +289,84 @@ async fn test_test_stream_watermark_past_end_of_global_window() {
     )
     .await;
 }
+
+// Timer clearing, watermark holds, ordered-list range deletion and stateful finalization.
+
+#[tokio::test]
+async fn test_set_and_clear_event_time_timer() {
+    run_pipeline(
+        "set_and_clear_event_time_timer",
+        build_set_and_clear_event_time_timer,
+        Expectation::Succeeds,
+        &runner(),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn test_clear_event_time_timer_in_timer() {
+    run_pipeline(
+        "clear_event_time_timer_in_timer",
+        build_clear_event_time_timer_in_timer,
+        Expectation::Succeeds,
+        &runner(),
+    )
+    .await;
+}
+
+#[ignore = "Prism stores a cleared processing-time timer instead of removing it (apache/beam#41073)"]
+#[tokio::test]
+async fn test_set_and_clear_processing_time_timer() {
+    run_pipeline(
+        "set_and_clear_processing_time_timer",
+        build_set_and_clear_processing_time_timer,
+        Expectation::Succeeds,
+        &runner(),
+    )
+    .await;
+}
+
+#[ignore = "Prism stores a cleared processing-time timer instead of removing it (apache/beam#41073)"]
+#[tokio::test]
+async fn test_clear_processing_time_timer_in_timer() {
+    run_pipeline(
+        "clear_processing_time_timer_in_timer",
+        build_clear_processing_time_timer_in_timer,
+        Expectation::Succeeds,
+        &runner(),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn test_timer_hold_delays_downstream_timer() {
+    run_pipeline(
+        "timer_hold_delays_downstream_timer",
+        build_timer_hold_delays_downstream_timer,
+        Expectation::Succeeds,
+        &runner(),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn test_test_stream_ordered_list_clear_range() {
+    run_pipeline(
+        "test_stream_ordered_list_clear_range",
+        build_test_stream_ordered_list_clear_range,
+        Expectation::Succeeds,
+        &runner(),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn test_test_stream_bundle_finalization_with_state() {
+    run_pipeline(
+        "test_stream_bundle_finalization_with_state",
+        build_test_stream_bundle_finalization_with_state,
+        Expectation::Custom(check_test_stream_bundle_finalization_with_state),
+        &runner(),
+    )
+    .await;
+}

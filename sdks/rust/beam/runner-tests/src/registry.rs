@@ -187,6 +187,7 @@ validates_runner_tests! {
                 bag_state_side_input => build_bag_state_side_input,
                 state_side_input => build_state_side_input,
                 side_input_not_ready_timer => build_side_input_not_ready_timer,
+                triggered_side_input => build_triggered_side_input,
                 bundle_finalization_with_side_input => build_bundle_finalization_with_side_input
                     [Expectation::Custom(check_bundle_finalization_with_side_input)],
             }
@@ -215,6 +216,7 @@ validates_runner_tests! {
                     build_group_into_batches_count_and_byte_limits,
                 combine_globally_empty_without_defaults =>
                     build_combine_globally_empty_without_defaults,
+                simple_combine_empty => build_simple_combine_empty,
                 schema_dofn_reads_and_writes_rows => build_schema_dofn_reads_and_writes_rows,
                 schema_dofn_writes_rows_to_tagged_outputs =>
                     build_schema_dofn_writes_rows_to_tagged_outputs,

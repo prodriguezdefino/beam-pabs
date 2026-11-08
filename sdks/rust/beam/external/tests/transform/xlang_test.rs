@@ -195,6 +195,12 @@ fn test_extract_input_components() {
             .windowing_strategies
             .contains_key(&inner.default_windowing_strategy_id)
     );
+    assert!(
+        extracted
+            .transforms
+            .values()
+            .any(|t| t.outputs.values().any(|out| out == &pcoll_id))
+    );
 }
 
 #[test]
@@ -225,6 +231,13 @@ fn test_splice_expansion_response() {
             display_data: Vec::new(),
         },
     );
+    response_components.transforms.insert(
+        "__xlang_impulse_pcoll_input_1".to_string(),
+        proto::PTransform {
+            unique_name: "__xlang_impulse_pcoll_input_1".to_string(),
+            ..Default::default()
+        },
+    );
 
     let expanded_transform = proto::PTransform {
         unique_name: "External_BigQueryRead".to_string(),
@@ -250,6 +263,12 @@ fn test_splice_expansion_response() {
     let root_id = splice_expansion_response(&mut inner, response).unwrap();
     assert_eq!(root_id, "External_BigQueryRead");
     assert!(inner.components.transforms.contains_key(&root_id));
+    assert!(
+        !inner
+            .components
+            .transforms
+            .contains_key("__xlang_impulse_pcoll_input_1")
+    );
     assert!(inner.components.pcollections.contains_key(&ext_pcoll_id));
     assert!(inner.components.coders.contains_key(&ext_coder_id));
     assert_eq!(inner.transform_order.last().unwrap(), &root_id);

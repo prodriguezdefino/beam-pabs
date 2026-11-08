@@ -283,12 +283,12 @@ pub fn build_folds(p: &TestPipeline) {
 }
 
 /// Values of the one key in [`build_group_by_key_large_iterable`].
-const LARGE_GROUP_VALUES: i64 = 32_768;
+const LARGE_GROUP_VALUES: i64 = 16_384;
 
 /// Bytes of each value in [`build_group_by_key_large_iterable`].
-const LARGE_GROUP_PAYLOAD: usize = 256;
+const LARGE_GROUP_PAYLOAD: usize = 4_096;
 
-/// Validates a `GroupByKey` over one key with 8 MiB of values, read by `fold_values`.
+/// Validates a `GroupByKey` over one key with 64 MiB of values, read by `fold_values`.
 ///
 /// A runner that pages state (Dataflow) sends a group this large as a state-backed iterable,
 /// and the harness reads the rest of it through the State API. Prism sends every group
@@ -886,4 +886,18 @@ pub fn build_combine_globally_empty_without_defaults(p: &TestPipeline) {
         .apply("Create", Create::new(Vec::<i64>::new()))
         .combine_globally_without_defaults("SumAll", Sum::new());
     passert::that("AssertEmpty", &sums).empty();
+}
+
+/// Validates a global and a per-key combine of an empty input: the global combine emits the
+/// default value of the combine, and the per-key combine emits nothing.
+///
+/// Java: `CombineTest$BasicTests.testSimpleCombineEmpty`.
+pub fn build_simple_combine_empty(p: &TestPipeline) {
+    let input = p.apply("Create", Create::new(Vec::<(String, i64)>::new()));
+    let sum = input
+        .map("Values", |(_, v): (String, i64)| v)
+        .combine_globally("SumGlobally", Sum::new());
+    let sum_per_key = input.combine_per_key("SumPerKey", Sum::new());
+    passert::that("AssertGlobalSum", &sum).contains_in_any_order([0_i64]);
+    passert::that("AssertPerKeySums", &sum_per_key).empty();
 }

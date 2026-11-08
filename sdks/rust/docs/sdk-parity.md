@@ -259,7 +259,7 @@ Decimals:
 | Resource hints, per-transform | ✅ | ✅ | ❌ | ❌ | ✅ |
 | Resource hints, pipeline-level | ✅ | ✅ | ✅ | ❌ | ✅ |
 | Managed I/O | ✅ | ✅ | ❌ | ❌ | ✅ xlang |
-| Lineage reporting | ✅ | ✅ | ❌ | ❌ | ❌ |
+| Lineage reporting | ✅ | ✅ | ❌ | ❌ | ✅ |
 | Worker runs user code without rebuilding the pipeline | ✅ | ✅ | ✅ | ✅ | 🟡 |
 
 Notes:
@@ -276,10 +276,10 @@ Notes:
   gRPC stubs, not a server implementation. Rust ships `apache-beam-expansion`
   and the `beam-expansion-service` binary.
 - **Consuming** cross-language transforms: the `beam:transforms:xlang:test:*` cases of
-  `ValidateRunnerXlangTest.java` run as Rust pipelines on Prism against the Java test
-  expansion service (`validatesCrossLanguageRunnerJavaServicePrism`, see
-  [validates-runner.md](validates-runner.md#cross-language-suites)). The Python test
-  expansion service is not in that task.
+  `ValidateRunnerXlangTest.java` run as Rust pipelines on Prism. They run against the Java
+  test expansion service (`validatesCrossLanguageRunnerJavaServicePrism`). They also run
+  against the Python test expansion service (`validatesCrossLanguageRunnerPythonServicePrism`,
+  which also runs `python_bs4`). See [validates-runner.md](validates-runner.md#cross-language-suites).
 - Java does not download its *own* expansion service, because the downloaded
   service is the Java expansion service.
 - For all SDKs, Flex Template support is mostly tooling outside this

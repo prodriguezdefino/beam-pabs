@@ -23,11 +23,11 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
+use beam::io::file::get_filesystem;
 use beam::prelude::*;
 use beam::runners::PipelineResult;
 use beam::testing::{TestPipeline, TestPipelineError, TestStream, passert};
 use beam::transforms::WithFinalizer;
-use beam_io_file::get_filesystem;
 
 use super::finalization::{marker_dir, words_in, write_marker};
 use crate::dofns::{
@@ -777,4 +777,204 @@ pub fn build_windowed_side_input_not_present(p: &TestPipeline) {
             end: Instant::from_millis(10_000),
         })
         .contains_in_any_order([0]);
+}
+
+/// Side input events of [`build_triggered_side_input`]: key, value, timestamp in ms.
+const TRIGGERED_SIDE: [(&str, i64, i64); 4] = [
+    ("a", 10, 1_000),
+    ("a", 20, 2_000),
+    ("b", 5, 3_000),
+    ("a", 40, 6_000),
+];
+
+/// Validates a triggered side input in fixed windows (`AfterWatermark` with early `AfterCount`,
+/// `Discarding`) read as a multimap and an iterable of the same collection in one `ParDo`.
+///
+/// A runner can read the side window after any of its panes, so the checks hold for every
+/// set of fired panes. [`build_test_stream_triggered_side_input`] checks exact pane values.
+///
+/// Java: `ViewTest.testTriggeredLatestSingleton`.
+pub fn build_triggered_side_input(p: &TestPipeline) {
+    let w5 = Duration::from_secs(5);
+    let side = p
+        .apply(
+            "SideEvents",
+            Create::new(
+                TRIGGERED_SIDE
+                    .iter()
+                    .map(|&(k, v, ts)| (k.to_string(), (v, ts)))
+                    .collect::<Vec<_>>(),
+            ),
+        )
+        .par_do("TimestampSide", AssignTimestampDoFn)
+        .apply(
+            "WindowSide",
+            WindowInto::new(FixedWindows::of(w5))
+                .with_trigger(
+                    Trigger::after_end_of_window().with_early_firings(Trigger::after_count(1)),
+                )
+                .with_accumulation_mode(AccumulationMode::Discarding),
+        )
+        .combine_per_key("SumPerPane", Sum::new());
+
+    let main = p
+        .apply(
+            "MainEvents",
+            Create::new(vec![
+                ("a".to_string(), (0i64, 2_000i64)),
+                ("b".to_string(), (0, 4_000)),
+                ("c".to_string(), (0, 4_000)),
+                ("a".to_string(), (0, 7_000)),
+            ]),
+        )
+        .par_do("TimestampMain", AssignTimestampDoFn)
+        .apply("WindowMain", WindowInto::new(FixedWindows::of(w5)))
+        .map("MainKey", |(k, _): (String, i64)| k);
+
+    let reads = main.map_with_side_inputs(
+        "ReadTriggeredViews",
+        (side.as_multimap(), side.as_iter()),
+        |key, (by_key, all)| {
+            let mut key_panes = by_key.get_all(&key)?.collect::<Result<Vec<i64>>>()?;
+            key_panes.sort_unstable();
+            let has_first = by_key.get(&key)?.is_some();
+            let window_sum: i64 = all.iter()?.map(|kv| Ok(kv?.1)).sum::<Result<i64>>()?;
+            Ok((key, key_panes, has_first, window_sum))
+        },
+    );
+
+    passert::that_windowed("AssertTriggeredSide", &reads).satisfies(check_triggered_reads);
+}
+
+/// One read of [`build_triggered_side_input`]: key, pane sums of the key, whether
+/// `SideMap::get` found a value, and the sum of the iterable view.
+type TriggeredRead = (String, Vec<i64>, bool, i64);
+
+/// Checks the reads of [`build_triggered_side_input`] for any set of fired side panes.
+fn check_triggered_reads(reads: &[(TriggeredRead, IntervalWindow)]) -> Result {
+    let mut seen: Vec<(&str, Instant)> = reads
+        .iter()
+        .map(|((key, ..), w)| (key.as_str(), w.start))
+        .collect();
+    seen.sort_unstable();
+    let five_s = Instant::from_millis(5_000);
+    let expected = [
+        ("a", Instant::EPOCH),
+        ("a", five_s),
+        ("b", Instant::EPOCH),
+        ("c", Instant::EPOCH),
+    ];
+    if seen != expected {
+        return Err(format!("main elements per window: {seen:?}, expected {expected:?}").into());
+    }
+    reads
+        .iter()
+        .try_for_each(|((key, panes, has_first, window_sum), w)| {
+            let in_window =
+                |ts: i64| w.start <= Instant::from_millis(ts) && Instant::from_millis(ts) < w.end;
+            let key_inputs: Vec<i64> = TRIGGERED_SIDE
+                .iter()
+                .filter(|&&(k, _, ts)| k == key.as_str() && in_window(ts))
+                .map(|&(_, v, _)| v)
+                .collect();
+            let window_total: i64 = TRIGGERED_SIDE
+                .iter()
+                .filter(|&&(_, _, ts)| in_window(ts))
+                .map(|&(_, v, _)| v)
+                .sum();
+            // A discarding pane holds a subset of the inputs; the on-time pane can be empty (0).
+            let pane_sums = subset_sums(&key_inputs);
+            let context = format!("key {key} in {w:?}: panes {panes:?}, window sum {window_sum}");
+            if key_inputs.is_empty() && !panes.is_empty() {
+                return Err(format!("{context}: a key with no side data has panes").into());
+            }
+            if panes.iter().any(|v| !pane_sums.contains(v)) {
+                return Err(format!("{context}: a pane is not a sum of the key inputs").into());
+            }
+            if panes.iter().sum::<i64>() > key_inputs.iter().sum::<i64>() {
+                return Err(format!("{context}: panes add up to more than the key inputs").into());
+            }
+            if *has_first == panes.is_empty() {
+                return Err(format!("{context}: get disagrees with get_all").into());
+            }
+            if !(0..=window_total).contains(window_sum) {
+                return Err(
+                    format!("{context}: iterable sum is outside 0..={window_total}").into(),
+                );
+            }
+            Ok(())
+        })
+}
+
+/// All sums of subsets of `values`, the empty subset (0) included.
+fn subset_sums(values: &[i64]) -> BTreeSet<i64> {
+    values.iter().fold(BTreeSet::from([0]), |sums, v| {
+        sums.iter().flat_map(|s| [*s, s + v]).collect()
+    })
+}
+
+/// Validates a multi-triggered `CombinePerKey` side input driven by `TestStream` across fixed
+/// windows: early and on-time panes both materialize in the window view. Prism only.
+///
+/// Python: `SideInputsTest.test_multi_triggered_gbk_side_input`.
+pub fn build_test_stream_triggered_side_input(p: &TestPipeline) {
+    let w5 = Duration::from_secs(5);
+    let side_ev = |ts_ms: i64, v: i64| ((true, "k".to_string(), v), Instant::from_millis(ts_ms));
+    let main_ev = |ts_ms: i64, label: &str| {
+        (
+            (false, label.to_string(), 0i64),
+            Instant::from_millis(ts_ms),
+        )
+    };
+
+    let events = p.apply(
+        "TestStream",
+        TestStream::new()
+            .add_timestamped_elements([side_ev(1_000, 100)])
+            .advance_watermark_to(Instant::from_millis(3_000))
+            .add_timestamped_elements([main_ev(3_000, "m1"), side_ev(4_000, 50)])
+            .advance_watermark_to(Instant::from_millis(6_000))
+            .add_timestamped_elements([side_ev(7_000, 400)])
+            .advance_watermark_to(Instant::from_millis(8_000))
+            .add_timestamped_elements([main_ev(8_000, "m2")])
+            .advance_watermark_to_infinity(),
+    );
+
+    let side_view = events
+        .filter("KeepSide", |(is_side, _, _): &(bool, String, i64)| *is_side)
+        .map("SideKV", |(_, k, v): (bool, String, i64)| (k, v))
+        .apply(
+            "SideWindow",
+            WindowInto::new(FixedWindows::of(w5))
+                .with_trigger(
+                    Trigger::after_end_of_window().with_early_firings(Trigger::after_count(1)),
+                )
+                .with_accumulation_mode(AccumulationMode::Discarding),
+        )
+        .combine_per_key("SumSidePanes", Sum::new())
+        .map("PaneValue", |(_, v): (String, i64)| v)
+        .as_iter();
+
+    let out = events
+        .filter("KeepMain", |(is_side, _, _): &(bool, String, i64)| {
+            !*is_side
+        })
+        .map("MainLabel", |(_, label, _): (bool, String, i64)| label)
+        .apply(
+            "MainWindow",
+            WindowInto::new(FixedWindows::of(w5))
+                .with_accumulation_mode(AccumulationMode::Discarding),
+        )
+        .map_with_side_inputs("ReadPanes", side_view, |label, panes| {
+            let mut values = panes.to_vec()?;
+            values.sort_unstable();
+            Ok((label, values))
+        });
+
+    let w0 = IntervalWindow::new(Instant::EPOCH, Instant::from_millis(5_000));
+    let w1 = IntervalWindow::new(Instant::from_millis(5_000), Instant::from_millis(10_000));
+    passert::that_windowed("AssertTriggeredPanes", &out).contains_in_any_order([
+        (("m1".to_string(), vec![50i64, 100]), w0),
+        (("m2".to_string(), vec![400]), w1),
+    ]);
 }

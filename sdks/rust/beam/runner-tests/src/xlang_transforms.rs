@@ -51,6 +51,8 @@ pub const URN_COMPK: &str = "beam:transforms:xlang:test:compk";
 pub const URN_FLATTEN: &str = "beam:transforms:xlang:test:flatten";
 /// URN of the cross-language Partition test transform.
 pub const URN_PARTITION: &str = "beam:transforms:xlang:test:partition";
+/// URN of the Python BeautifulSoup HTML title test transform.
+pub const URN_PYTHON_BS4: &str = "beam:transforms:xlang:test:python_bs4";
 
 type Inputs = TransformInputs;
 type Outputs = beam::Result<HashMap<String, PCollectionId>>;

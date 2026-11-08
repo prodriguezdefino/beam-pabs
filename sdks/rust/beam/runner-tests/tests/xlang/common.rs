@@ -19,15 +19,63 @@
 
 //! Helpers of the cross-language tests.
 
+use beam::testing::TestPipeline;
 use beam_runner_prism::PrismRunner;
+use beam_runner_tests::{Expectation, RunnerKind, test_pipeline};
 
 /// A Prism runner for one test.
 pub fn runner() -> PrismRunner {
     PrismRunner::new()
 }
 
-/// Whether a Docker daemon is reachable, which the Java SDK environment needs. Asks the
-/// `docker` CLI, so contexts such as Colima's are honored.
+/// A test expansion service that a Gradle task starts for the tests.
+#[derive(Clone, Copy)]
+pub enum TestService {
+    /// `sdks/java/testing/expansion-service`.
+    Java,
+    /// `apache_beam.runners.portability.expansion_service_test`.
+    Python,
+}
+
+impl TestService {
+    /// Environment variable with the `host:port` of the service.
+    const fn address_var(self) -> &'static str {
+        match self {
+            Self::Java => "BEAM_JAVA_TEST_EXPANSION_ADDR",
+            Self::Python => "BEAM_PYTHON_TEST_EXPANSION_ADDR",
+        }
+    }
+
+    /// Gradle task that starts the service and runs the tests.
+    const fn gradle_task(self) -> &'static str {
+        match self {
+            Self::Java => "validatesCrossLanguageRunnerJavaServicePrism",
+            Self::Python => "validatesCrossLanguageRunnerPythonServicePrism",
+        }
+    }
+}
+
+/// Builds the pipeline of `test` against `service` and runs it on Prism.
+/// Skips when the service address is not set or Docker is not reachable.
+pub async fn run_against(service: TestService, test: &str, build: fn(&TestPipeline, &str)) {
+    let var = service.address_var();
+    let Ok(endpoint) = std::env::var(var) else {
+        eprintln!(
+            "Skipping {test}: {var} is not set. Run ./gradlew :sdks:rust:{}.",
+            service.gradle_task()
+        );
+        return;
+    };
+    if skip_without_docker(test) {
+        return;
+    }
+    let p = test_pipeline();
+    build(&p, &endpoint);
+    Expectation::Succeeds.check(test, RunnerKind::Prism, p.run_with(&runner()).await);
+}
+
+/// Whether a Docker daemon is reachable, which external SDK container environments need.
+/// Asks the `docker` CLI, so contexts such as Colima's are honored.
 fn docker_available() -> bool {
     std::process::Command::new("docker")
         .arg("info")
@@ -42,7 +90,7 @@ pub fn skip_without_docker(test: &str) -> bool {
     let skip = !docker_available();
     if skip {
         eprintln!(
-            "Skipping {test}: no reachable Docker daemon (`docker info` failed); the Java SDK \
+            "Skipping {test}: no reachable Docker daemon (`docker info` failed); the external SDK \
              environment needs one."
         );
     }

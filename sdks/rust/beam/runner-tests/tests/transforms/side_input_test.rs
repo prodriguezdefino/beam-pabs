@@ -79,3 +79,17 @@ async fn test_windowed_side_input_not_present() {
     )
     .await;
 }
+
+/// Early and on-time panes of a triggered `CombinePerKey` side input materialize per window.
+///
+/// Python: `SideInputsTest.test_multi_triggered_gbk_side_input`.
+#[tokio::test]
+async fn test_test_stream_triggered_side_input() {
+    run_pipeline(
+        "test_stream_triggered_side_input",
+        build_test_stream_triggered_side_input,
+        Expectation::Succeeds,
+        &prism_runner_from_env(),
+    )
+    .await;
+}

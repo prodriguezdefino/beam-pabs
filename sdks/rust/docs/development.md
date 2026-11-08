@@ -58,6 +58,7 @@ Run builds and tests through Gradle. The rest of the Beam repository uses it too
 ./gradlew :sdks:rust:validatesCrossLanguageRunnerPythonPrism     # Python xlang suite on Prism against the Rust test expansion service
 ./gradlew :sdks:rust:validatesCrossLanguageRunnerPythonDataflow  # Python xlang suite on Dataflow against the Rust test expansion service
 ./gradlew :sdks:rust:validatesCrossLanguageRunnerJavaServicePrism  # Rust xlang suite on Prism against the Java test expansion service
+./gradlew :sdks:rust:validatesCrossLanguageRunnerPythonServicePrism # Rust xlang suite on Prism against the Python test expansion service
 
 # Tasks that other tasks use
 ./gradlew :sdks:rust:buildWorkspace            # cargo build of the workspace, for `build`

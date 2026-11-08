@@ -936,3 +936,63 @@ impl StatefulDoFn for TimeSortedDeltaDoFn {
         ctx.emit(value - last)
     }
 }
+
+/// Event-time timer of [`OrderedListRangeDeleteDoFn`].
+#[derive(Timers)]
+pub enum OrderedListDeleteTimer {
+    #[timer(event_time)]
+    Delete,
+}
+
+/// Adds timestamped events to an ordered list, clears `[0, 43 ms)` when its 42 ms timer fires,
+/// and emits the remaining entries when the window expires.
+#[derive(Clone)]
+pub struct OrderedListRangeDeleteDoFn;
+
+impl StatefulDoFn for OrderedListRangeDeleteDoFn {
+    type Key = String;
+    type Value = (i64, String);
+    type Out = (i64, String);
+    type State = OrderedListLogState;
+    type Timer = OrderedListDeleteTimer;
+    const ON_WINDOW_EXPIRATION: bool = true;
+
+    fn process_element(
+        &mut self,
+        _key: &Self::Key,
+        (timestamp, value): Self::Value,
+        state: &mut Self::State,
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        state.events.add(Instant::from_millis(timestamp), &value)?;
+        ctx.timer(OrderedListDeleteTimer::Delete)
+            .at(Instant::from_millis(42))
+    }
+
+    fn on_timer(
+        &mut self,
+        timer: Self::Timer,
+        _key: &Self::Key,
+        state: &mut Self::State,
+        _ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        match timer {
+            OrderedListDeleteTimer::Delete => state
+                .events
+                .clear_range(Instant::EPOCH..Instant::from_millis(43)),
+        }
+    }
+
+    fn on_window_expiration(
+        &mut self,
+        _key: &Self::Key,
+        state: &mut Self::State,
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        state
+            .events
+            .read()?
+            .into_iter()
+            .try_for_each(|(ts, value)| ctx.emit((ts.as_millis(), value)))
+    }
+}

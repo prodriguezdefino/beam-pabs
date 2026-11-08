@@ -168,3 +168,150 @@ async fn test_combine_globally_with_fanout_empty_default_and_without_defaults() 
         .await
         .expect("fanout empty input cases must pass");
 }
+
+/// Sums `i64` values. Fails when an accumulator does not come from this `CombineFn`, or when
+/// `merge_accumulators` gets no accumulators.
+///
+/// Python: `CombineFnLifecycleTest` (`test_combine`, `test_non_liftable_combine`,
+/// `test_combining_value_state`).
+#[derive(Clone, Default)]
+struct CheckedAccumulatorSum;
+
+impl CheckedAccumulatorSum {
+    fn check_phase(caller: &str, phase: i64) -> Result<()> {
+        match phase {
+            1..=3 => Ok(()),
+            other => Err(format!("{caller}: invalid accumulator phase {other}").into()),
+        }
+    }
+}
+
+impl CombineFn for CheckedAccumulatorSum {
+    type Input = i64;
+    type Accum = (i64, i64);
+    type Output = i64;
+
+    fn create_accumulator(&self) -> Result<(i64, i64)> {
+        Ok((1, 0))
+    }
+
+    fn add_input(&self, (phase, sum): (i64, i64), input: i64) -> Result<(i64, i64)> {
+        Self::check_phase("add_input", phase)?;
+        Ok((2, sum + input))
+    }
+
+    fn merge_accumulators(&self, accumulators: Vec<(i64, i64)>) -> Result<(i64, i64)> {
+        if accumulators.is_empty() {
+            return Err("merge_accumulators received no accumulators".into());
+        }
+        let sum = accumulators
+            .into_iter()
+            .try_fold(0i64, |acc, (phase, value)| {
+                Self::check_phase("merge_accumulators", phase)?;
+                Ok::<_, Error>(acc + value)
+            })?;
+        Ok((3, sum))
+    }
+
+    fn extract_output(&self, (phase, sum): (i64, i64)) -> Result<i64> {
+        Self::check_phase("extract_output", phase)?;
+        Ok(sum)
+    }
+}
+
+#[derive(State)]
+struct CheckedCombiningState {
+    sum: CombiningState<CheckedAccumulatorSum>,
+}
+
+#[derive(Clone)]
+struct CheckedCombiningStateDoFn;
+
+impl StatefulDoFn for CheckedCombiningStateDoFn {
+    type Key = String;
+    type Value = i64;
+    type Out = (String, i64);
+    type State = CheckedCombiningState;
+    type Timer = NoTimers;
+    const ON_WINDOW_EXPIRATION: bool = true;
+
+    fn process_element(
+        &mut self,
+        _key: &Self::Key,
+        value: Self::Value,
+        state: &mut Self::State,
+        _ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        state.sum.add(value)
+    }
+
+    fn on_window_expiration(
+        &mut self,
+        key: &Self::Key,
+        state: &mut Self::State,
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        let total = state.sum.read()?;
+        state.sum.clear()?;
+        let cleared = state.sum.read()?;
+        if cleared != 0 {
+            return Err(format!("expected 0 after clear, got {cleared}").into());
+        }
+        ctx.emit((key.clone(), total))
+    }
+}
+
+#[tokio::test]
+async fn test_combine_fn_accumulators_lifted_non_lifted_and_state() {
+    use beam::testing::{TestPipeline, passert};
+
+    let p = TestPipeline::new();
+    let lifted = p
+        .apply("LiftedInput", Create::new((1i64..=8).collect::<Vec<_>>()))
+        .apply(
+            "LiftedCombine",
+            CombineGlobally::new(CheckedAccumulatorSum).with_fanout(2),
+        );
+    let lifted_empty = p
+        .apply("LiftedEmpty", Create::new(Vec::<i64>::new()))
+        .apply(
+            "LiftedEmptyCombine",
+            CombineGlobally::new(CheckedAccumulatorSum),
+        );
+
+    let non_lifted_panes = p
+        .apply("NonLiftedInput", Create::new(vec![1i64, 2, 3, 4]))
+        .apply(
+            "TriggeredGlobal",
+            WindowInto::new(GlobalWindows)
+                .with_trigger(Trigger::repeatedly(Trigger::after_count(2)))
+                .with_accumulation_mode(AccumulationMode::Discarding),
+        )
+        .apply(
+            "NonLiftedCombine",
+            CombineGlobally::new(CheckedAccumulatorSum).without_defaults(),
+        )
+        .apply("RewindowGlobal", WindowInto::new(GlobalWindows))
+        .sum_globally("SumNonLiftedPanes");
+
+    let stateful = p
+        .apply(
+            "StateInput",
+            Create::new(vec![
+                ("a".to_string(), 10i64),
+                ("a".to_string(), 20),
+                ("b".to_string(), 7),
+            ]),
+        )
+        .apply("CombiningState", ParDo::new(CheckedCombiningStateDoFn));
+
+    passert::that_singleton("AssertLifted", &lifted).is_equal_to(36);
+    passert::that_singleton("AssertLiftedEmpty", &lifted_empty).is_equal_to(0);
+    passert::that_singleton("AssertNonLiftedSum", &non_lifted_panes).is_equal_to(10);
+    passert::that("AssertStateful", &stateful)
+        .contains_in_any_order([("a".to_string(), 30i64), ("b".to_string(), 7)]);
+
+    p.run_with(&PrismRunner::new())
+        .await
+        .expect("CombineFn accumulator checks must pass");
+}

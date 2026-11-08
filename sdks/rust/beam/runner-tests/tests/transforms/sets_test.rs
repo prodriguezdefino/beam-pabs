@@ -143,3 +143,63 @@ async fn set_operations_apply_in_each_window() {
         .await
         .expect("pipeline and assertions pass");
 }
+
+/// `DistinctBy` deduplicates within each window on a `TestStream` without suppressing the same
+/// key in a later window, and keeps each emitted timestamp inside its window.
+///
+/// Python: `DeduplicateTest.test_deduplication_in_different_windows`.
+#[tokio::test]
+async fn distinct_by_deduplicates_per_window_on_test_stream() {
+    use beam::testing::TestStream;
+
+    let p = TestPipeline::new();
+    let at = |k: &str, v: i64, ts_ms: i64| ((s(k), v), Instant::from_millis(ts_ms));
+    let out = p
+        .apply(
+            "Events",
+            TestStream::new()
+                .add_timestamped_elements([
+                    at("k1", 1, 1_000),
+                    at("k1", 2, 3_000),
+                    at("k2", 1, 4_000),
+                ])
+                .advance_watermark_to(Instant::from_millis(10_000))
+                .add_timestamped_elements([at("k1", 3, 12_000), at("k1", 4, 15_000)])
+                .advance_watermark_to_infinity(),
+        )
+        .apply(
+            "Window",
+            WindowInto::new(FixedWindows::of(Duration::from_secs(10))),
+        )
+        .apply(
+            "DistinctByKey",
+            DistinctBy::new(|(k, _): &(String, i64)| k.clone()),
+        )
+        .par_do_fn(
+            "CheckTimestampInWindow",
+            |Windowed {
+                 value: (k, _),
+                 window,
+             }: Windowed<(String, i64)>,
+             ctx: &mut ProcessContext<'_, String>| {
+                let win = window.interval().ok_or("expected IntervalWindow")?;
+                let ts = ctx.timestamp();
+                if ts < win.start || ts >= win.end {
+                    return Err(format!("timestamp {ts:?} outside window {win:?}").into());
+                }
+                ctx.emit(k)
+            },
+        );
+
+    let w0 = IntervalWindow::new(Instant::EPOCH, Instant::from_millis(10_000));
+    let w1 = IntervalWindow::new(Instant::from_millis(10_000), Instant::from_millis(20_000));
+    passert::that_windowed("AssertPerWindow", &out).contains_in_any_order([
+        (s("k1"), w0),
+        (s("k2"), w0),
+        (s("k1"), w1),
+    ]);
+
+    p.run_with(&PrismRunner::new())
+        .await
+        .expect("pipeline and assertions pass");
+}

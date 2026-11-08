@@ -436,3 +436,134 @@ pub fn build_processing_time_timer_reset(p: &TestPipeline) {
 
     passert::that("AssertOneFiring", &out).contains_in_any_order(["k:count=2".to_string()]);
 }
+
+/// Validates that an event-time timer set and cleared in `process_element` never fires.
+/// Prism only.
+///
+/// Java: `ParDoTest.TimerTests.testSetAndClearEventTimeTimer`.
+pub fn build_set_and_clear_event_time_timer(p: &TestPipeline) {
+    let out = p
+        .apply(
+            "TestStream",
+            TestStream::new()
+                .add_timestamped_elements([at("k", 0)])
+                .advance_watermark_to(Instant::from_millis(5_000))
+                .advance_watermark_to_infinity(),
+        )
+        .apply("SetAndClear", ParDo::new(SetAndClearEventTimeTimerDoFn));
+
+    passert::that("AssertNotFired", &out).contains_in_any_order(["processed:k".to_string()]);
+}
+
+/// Validates that an event-time timer callback can clear a later event-time timer. Prism only.
+///
+/// Java: `ParDoTest.TimerTests.testClearEventTimeTimer`.
+pub fn build_clear_event_time_timer_in_timer(p: &TestPipeline) {
+    let out = p
+        .apply(
+            "TestStream",
+            TestStream::new()
+                .add_timestamped_elements([at("k", 0)])
+                .advance_watermark_to(Instant::from_millis(1_500))
+                .advance_watermark_to(Instant::from_millis(5_000))
+                .advance_watermark_to_infinity(),
+        )
+        .apply("ClearInTimer", ParDo::new(ClearEventTimeTimerInTimerDoFn));
+
+    passert::that("AssertOnlyFirst", &out).contains_in_any_order(["k:first".to_string()]);
+}
+
+/// Validates that a processing-time timer set and cleared in `process_element` never fires.
+/// Prism only.
+///
+/// Java: `ParDoTest.TimerTests.testSetAndClearProcessingTimeTimer`.
+pub fn build_set_and_clear_processing_time_timer(p: &TestPipeline) {
+    let out = p
+        .apply(
+            "TestStream",
+            TestStream::new()
+                .add_elements([("k".to_string(), 1i64)])
+                .advance_processing_time(Duration::from_secs(20))
+                .advance_watermark_to_infinity(),
+        )
+        .apply(
+            "SetAndClear",
+            ParDo::new(SetAndClearProcessingTimeTimerDoFn),
+        );
+
+    passert::that("AssertNotFired", &out).contains_in_any_order(["processed:k".to_string()]);
+}
+
+/// Validates that a processing-time timer callback can clear a later processing-time timer.
+/// Prism only.
+///
+/// Java: `ParDoTest.TimerTests.testClearProcessingTimeTimer`.
+pub fn build_clear_processing_time_timer_in_timer(p: &TestPipeline) {
+    let out = p
+        .apply(
+            "TestStream",
+            TestStream::new()
+                .add_elements([("k".to_string(), 1i64)])
+                .advance_processing_time(Duration::from_secs(6))
+                .advance_processing_time(Duration::from_secs(20))
+                .advance_watermark_to_infinity(),
+        )
+        .apply(
+            "ClearInTimer",
+            ParDo::new(ClearProcessingTimeTimerInTimerDoFn),
+        );
+
+    passert::that("AssertOnlyFirst", &out).contains_in_any_order(["k:first".to_string()]);
+}
+
+/// Validates that an upstream timer hold delays a downstream event-time timer until the hold
+/// releases. Prism only.
+///
+/// Java: `ParDoTest.TimerTests.testOutputTimestamp`.
+pub fn build_timer_hold_delays_downstream_timer(p: &TestPipeline) {
+    let out = p
+        .apply(
+            "TestStream",
+            TestStream::new()
+                .add_timestamped_elements([(("k".to_string(), 1i64), Instant::EPOCH)])
+                .advance_watermark_to(Instant::from_millis(15_000))
+                .add_timestamped_elements([(("k".to_string(), 2i64), Instant::from_millis(8_000))])
+                .advance_watermark_to(Instant::from_millis(25_000))
+                .advance_watermark_to_infinity(),
+        )
+        .apply("UpstreamHold", ParDo::new(UpstreamHoldDoFn))
+        .apply("DownstreamFlush", ParDo::new(DownstreamCollectTimerDoFn));
+
+    passert::that("AssertHeldValues", &out)
+        .contains_in_any_order([("k".to_string(), vec![1, 2, 3])]);
+}
+
+/// Validates `OrderedListState::clear_range` driven by a timer on `TestStream` input. Prism
+/// only.
+///
+/// Java: `ParDoTest.StateTests.testOrderedListStateRangeDelete`.
+pub fn build_test_stream_ordered_list_clear_range(p: &TestPipeline) {
+    let entry = |ts: i64, label: &str| {
+        (
+            ("hello".to_string(), (ts, label.to_string())),
+            Instant::EPOCH,
+        )
+    };
+    let out = p
+        .apply(
+            "TestStream",
+            TestStream::new()
+                .add_timestamped_elements([
+                    entry(97, "a"),
+                    entry(42, "d"),
+                    entry(52, "b"),
+                    entry(12, "c"),
+                ])
+                .advance_watermark_to(Instant::from_millis(50))
+                .advance_watermark_to_infinity(),
+        )
+        .apply("RangeDelete", ParDo::new(OrderedListRangeDeleteDoFn));
+
+    passert::that("AssertRemaining", &out)
+        .contains_in_any_order([(52i64, "b".to_string()), (97, "a".to_string())]);
+}
