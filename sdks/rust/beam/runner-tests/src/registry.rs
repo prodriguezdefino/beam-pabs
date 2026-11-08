@@ -75,7 +75,8 @@ validates_runner_tests! {
                 combine_globally => build_combine_globally,
                 count_globally => build_count_globally,
                 folds => build_folds,
-                group_by_key_large_iterable => build_group_by_key_large_iterable,
+                group_by_key_large_iterable => build_group_by_key_large_iterable
+                    [Expectation::Custom(check_group_by_key_large_iterable)],
                 combine_composed_accumulators => build_combine_composed_accumulators,
                 // Collection operations (Flatten, Partition, Reshuffle, KV).
                 flatten_many => build_flatten_many,
@@ -171,14 +172,21 @@ validates_runner_tests! {
                 bundle_finalization => build_bundle_finalization
                     [Expectation::Custom(check_bundle_finalization)],
             }
-            /// Side inputs: windowed and empty views, views of combines and flattens, nested
-            /// iterables, multi-output and stateful DoFns, timers and bundle finalization.
+            /// Side inputs: windowed and empty views, keys and entries of keyed views, views of
+            /// combines and flattens, nested iterables, multi-output and stateful DoFns, timers
+            /// and bundle finalization.
             side_inputs_more {
                 global_side_inputs_in_fixed_windows => build_global_side_inputs_in_fixed_windows,
                 side_inputs_in_dofn_and_closure => build_side_inputs_in_dofn_and_closure,
                 broadcast_joins => build_broadcast_joins,
                 windowed_multimap_side_input => build_windowed_multimap_side_input,
                 empty_multimap_side_input => build_empty_multimap_side_input,
+                multimap_entries_side_input => build_multimap_entries_side_input,
+                windowed_multimap_entries_side_input =>
+                    build_windowed_multimap_entries_side_input,
+                map_side_input => build_map_side_input,
+                windowed_map_side_input => build_windowed_map_side_input,
+                empty_map_side_input => build_empty_map_side_input,
                 combine_globally_as_singleton => build_combine_globally_as_singleton,
                 empty_flatten_side_input => build_empty_flatten_side_input,
                 nested_iterable_side_input => build_nested_iterable_side_input,
@@ -187,6 +195,7 @@ validates_runner_tests! {
                 bag_state_side_input => build_bag_state_side_input,
                 state_side_input => build_state_side_input,
                 side_input_not_ready_timer => build_side_input_not_ready_timer,
+                triggered_side_input => build_triggered_side_input,
                 bundle_finalization_with_side_input => build_bundle_finalization_with_side_input
                     [Expectation::Custom(check_bundle_finalization_with_side_input)],
             }
@@ -215,6 +224,7 @@ validates_runner_tests! {
                     build_group_into_batches_count_and_byte_limits,
                 combine_globally_empty_without_defaults =>
                     build_combine_globally_empty_without_defaults,
+                simple_combine_empty => build_simple_combine_empty,
                 schema_dofn_reads_and_writes_rows => build_schema_dofn_reads_and_writes_rows,
                 schema_dofn_writes_rows_to_tagged_outputs =>
                     build_schema_dofn_writes_rows_to_tagged_outputs,
@@ -238,14 +248,16 @@ validates_runner_tests! {
                 flatten_preserves_windowing => build_flatten_preserves_windowing,
             }
             /// Timers: after a GroupByKey, reset, timers that set each other, watermark
-            /// holds, processing-time families, global window expiration, pipeline options
-            /// and tagged output timestamps.
+            /// holds, alignment, processing-time families, global window expiration, pipeline
+            /// options and tagged output timestamps.
             timers_more {
                 gbk_then_timers => build_gbk_then_timers,
                 event_time_timer_reset => build_event_time_timer_reset,
                 timers_set_each_other => build_timers_set_each_other,
                 timer_output_hold => build_timer_output_hold,
                 processing_time_timer_output_hold => build_processing_time_timer_output_hold,
+                event_time_timer_align => build_event_time_timer_align,
+                timer_without_hold => build_timer_without_hold,
                 processing_time_timer_family => build_processing_time_timer_family,
                 on_window_expiration_global => build_on_window_expiration_global,
                 pipeline_options_in_dofn => build_pipeline_options_in_dofn,

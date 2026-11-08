@@ -17,9 +17,10 @@
  * under the License.
  */
 
-//! Cross-language tests: Rust pipelines on Prism that expand transforms through a Java
-//! expansion service and run them in the Java SDK container. The tests need Docker.
+//! Cross-language tests: Rust pipelines on Prism that expand transforms through Java or
+//! Python expansion services and run them in the foreign SDK container. The tests need Docker.
 
 mod common;
 mod generate_sequence_test;
+mod python_service_test;
 mod validate_runner_test;

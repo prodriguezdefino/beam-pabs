@@ -23,11 +23,11 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
+use beam::io::file::get_filesystem;
 use beam::prelude::*;
 use beam::runners::PipelineResult;
 use beam::testing::{TestPipeline, TestPipelineError, TestStream, passert};
 use beam::transforms::WithFinalizer;
-use beam_io_file::get_filesystem;
 
 use super::finalization::{marker_dir, words_in, write_marker};
 use crate::dofns::{
@@ -780,4 +780,423 @@ pub fn build_windowed_side_input_not_present(p: &TestPipeline) {
             end: Instant::from_millis(10_000),
         })
         .contains_in_any_order([0]);
+}
+
+/// Side input events of [`build_triggered_side_input`]: key, value, timestamp in ms.
+const TRIGGERED_SIDE: [(&str, i64, i64); 4] = [
+    ("a", 10, 1_000),
+    ("a", 20, 2_000),
+    ("b", 5, 3_000),
+    ("a", 40, 6_000),
+];
+
+/// Validates a triggered side input in fixed windows (`AfterWatermark` with early `AfterCount`,
+/// `Discarding`) read as a multimap and an iterable of the same collection in one `ParDo`.
+///
+/// A runner can read the side window after any of its panes, so the checks hold for every
+/// set of fired panes. [`build_test_stream_triggered_side_input`] checks exact pane values.
+///
+/// Java: `ViewTest.testTriggeredLatestSingleton`.
+pub fn build_triggered_side_input(p: &TestPipeline) {
+    let w5 = Duration::from_secs(5);
+    let side = p
+        .apply(
+            "SideEvents",
+            Create::new(
+                TRIGGERED_SIDE
+                    .iter()
+                    .map(|&(k, v, ts)| (k.to_string(), (v, ts)))
+                    .collect::<Vec<_>>(),
+            ),
+        )
+        .par_do("TimestampSide", AssignTimestampDoFn)
+        .apply(
+            "WindowSide",
+            WindowInto::new(FixedWindows::of(w5))
+                .with_trigger(
+                    Trigger::after_end_of_window().with_early_firings(Trigger::after_count(1)),
+                )
+                .with_accumulation_mode(AccumulationMode::Discarding),
+        )
+        .combine_per_key("SumPerPane", Sum::new());
+
+    let main = p
+        .apply(
+            "MainEvents",
+            Create::new(vec![
+                ("a".to_string(), (0i64, 2_000i64)),
+                ("b".to_string(), (0, 4_000)),
+                ("c".to_string(), (0, 4_000)),
+                ("a".to_string(), (0, 7_000)),
+            ]),
+        )
+        .par_do("TimestampMain", AssignTimestampDoFn)
+        .apply("WindowMain", WindowInto::new(FixedWindows::of(w5)))
+        .map("MainKey", |(k, _): (String, i64)| k);
+
+    let reads = main.map_with_side_inputs(
+        "ReadTriggeredViews",
+        (side.as_multimap(), side.as_iter()),
+        |key, (by_key, all)| {
+            let mut key_panes = by_key.get_all(&key)?.collect::<Result<Vec<i64>>>()?;
+            key_panes.sort_unstable();
+            let has_first = by_key.get(&key)?.is_some();
+            let window_sum: i64 = all.iter()?.map(|kv| Ok(kv?.1)).sum::<Result<i64>>()?;
+            Ok((key, key_panes, has_first, window_sum))
+        },
+    );
+
+    passert::that_windowed("AssertTriggeredSide", &reads).satisfies(check_triggered_reads);
+}
+
+/// One read of [`build_triggered_side_input`]: key, pane sums of the key, whether
+/// `SideMap::get` found a value, and the sum of the iterable view.
+type TriggeredRead = (String, Vec<i64>, bool, i64);
+
+/// Checks the reads of [`build_triggered_side_input`] for any set of fired side panes.
+fn check_triggered_reads(reads: &[(TriggeredRead, IntervalWindow)]) -> Result {
+    let mut seen: Vec<(&str, Instant)> = reads
+        .iter()
+        .map(|((key, ..), w)| (key.as_str(), w.start))
+        .collect();
+    seen.sort_unstable();
+    let five_s = Instant::from_millis(5_000);
+    let expected = [
+        ("a", Instant::EPOCH),
+        ("a", five_s),
+        ("b", Instant::EPOCH),
+        ("c", Instant::EPOCH),
+    ];
+    if seen != expected {
+        return Err(format!("main elements per window: {seen:?}, expected {expected:?}").into());
+    }
+    reads
+        .iter()
+        .try_for_each(|((key, panes, has_first, window_sum), w)| {
+            let in_window =
+                |ts: i64| w.start <= Instant::from_millis(ts) && Instant::from_millis(ts) < w.end;
+            let key_inputs: Vec<i64> = TRIGGERED_SIDE
+                .iter()
+                .filter(|&&(k, _, ts)| k == key.as_str() && in_window(ts))
+                .map(|&(_, v, _)| v)
+                .collect();
+            let window_total: i64 = TRIGGERED_SIDE
+                .iter()
+                .filter(|&&(_, _, ts)| in_window(ts))
+                .map(|&(_, v, _)| v)
+                .sum();
+            // A discarding pane holds a subset of the inputs; the on-time pane can be empty (0).
+            let pane_sums = subset_sums(&key_inputs);
+            let context = format!("key {key} in {w:?}: panes {panes:?}, window sum {window_sum}");
+            if key_inputs.is_empty() && !panes.is_empty() {
+                return Err(format!("{context}: a key with no side data has panes").into());
+            }
+            if panes.iter().any(|v| !pane_sums.contains(v)) {
+                return Err(format!("{context}: a pane is not a sum of the key inputs").into());
+            }
+            if panes.iter().sum::<i64>() > key_inputs.iter().sum::<i64>() {
+                return Err(format!("{context}: panes add up to more than the key inputs").into());
+            }
+            if *has_first == panes.is_empty() {
+                return Err(format!("{context}: get disagrees with get_all").into());
+            }
+            if !(0..=window_total).contains(window_sum) {
+                return Err(
+                    format!("{context}: iterable sum is outside 0..={window_total}").into(),
+                );
+            }
+            Ok(())
+        })
+}
+
+/// All sums of subsets of `values`, the empty subset (0) included.
+fn subset_sums(values: &[i64]) -> BTreeSet<i64> {
+    values.iter().fold(BTreeSet::from([0]), |sums, v| {
+        sums.iter().flat_map(|s| [*s, s + v]).collect()
+    })
+}
+
+/// Validates a multi-triggered `CombinePerKey` side input driven by `TestStream` across fixed
+/// windows: early and on-time panes both materialize in the window view. Prism only.
+///
+/// Python: `SideInputsTest.test_multi_triggered_gbk_side_input`.
+pub fn build_test_stream_triggered_side_input(p: &TestPipeline) {
+    let w5 = Duration::from_secs(5);
+    let side_ev = |ts_ms: i64, v: i64| ((true, "k".to_string(), v), Instant::from_millis(ts_ms));
+    let main_ev = |ts_ms: i64, label: &str| {
+        (
+            (false, label.to_string(), 0i64),
+            Instant::from_millis(ts_ms),
+        )
+    };
+
+    let events = p.apply(
+        "TestStream",
+        TestStream::new()
+            .add_timestamped_elements([side_ev(1_000, 100)])
+            .advance_watermark_to(Instant::from_millis(3_000))
+            .add_timestamped_elements([main_ev(3_000, "m1"), side_ev(4_000, 50)])
+            .advance_watermark_to(Instant::from_millis(6_000))
+            .add_timestamped_elements([side_ev(7_000, 400)])
+            .advance_watermark_to(Instant::from_millis(8_000))
+            .add_timestamped_elements([main_ev(8_000, "m2")])
+            .advance_watermark_to_infinity(),
+    );
+
+    let side_view = events
+        .filter("KeepSide", |(is_side, _, _): &(bool, String, i64)| *is_side)
+        .map("SideKV", |(_, k, v): (bool, String, i64)| (k, v))
+        .apply(
+            "SideWindow",
+            WindowInto::new(FixedWindows::of(w5))
+                .with_trigger(
+                    Trigger::after_end_of_window().with_early_firings(Trigger::after_count(1)),
+                )
+                .with_accumulation_mode(AccumulationMode::Discarding),
+        )
+        .combine_per_key("SumSidePanes", Sum::new())
+        .map("PaneValue", |(_, v): (String, i64)| v)
+        .as_iter();
+
+    let out = events
+        .filter("KeepMain", |(is_side, _, _): &(bool, String, i64)| {
+            !*is_side
+        })
+        .map("MainLabel", |(_, label, _): (bool, String, i64)| label)
+        .apply(
+            "MainWindow",
+            WindowInto::new(FixedWindows::of(w5))
+                .with_accumulation_mode(AccumulationMode::Discarding),
+        )
+        .map_with_side_inputs("ReadPanes", side_view, |label, panes| {
+            let mut values = panes.to_vec()?;
+            values.sort_unstable();
+            Ok((label, values))
+        });
+
+    let w0 = IntervalWindow::new(Instant::EPOCH, Instant::from_millis(5_000));
+    let w1 = IntervalWindow::new(Instant::from_millis(5_000), Instant::from_millis(10_000));
+    passert::that_windowed("AssertTriggeredPanes", &out).contains_in_any_order([
+        (("m1".to_string(), vec![50i64, 100]), w0),
+        (("m2".to_string(), vec![400]), w1),
+    ]);
+}
+
+/// Side input events of the keyed view tests: key, value, timestamp in ms. Windows of 10 ms
+/// put `a` in `[0, 10)` and `b` in `[10, 20)`.
+const KEYED_SIDE: [(&str, i64, i64); 3] = [("a", 1, 1), ("a", 2, 7), ("b", 3, 14)];
+
+/// [`KEYED_SIDE`] in fixed windows of 10 ms, as `(key, value)`.
+fn windowed_keyed_side(p: &TestPipeline) -> PCollection<(String, i64)> {
+    p.apply(
+        "CreateSideInput",
+        Create::new(
+            KEYED_SIDE
+                .map(|(k, v, ts)| (k.to_string(), (v, ts)))
+                .to_vec(),
+        ),
+    )
+    .par_do("TimestampSide", AssignTimestampDoFn)
+    .apply(
+        "SideWindowInto",
+        WindowInto::new(FixedWindows::of(Duration::from_millis(10))),
+    )
+}
+
+/// Main elements at 5 ms and 13 ms, one in each window of [`windowed_keyed_side`].
+fn windowed_main(p: &TestPipeline) -> PCollection<(String, i64)> {
+    p.apply(
+        "CreateMainInput",
+        Create::new(vec![
+            ("apple".to_string(), (0i64, 5i64)),
+            ("banana".to_string(), (0, 13)),
+        ]),
+    )
+    .par_do("TimestampMain", AssignTimestampDoFn)
+    .apply(
+        "MainWindowInto",
+        WindowInto::new(FixedWindows::of(Duration::from_millis(10))),
+    )
+}
+
+/// Validates `keys` and `entries` of a multimap side input. The runner lists the keys with
+/// the `MultimapKeysSideInput` state key.
+///
+/// Java: `MapViewTest.testMultimapAsEntrySetSideInput`.
+pub fn build_multimap_entries_side_input(p: &TestPipeline) {
+    let side = p.apply(
+        "CreateSideInput",
+        Create::new(vec![
+            ("a".to_string(), 1i64),
+            ("a".to_string(), 2),
+            ("b".to_string(), 3),
+        ]),
+    );
+    let out = p
+        .apply("CreateMainInput", Create::new(vec![2i64]))
+        .map_with_side_inputs("OutputSideInputs", side.as_multimap(), |x, side| {
+            let mut keys = side.keys()?.collect::<Result<Vec<String>>>()?;
+            keys.sort();
+            let mut entries = side
+                .entries()?
+                .map(|entry| {
+                    entry.map(|(key, mut values)| {
+                        values.sort_unstable();
+                        (key, values.iter().map(|v| v * x).collect::<Vec<_>>())
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            entries.sort();
+            Ok((keys, entries))
+        });
+    passert::that("AssertOut", &out).contains_in_any_order([(
+        vec!["a".to_string(), "b".to_string()],
+        vec![("a".to_string(), vec![2, 4]), ("b".to_string(), vec![6])],
+    )]);
+}
+
+/// Validates `entries` of a multimap side input in fixed windows: each main element sees the
+/// keys of its own window only.
+///
+/// Java: `MapViewTest.testWindowedMultimapAsEntrySetSideInput`.
+pub fn build_windowed_multimap_entries_side_input(p: &TestPipeline) {
+    let side = windowed_keyed_side(p);
+    let out = windowed_main(p).map_with_side_inputs(
+        "OutputSideInputs",
+        side.as_multimap(),
+        |(fruit, _): (String, i64), side| {
+            let mut entries = side
+                .entries()?
+                .collect::<Result<Vec<(String, Vec<i64>)>>>()?;
+            entries
+                .iter_mut()
+                .for_each(|(_, values)| values.sort_unstable());
+            entries.sort();
+            Ok((fruit, entries))
+        },
+    );
+    passert::that("AssertOut", &out).contains_in_any_order([
+        ("apple".to_string(), vec![("a".to_string(), vec![1, 2])]),
+        ("banana".to_string(), vec![("b".to_string(), vec![3])]),
+    ]);
+}
+
+/// Validates a map side input: `get` by key and `entries`.
+///
+/// Java: `MapViewTest.testMapSideInput`, `MapViewTest.testMapAsEntrySetSideInput`.
+pub fn build_map_side_input(p: &TestPipeline) {
+    let side = p.apply(
+        "CreateSideInput",
+        Create::new(vec![("a".to_string(), 1i64), ("b".to_string(), 3)]),
+    );
+    let out = p
+        .apply(
+            "CreateMainInput",
+            Create::new(["apple", "banana", "blackberry"].map(String::from).to_vec()),
+        )
+        .map_with_side_inputs("OutputSideInputs", side.as_map(), |fruit, side| {
+            let key: String = fruit.chars().take(1).collect();
+            let value = side.get(&key)?.unwrap_or_default();
+            let mut entries = side.entries()?.collect::<Result<Vec<(String, i64)>>>()?;
+            entries.sort();
+            Ok((fruit, value, entries))
+        });
+    let entries = vec![("a".to_string(), 1), ("b".to_string(), 3)];
+    passert::that("AssertOut", &out).contains_in_any_order([
+        ("apple".to_string(), 1, entries.clone()),
+        ("banana".to_string(), 3, entries.clone()),
+        ("blackberry".to_string(), 3, entries),
+    ]);
+}
+
+/// Validates a map side input in fixed windows: `get` and `entries` see the keys of the
+/// window of the main element.
+///
+/// Java: `MapViewTest.testWindowedMapSideInput`, `MapViewTest.testWindowedMapAsEntrySetSideInput`.
+pub fn build_windowed_map_side_input(p: &TestPipeline) {
+    let side = windowed_keyed_side(p).sum_per_key("SumPerKey");
+    let out = windowed_main(p).map_with_side_inputs(
+        "OutputSideInputs",
+        side.as_map(),
+        |(fruit, _): (String, i64), side| {
+            let key: String = fruit.chars().take(1).collect();
+            let value = side.get(&key)?;
+            let entries = side.entries()?.collect::<Result<Vec<(String, i64)>>>()?;
+            Ok((fruit, value, entries))
+        },
+    );
+    passert::that("AssertOut", &out).contains_in_any_order([
+        ("apple".to_string(), Some(3), vec![("a".to_string(), 3)]),
+        ("banana".to_string(), Some(3), vec![("b".to_string(), 3)]),
+    ]);
+}
+
+/// Validates an empty map side input: no key, no entry.
+///
+/// Java: `MapViewTest.testEmptyMapSideInput`.
+pub fn build_empty_map_side_input(p: &TestPipeline) {
+    let empty = p.apply("CreateEmptyView", Create::new(Vec::<(String, i64)>::new()));
+    let out = p
+        .apply("Create1", Create::new(vec![1i64]))
+        .map_with_side_inputs("OutputSideInputs", empty.as_map(), |x, side| {
+            let keys = side.keys()?.count() as i64;
+            Ok((x, keys, side.get(&"a".to_string())?.is_none()))
+        });
+    passert::that("AssertOut", &out).contains_in_any_order([(1, 0, true)]);
+}
+
+/// Validates that a map side input fails the bundle on a key with two values.
+///
+/// Java: `MapViewTest.testMapSideInputWithNullValuesCatchesDuplicates`.
+pub fn build_map_side_input_fails_on_duplicate_key(p: &TestPipeline) {
+    let side = p.apply(
+        "CreateSideInput",
+        Create::new(vec![("a".to_string(), 1i64), ("a".to_string(), 2)]),
+    );
+    p.apply("CreateMainInput", Create::new(vec!["apple".to_string()]))
+        .map_with_side_inputs("OutputSideInputs", side.as_map(), |fruit, side| {
+            Ok((fruit, side.get(&"a".to_string())?))
+        });
+}
+
+/// Validates a singleton side input with a default in fixed windows: a main window whose side
+/// window is empty reads the default.
+///
+/// Java: `ViewTest.testWindowedSideInputFixedToFixedWithDefault`.
+pub fn build_windowed_singleton_with_default(p: &TestPipeline) {
+    let fixed = || WindowInto::new(FixedWindows::of(Duration::from_millis(10)));
+    let view = p
+        .apply(
+            "CreateSideInput",
+            Create::new(vec![("a".to_string(), (2i64, 14i64))]),
+        )
+        .par_do("TimestampSide", AssignTimestampDoFn)
+        .map("Value", |(_, v): (String, i64)| v)
+        .apply("SideWindowInto", fixed())
+        .as_singleton()
+        .with_default(&0);
+    let out = windowed_main(p).map_with_side_inputs(
+        "OutputSideInputs",
+        view,
+        |(fruit, _): (String, i64), side| Ok((fruit, side)),
+    );
+    passert::that("AssertOut", &out)
+        .contains_in_any_order([("apple".to_string(), 0), ("banana".to_string(), 2)]);
+}
+
+/// Validates a singleton side input with a `None` default on an empty input.
+///
+/// Java: `ViewTest.testSideInputWithNullDefault`.
+pub fn build_singleton_with_none_default(p: &TestPipeline) {
+    let view = p
+        .apply(
+            "CreateEmptySideInput",
+            Create::new(Vec::<Option<String>>::new()),
+        )
+        .as_singleton()
+        .with_default(&None);
+    let out = p
+        .apply("CreateMainInput", Create::new(vec![0i64]))
+        .map_with_side_inputs("OutputSideInput", view, |_, side| Ok(side));
+    passert::that("AssertOut", &out).contains_in_any_order([None::<String>]);
 }

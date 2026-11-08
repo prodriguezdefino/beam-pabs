@@ -285,3 +285,90 @@ pub fn check_bundle_finalization(
         );
     }
 }
+
+/// Counts per-key elements across bundles and writes `ts-stateful-<key>-<count>` in a
+/// finalizer.
+#[derive(Clone)]
+pub struct StatefulCountingFinalizingDoFn;
+
+impl StatefulDoFn for StatefulCountingFinalizingDoFn {
+    type Key = String;
+    type Value = String;
+    type Out = WithFinalizer<(String, i64)>;
+    type State = MarkingState;
+    type Timer = NoTimers;
+
+    fn process_element(
+        &mut self,
+        key: &String,
+        dir: String,
+        state: &mut MarkingState,
+        ctx: &mut StatefulContext<'_, Self>,
+    ) -> Result {
+        let count = state.count.read()?.unwrap_or(0) + 1;
+        state.count.write(&count)?;
+        let marker = format!("ts-stateful-{key}-{count}");
+        ctx.finalizer(move || write_marker(&dir, &marker))
+            .register()?;
+        ctx.emit((key.clone(), count).into())
+    }
+}
+
+/// Validates bundle finalization on a stateful DoFn across `TestStream` bundles. Prism only.
+///
+/// Java: `ParDoTest$BundleFinalizationTests.testBundleFinalizationWithState`.
+pub fn build_test_stream_bundle_finalization_with_state(p: &TestPipeline) {
+    let dir = marker_dir("test-stream-stateful");
+    let counts = p
+        .apply(
+            "TestStream",
+            beam::testing::TestStream::new()
+                .add_timestamped_elements([
+                    (("alpha".to_string(), dir.clone()), Instant::EPOCH),
+                    (("beta".to_string(), dir.clone()), Instant::EPOCH),
+                ])
+                .advance_watermark_to(Instant::from_millis(1_000))
+                .add_timestamped_elements([(
+                    ("alpha".to_string(), dir),
+                    Instant::from_millis(1_000),
+                )])
+                .advance_watermark_to_infinity(),
+        )
+        .apply(
+            "StatefulFinalizing",
+            ParDo::new(StatefulCountingFinalizingDoFn),
+        );
+
+    beam::testing::passert::that("AssertCounts", &counts).contains_in_any_order([
+        ("alpha".to_string(), 1i64),
+        ("beta".to_string(), 1),
+        ("alpha".to_string(), 2),
+    ]);
+}
+
+/// Checks the markers of [`build_test_stream_bundle_finalization_with_state`].
+pub fn check_test_stream_bundle_finalization_with_state(
+    _runner: crate::RunnerKind,
+    result: std::result::Result<PipelineResult, TestPipelineError>,
+) {
+    result.expect("the pipeline should succeed");
+    let dir = marker_dir("test-stream-stateful");
+    let markers: BTreeSet<String> = get_filesystem(&dir)
+        .and_then(|fs| fs.match_files(&format!("{dir}/ts-stateful-*")))
+        .expect("list the markers")
+        .iter()
+        .filter_map(|path| path.rsplit('/').next().map(str::to_string))
+        .collect();
+    let expected: BTreeSet<String> = [
+        "ts-stateful-alpha-1",
+        "ts-stateful-alpha-2",
+        "ts-stateful-beta-1",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    assert_eq!(
+        markers, expected,
+        "TestStream stateful finalization markers"
+    );
+}

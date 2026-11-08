@@ -368,6 +368,45 @@ pub fn build_tagged_output_timestamps(p: &TestPipeline) {
     ]);
 }
 
+/// Validates `.with_align(1 s).after(1 ms)` on bounded `Create` input at `Instant::MIN`.
+///
+/// Java: `ParDoTest.TimerTests.testEventTimeTimerAlignBounded`.
+pub fn build_event_time_timer_align(p: &TestPipeline) {
+    let out = p
+        .apply("Events", Create::new(vec![("hello".to_string(), 37i64)]))
+        .apply(
+            "AlignedTimer",
+            ParDo::new(AlignedTimerDoFn {
+                period: Duration::from_secs(1),
+                offset: Duration::from_millis(1),
+            }),
+        );
+
+    passert::that("AssertAligned", &out).contains_in_any_order([
+        (3, Instant::MIN),
+        (42, Instant::MIN + Duration::from_millis(1_774)),
+    ]);
+}
+
+/// Validates that a `without_hold()` timer crosses the Fn API wire, fires on time, and
+/// rejects default-timestamp output in `on_timer`.
+///
+/// Java: `ParDoTest.TimerTests.testNoOutputTimestampDefaultBounded`,
+/// `ParDoTest.TimerTests.testNoOutputTimestampDefaultStreaming`.
+pub fn build_timer_without_hold(p: &TestPipeline) {
+    let out = p
+        .apply("Events", Create::new(vec![("hello".to_string(), 3i64)]))
+        .par_do_fn(
+            "AtThreeMillis",
+            |(key, ts): (String, i64), ctx: &mut ProcessContext<'_, (String, i64)>| {
+                ctx.output((key, ts)).at(Instant::from_millis(ts)).emit()
+            },
+        )
+        .apply("TimerWithoutHold", ParDo::new(TimerWithoutHoldDoFn));
+
+    passert::that("AssertWithoutHold", &out).contains_in_any_order(["hello:rejected".to_string()]);
+}
+
 fn at(key: &str, timestamp_ms: i64) -> ((String, i64), Instant) {
     ((key.to_string(), 0), Instant::from_millis(timestamp_ms))
 }
@@ -435,4 +474,240 @@ pub fn build_processing_time_timer_reset(p: &TestPipeline) {
         .apply("ResetTimer", ParDo::new(ProcessingTimeTimerResetDoFn));
 
     passert::that("AssertOneFiring", &out).contains_in_any_order(["k:count=2".to_string()]);
+}
+
+/// Validates that an event-time timer set and cleared in `process_element` never fires.
+/// Prism only.
+///
+/// Java: `ParDoTest.TimerTests.testSetAndClearEventTimeTimer`.
+pub fn build_set_and_clear_event_time_timer(p: &TestPipeline) {
+    let out = p
+        .apply(
+            "TestStream",
+            TestStream::new()
+                .add_timestamped_elements([at("k", 0)])
+                .advance_watermark_to(Instant::from_millis(5_000))
+                .advance_watermark_to_infinity(),
+        )
+        .apply("SetAndClear", ParDo::new(SetAndClearEventTimeTimerDoFn));
+
+    passert::that("AssertNotFired", &out).contains_in_any_order(["processed:k".to_string()]);
+}
+
+/// Validates that an event-time timer callback can clear a later event-time timer. Prism only.
+///
+/// Java: `ParDoTest.TimerTests.testClearEventTimeTimer`.
+pub fn build_clear_event_time_timer_in_timer(p: &TestPipeline) {
+    let out = p
+        .apply(
+            "TestStream",
+            TestStream::new()
+                .add_timestamped_elements([at("k", 0)])
+                .advance_watermark_to(Instant::from_millis(1_500))
+                .advance_watermark_to(Instant::from_millis(5_000))
+                .advance_watermark_to_infinity(),
+        )
+        .apply("ClearInTimer", ParDo::new(ClearEventTimeTimerInTimerDoFn));
+
+    passert::that("AssertOnlyFirst", &out).contains_in_any_order(["k:first".to_string()]);
+}
+
+/// Validates that a processing-time timer set and cleared in `process_element` never fires.
+/// Prism only.
+///
+/// Java: `ParDoTest.TimerTests.testSetAndClearProcessingTimeTimer`.
+pub fn build_set_and_clear_processing_time_timer(p: &TestPipeline) {
+    let out = p
+        .apply(
+            "TestStream",
+            TestStream::new()
+                .add_elements([("k".to_string(), 1i64)])
+                .advance_processing_time(Duration::from_secs(20))
+                .advance_watermark_to_infinity(),
+        )
+        .apply(
+            "SetAndClear",
+            ParDo::new(SetAndClearProcessingTimeTimerDoFn),
+        );
+
+    passert::that("AssertNotFired", &out).contains_in_any_order(["processed:k".to_string()]);
+}
+
+/// Validates that a processing-time timer callback can clear a later processing-time timer.
+/// Prism only.
+///
+/// Java: `ParDoTest.TimerTests.testClearProcessingTimeTimer`.
+pub fn build_clear_processing_time_timer_in_timer(p: &TestPipeline) {
+    let out = p
+        .apply(
+            "TestStream",
+            TestStream::new()
+                .add_elements([("k".to_string(), 1i64)])
+                .advance_processing_time(Duration::from_secs(6))
+                .advance_processing_time(Duration::from_secs(20))
+                .advance_watermark_to_infinity(),
+        )
+        .apply(
+            "ClearInTimer",
+            ParDo::new(ClearProcessingTimeTimerInTimerDoFn),
+        );
+
+    passert::that("AssertOnlyFirst", &out).contains_in_any_order(["k:first".to_string()]);
+}
+
+/// Validates that an upstream timer hold delays a downstream event-time timer until the hold
+/// releases. Prism only.
+///
+/// Java: `ParDoTest.TimerTests.testOutputTimestamp`.
+pub fn build_timer_hold_delays_downstream_timer(p: &TestPipeline) {
+    let out = p
+        .apply(
+            "TestStream",
+            TestStream::new()
+                .add_timestamped_elements([(("k".to_string(), 1i64), Instant::EPOCH)])
+                .advance_watermark_to(Instant::from_millis(15_000))
+                .add_timestamped_elements([(("k".to_string(), 2i64), Instant::from_millis(8_000))])
+                .advance_watermark_to(Instant::from_millis(25_000))
+                .advance_watermark_to_infinity(),
+        )
+        .apply("UpstreamHold", ParDo::new(UpstreamHoldDoFn))
+        .apply("DownstreamFlush", ParDo::new(DownstreamCollectTimerDoFn));
+
+    passert::that("AssertHeldValues", &out)
+        .contains_in_any_order([("k".to_string(), vec![1, 2, 3])]);
+}
+
+/// Validates `OrderedListState::clear_range` driven by a timer on `TestStream` input. Prism
+/// only.
+///
+/// Java: `ParDoTest.StateTests.testOrderedListStateRangeDelete`.
+pub fn build_test_stream_ordered_list_clear_range(p: &TestPipeline) {
+    let entry = |ts: i64, label: &str| {
+        (
+            ("hello".to_string(), (ts, label.to_string())),
+            Instant::EPOCH,
+        )
+    };
+    let out = p
+        .apply(
+            "TestStream",
+            TestStream::new()
+                .add_timestamped_elements([
+                    entry(97, "a"),
+                    entry(42, "d"),
+                    entry(52, "b"),
+                    entry(12, "c"),
+                ])
+                .advance_watermark_to(Instant::from_millis(50))
+                .advance_watermark_to_infinity(),
+        )
+        .apply("RangeDelete", ParDo::new(OrderedListRangeDeleteDoFn));
+
+    passert::that("AssertRemaining", &out)
+        .contains_in_any_order([(52i64, "b".to_string()), (97, "a".to_string())]);
+}
+
+/// Validates `MapState::put_if_absent`, `MapState::compute_if_absent` and
+/// `SetState::insert_if_absent` on `TestStream` input in two bundles: a later write of a key
+/// keeps the first value. Prism only. The watermark moves between the two batches, because
+/// Prism does not keep the order of batches at one watermark.
+///
+/// Java: `ParDoTest.StateTests.testMapStateNoReadOnComputeIfAbsentAndPutIfAbsentInsertsElement`,
+/// `ParDoTest.StateTests.testSetStateNoReadOnAddIfAbsentInsertsElement`.
+pub fn build_test_stream_state_write_if_absent(p: &TestPipeline) {
+    let entry = |key: &str, value: i64, ts: i64| {
+        (
+            ("hello".to_string(), (key.to_string(), value)),
+            Instant::from_millis(ts),
+        )
+    };
+    let out = p
+        .apply(
+            "TestStream",
+            TestStream::new()
+                .advance_watermark_to(Instant::EPOCH)
+                .add_timestamped_elements([entry("a", 97, 1), entry("b", 42, 1)])
+                .advance_watermark_to(Instant::from_millis(2))
+                .add_timestamped_elements([entry("b", 33, 3), entry("a", 12, 3)])
+                .advance_watermark_to_infinity(),
+        )
+        .apply("WriteIfAbsent", ParDo::new(WriteIfAbsentDoFn));
+
+    passert::that("AssertFirstValues", &out)
+        .contains_in_any_order(["a=97", "b=42", "set=a+b"].map(String::from));
+}
+
+/// Validates `.with_align(1 min).after(1 s)` on `TestStream` input at 5 s. Prism only.
+///
+/// Java: `ParDoTest.TimerTests.testEventTimeTimerAlignUnbounded`.
+pub fn build_timer_align_test_stream(p: &TestPipeline) {
+    let out = p
+        .apply(
+            "TestStream",
+            TestStream::new()
+                .advance_watermark_to(Instant::from_millis(5_000))
+                .add_timestamped_elements([(
+                    ("hello".to_string(), 37i64),
+                    Instant::from_millis(5_000),
+                )])
+                .advance_watermark_to(Instant::from_millis(60_000))
+                .advance_watermark_to_infinity(),
+        )
+        .apply(
+            "AlignedTimer",
+            ParDo::new(AlignedTimerDoFn {
+                period: Duration::from_secs(60),
+                offset: Duration::from_secs(1),
+            }),
+        );
+
+    passert::that("AssertAligned", &out).contains_in_any_order([
+        (3, Instant::from_millis(5_000)),
+        (42, Instant::from_millis(59_000)),
+    ]);
+}
+
+/// Validates that an aligned event-time target past `END_OF_GLOBAL_WINDOW` clamps to window
+/// expiration and fires. Prism only.
+///
+/// Java: `ParDoTest.TimerTests.testEventTimeTimerAlignAfterGcTimeUnbounded`.
+pub fn build_timer_align_after_gc_time(p: &TestPipeline) {
+    let end = Instant::END_OF_GLOBAL_WINDOW;
+    let out = p
+        .apply(
+            "TestStream",
+            TestStream::new()
+                .advance_watermark_to(end)
+                .add_timestamped_elements([(("hello".to_string(), 37i64), end)])
+                .advance_watermark_to_infinity(),
+        )
+        .apply(
+            "AlignPastEnd",
+            ParDo::new(AlignedTimerDoFn {
+                period: Duration::from_secs(86_400),
+                offset: Duration::ZERO,
+            }),
+        );
+
+    passert::that("AssertClamped", &out).contains_in_any_order([(3, end), (42, end)]);
+}
+
+/// Validates that an upstream `without_hold()` timer does not hold back a downstream
+/// event-time timer: the 10 s downstream timer fires at the 15 s watermark advance before
+/// value `2` arrives. Prism only.
+pub fn build_timer_without_hold_does_not_delay_downstream_timer(p: &TestPipeline) {
+    let out = p
+        .apply(
+            "TestStream",
+            TestStream::new()
+                .add_timestamped_elements([(("k".to_string(), 1i64), Instant::EPOCH)])
+                .advance_watermark_to(Instant::from_millis(15_000))
+                .add_timestamped_elements([(("k".to_string(), 2i64), Instant::from_millis(15_000))])
+                .advance_watermark_to_infinity(),
+        )
+        .apply("UpstreamWithoutHold", ParDo::new(UpstreamWithoutHoldDoFn))
+        .apply("DownstreamFlush", ParDo::new(DownstreamCollectTimerDoFn));
+
+    passert::that("AssertUnblocked", &out)
+        .contains_in_any_order([("k".to_string(), vec![1]), ("k".to_string(), vec![2])]);
 }

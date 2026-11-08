@@ -18,7 +18,8 @@
  */
 
 //! Side input checks that cannot run in the ValidatesRunner registry: the graph shape of
-//! the broadcast joins, and side inputs of a `TestStream` (Prism only).
+//! the broadcast joins, side inputs of a `TestStream` (Prism only), and view checks that run
+//! only in the SDK (map duplicates, singleton defaults).
 
 use std::collections::HashSet;
 
@@ -74,6 +75,64 @@ async fn test_windowed_side_input_not_present() {
     run_pipeline(
         "windowed_side_input_not_present",
         build_windowed_side_input_not_present,
+        Expectation::Succeeds,
+        &prism_runner_from_env(),
+    )
+    .await;
+}
+
+/// Early and on-time panes of a triggered `CombinePerKey` side input materialize per window.
+///
+/// Python: `SideInputsTest.test_multi_triggered_gbk_side_input`.
+#[tokio::test]
+async fn test_test_stream_triggered_side_input() {
+    run_pipeline(
+        "test_stream_triggered_side_input",
+        build_test_stream_triggered_side_input,
+        Expectation::Succeeds,
+        &prism_runner_from_env(),
+    )
+    .await;
+}
+
+/// A map side input fails the bundle on a key with two values. The check runs in the SDK, so
+/// it is not a ValidatesRunner test.
+///
+/// Java: `MapViewTest.testMapSideInputWithNullValuesCatchesDuplicates`.
+#[tokio::test]
+async fn test_map_side_input_fails_on_duplicate_key() {
+    run_pipeline(
+        "map_side_input_fails_on_duplicate_key",
+        build_map_side_input_fails_on_duplicate_key,
+        Expectation::FailsWith(&["more than one value"]),
+        &prism_runner_from_env(),
+    )
+    .await;
+}
+
+/// A singleton view with a default reads the default in a main window whose side window is
+/// empty.
+///
+/// Java: `ViewTest.testWindowedSideInputFixedToFixedWithDefault`.
+#[tokio::test]
+async fn test_windowed_singleton_with_default() {
+    run_pipeline(
+        "windowed_singleton_with_default",
+        build_windowed_singleton_with_default,
+        Expectation::Succeeds,
+        &prism_runner_from_env(),
+    )
+    .await;
+}
+
+/// A singleton view of an empty input reads its `None` default.
+///
+/// Java: `ViewTest.testSideInputWithNullDefault`.
+#[tokio::test]
+async fn test_singleton_with_none_default() {
+    run_pipeline(
+        "singleton_with_none_default",
+        build_singleton_with_none_default,
         Expectation::Succeeds,
         &prism_runner_from_env(),
     )

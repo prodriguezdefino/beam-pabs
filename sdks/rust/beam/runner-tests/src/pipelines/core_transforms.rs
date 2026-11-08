@@ -23,13 +23,15 @@
 //! not only on a loopback one.
 
 use beam::coders::DefaultCoder;
+use beam::metrics::MetricFilter;
 use beam::prelude::*;
-use beam::testing::{TestPipeline, passert};
+use beam::runners::PipelineResult;
+use beam::testing::{TestPipeline, TestPipelineError, passert};
 use beam::transforms::{Compose, Max, Mean, Min, Sum};
 use rust_decimal::Decimal;
 
-use crate::Expectation;
 use crate::dofns::*;
+use crate::{Expectation, RunnerKind};
 
 /// Validates element-wise `map` and `filter` operations.
 pub fn build_map_and_filter(p: &TestPipeline) {
@@ -283,15 +285,15 @@ pub fn build_folds(p: &TestPipeline) {
 }
 
 /// Values of the one key in [`build_group_by_key_large_iterable`].
-const LARGE_GROUP_VALUES: i64 = 32_768;
+const LARGE_GROUP_VALUES: i64 = 65_536;
 
 /// Bytes of each value in [`build_group_by_key_large_iterable`].
-const LARGE_GROUP_PAYLOAD: usize = 256;
+const LARGE_GROUP_PAYLOAD: usize = 4_096;
 
-/// Validates a `GroupByKey` over one key with 8 MiB of values, read by `fold_values`.
+/// Validates a `GroupByKey` over one key with 256 MiB of values, read by `fold_values`.
 ///
-/// A runner that pages state (Dataflow) sends a group this large as a state-backed iterable,
-/// and the harness reads the rest of it through the State API. Prism sends every group
+/// Dataflow sends about 100 MiB of a group inline and the rest as a state-backed iterable, so
+/// the harness reads at least two pages through the State API. Prism sends every group
 /// inline. Each value is its index, padded with zeros. The fold counts the values and sums
 /// their indexes and bytes, so a lost, repeated or truncated page changes the result.
 pub fn build_group_by_key_large_iterable(p: &TestPipeline) {
@@ -316,6 +318,32 @@ pub fn build_group_by_key_large_iterable(p: &TestPipeline) {
         "hot".to_string(),
         (n, n * (n - 1) / 2, n * LARGE_GROUP_PAYLOAD as i64),
     )]);
+}
+
+/// Checks that [`build_group_by_key_large_iterable`] succeeds. On Dataflow, it also checks
+/// that the harness read the group in two or more State API pages.
+pub fn check_group_by_key_large_iterable(
+    runner: RunnerKind,
+    result: Result<PipelineResult, TestPipelineError>,
+) {
+    let result = result.expect("the pipeline should succeed");
+    match runner {
+        RunnerKind::Prism => {}
+        RunnerKind::Dataflow => {
+            // The harness records this counter for every State API GET (`beam_harness::state`).
+            let filter = MetricFilter::default()
+                .with_namespace("beam-harness")
+                .with_name("state_get_pages");
+            let pages: i64 = result
+                .metrics()
+                .expect("runner reports metrics")
+                .query_counters(&filter)
+                .into_iter()
+                .filter_map(|cell| cell.attempted.or(cell.committed))
+                .sum();
+            assert!(pages >= 2, "state_get_pages: {pages}, want 2 or more");
+        }
+    }
 }
 
 /// A reading of [`build_combine_composed_accumulators`]: a count, a measure and an amount.
@@ -887,4 +915,18 @@ pub fn build_combine_globally_empty_without_defaults(p: &TestPipeline) {
         CombineGlobally::new(Sum::new()).without_defaults(),
     );
     passert::that("AssertEmpty", &sums).empty();
+}
+
+/// Validates a global and a per-key combine of an empty input: the global combine emits the
+/// default value of the combine, and the per-key combine emits nothing.
+///
+/// Java: `CombineTest$BasicTests.testSimpleCombineEmpty`.
+pub fn build_simple_combine_empty(p: &TestPipeline) {
+    let input = p.apply("Create", Create::new(Vec::<(String, i64)>::new()));
+    let sum = input
+        .map("Values", |(_, v): (String, i64)| v)
+        .combine_globally("SumGlobally", Sum::new());
+    let sum_per_key = input.combine_per_key("SumPerKey", Sum::new());
+    passert::that("AssertGlobalSum", &sum).contains_in_any_order([0_i64]);
+    passert::that("AssertPerKeySums", &sum_per_key).empty();
 }

@@ -22,10 +22,15 @@
 use std::collections::HashMap;
 
 use beam::internals::{PipelineInner, next_id};
+use beam::pipeline::URN_IMPULSE;
 use beam_model::expansion::ExpansionResponse;
 use beam_model::pipeline as proto;
 
 use super::error::ExpansionError;
+
+/// Prefix of synthetic `Impulse` producers added to `ExpansionRequest` components so expansion
+/// services that rehydrate input `PCollection` producers (for example Python) can resolve them.
+const FAKE_IMPULSE_PREFIX: &str = "__xlang_impulse_";
 
 /// Extracts the component closure needed by an expansion service to interpret input PCollections.
 #[doc(hidden)]
@@ -41,6 +46,27 @@ pub fn extract_input_components(
                 .pcollections
                 .get(id)
                 .map(|pcoll| (id.to_string(), pcoll.clone()))
+        })
+        .collect();
+
+    let transforms: HashMap<String, proto::PTransform> = pcollections
+        .keys()
+        .map(|pcoll_id| {
+            let id = format!("{FAKE_IMPULSE_PREFIX}{pcoll_id}");
+            let impulse = proto::PTransform {
+                unique_name: id.clone(),
+                spec: Some(proto::FunctionSpec {
+                    urn: URN_IMPULSE.to_string(),
+                    payload: Vec::new(),
+                }),
+                subtransforms: Vec::new(),
+                inputs: HashMap::new(),
+                outputs: HashMap::from([("out".to_string(), pcoll_id.clone())]),
+                display_data: Vec::new(),
+                environment_id: String::new(),
+                annotations: HashMap::new(),
+            };
+            (id, impulse)
         })
         .collect();
 
@@ -78,7 +104,7 @@ pub fn extract_input_components(
     let coders = beam::pipeline::collect_coder_closure(&inner.components.coders, seed_coder_ids);
 
     proto::Components {
-        transforms: HashMap::new(),
+        transforms,
         pcollections,
         windowing_strategies,
         coders,
@@ -134,14 +160,15 @@ pub fn splice_expansion_response(
             components.pcollections,
             "pcollection",
         )?;
-        for (id, transform) in &components.transforms {
+        let transforms: HashMap<String, proto::PTransform> = components
+            .transforms
+            .into_iter()
+            .filter(|(id, _)| !id.starts_with(FAKE_IMPULSE_PREFIX))
+            .collect();
+        for (id, transform) in &transforms {
             inner.record_transform_name(id, transform);
         }
-        merge_components(
-            &mut inner.components.transforms,
-            components.transforms,
-            "transform",
-        )?;
+        merge_components(&mut inner.components.transforms, transforms, "transform")?;
     }
 
     inner.record_transform_name(&root_transform_id, &expanded_transform);
