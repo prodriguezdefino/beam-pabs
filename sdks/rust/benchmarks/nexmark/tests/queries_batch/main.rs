@@ -19,7 +19,10 @@
 
 //! Batch Prism integration tests for `BoundedEventSource` and Nexmark queries.
 
+mod avro;
+mod launcher;
 mod stateless;
+mod suite_knobs;
 mod utility_and_side_inputs;
 mod windowed;
 mod winning_bids;

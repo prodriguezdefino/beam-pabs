@@ -38,12 +38,15 @@ Run builds and tests through Gradle. The rest of the Beam repository uses it too
 # Pipeline Launchers
 ./gradlew :sdks:rust:prism             # Launch on PrismRunner (-Pexample=wordcount|gaming [-Pdocker])
 ./gradlew :sdks:rust:dataflow          # Launch on Google Cloud Dataflow (-Pexample=gaming)
+./gradlew :sdks:rust:nexmarkPrism      # Launch Nexmark on PrismRunner ([-Psuite=SMOKE] [-Pquery=0] [-Pstreaming])
+./gradlew :sdks:rust:nexmarkDataflow   # Launch Nexmark on Dataflow ([-Psuite=DEFAULT] [-Pquery=0] [-Pstreaming])
 ./gradlew :sdks:rust:profilePrism      # Profile locally on Prism (-Pexample=wordcount [-Pmode=cpu|memory|both] ...)
 
 # Container & Validations
 ./gradlew :sdks:rust:docker                    # Build the SDK base container (apache/beam_rust_sdk)
 ./gradlew :sdks:rust:prebakedImage             # Example image with its binary pre-baked (-Pexample=wordcount [-Pdocker-repository-root=...])
 ./gradlew :sdks:rust:buildWorker               # Linux worker binary for an example (-Pexample=wordcount)
+./gradlew :sdks:rust:buildNexmarkWorker        # Linux worker binary for Nexmark
 ./gradlew :sdks:rust:expansionServiceImage     # Expansion service image; the binary is also the worker
 ./gradlew :sdks:rust:validatesRunnerPrism      # ValidatesRunner conformance suite on Prism
 ./gradlew :sdks:rust:validatesRunnerPrismStreaming     # The same suite on Prism in streaming mode
@@ -86,7 +89,7 @@ The summary splits the CPU time between the Rust process and Prism, and gives th
 
 ## Benchmarks
 
-[RustBenchmarkTasks.groovy](../../../buildSrc/src/main/groovy/org/apache/beam/gradle/rust/RustBenchmarkTasks.groovy) defines the benchmarks. Each runs some rounds (`-Pruns`, default 3), one after the other, and writes `results.json` and `report.md` to `build/reports/benchmarks/<task>-<timestamp>/`. The report gives each run and the medians. The scripts are in [benchmarks/tools/](../benchmarks/tools/).
+[RustBenchmarkTasks.groovy](../../../buildSrc/src/main/groovy/org/apache/beam/gradle/rust/RustBenchmarkTasks.groovy) defines the benchmarks, and [RustNexmarkTasks.groovy](../../../buildSrc/src/main/groovy/org/apache/beam/gradle/rust/RustNexmarkTasks.groovy) the Nexmark tasks. Each benchmark runs some rounds (`-Pruns`, default 3), one after the other, and writes `results.json` and `report.md` to `build/reports/benchmarks/<task>-<timestamp>/`. The report gives each run and the medians. The scripts are in [benchmarks/tools/](../benchmarks/tools/).
 
 A benchmark runs the current checkout. With `-Pbaseline=<git ref>`, it also runs that ref from a git worktree at `build/benchmarks/baseline` and gives the change against it. The worktree gets a copy of `.local/`. It stays between runs (about 10 GB with its builds), so the next baseline builds only what changed. To get the disk space back, delete it and run `git worktree prune`. `-PcompareTo=<results.json>` also compares with an earlier result. `-PdryRun` prints the commands and runs nothing.
 
@@ -94,6 +97,11 @@ A benchmark runs the current checkout. With `-Pbaseline=<git ref>`, it also runs
 # Wordcount on Dataflow, 100 or 300 Wikipedia shards.
 ./gradlew :sdks:rust:wordcountBenchmark -Pshards=100
 ./gradlew :sdks:rust:wordcountBenchmark -Pbaseline=origin/master -Pruns=3
+
+# Nexmark on Prism or Dataflow (`benchmarks/nexmark`).
+./gradlew :sdks:rust:nexmarkPrism -Psuite=SMOKE -PextraArgs="--num_events=500"
+./gradlew :sdks:rust:nexmarkDataflow -Pquery=0 -PextraArgs="--num_events=1000000"
+./gradlew :sdks:rust:nexmarkBenchmark -Pquery=0 -PnumEvents=1000000 -Pbaseline=origin/master
 
 # A Rust example or bench on Prism with profilePrism (worker profile, CPU mode).
 gcloud storage cp gs://apache-beam-samples/wikipedia_edits/wiki_data-000000000000.json build/bench-input/
@@ -105,12 +113,13 @@ gcloud storage cp gs://apache-beam-samples/wikipedia_edits/wiki_data-00000000000
 ./gradlew :sdks:rust:harnessBenchmark -Pbench=data_plane -PbaselineName=before
 ```
 
+- `nexmarkPrism` and `nexmarkDataflow` run the [Nexmark suite](../benchmarks/nexmark/README.md) (`-Psuite=DEFAULT|SMOKE|STRESS|FULL_THROTTLE`, `-Pquery=0..16`, `-Pstreaming`, `-PextraArgs`). `nexmarkBenchmark` runs one query across rounds on Dataflow (`-Pquery=0`, `-PnumEvents=1000000`, `-Pstreaming`, `-Pbaseline=<git ref>`) and reports CPU and `events.elements` throughput.
 - `harnessBenchmark` runs the criterion benches in [harness/benches/](../beam/harness/benches/). `process_bundle` runs bundles through a worker and an in-process runner over gRPC, with the pipelines and 16 concurrent callers of Java's `ProcessBundleBenchmark` (`sdks/java/harness/jmh`); its times are per operation, so 1 / time compares with JMH's ops/s. `data_plane` measures inbound routing, outbound buffering and the wait one slow bundle causes another on the same stream. `user_state` measures bag state against an in-process state server, and `side_input` the reads of a singleton side input. `chain_throughput` is not a criterion bench: it runs a fused WordCount chain with and without a user counter per word, and prints the ns/word of each. `-Pfilter` selects benchmark ids, `-PsmokeTest` runs each once. `-PcargoProfile=worker` builds with the fat LTO of the binaries that run on a runner; compare with other SDKs only in that profile. Reports and baselines are in `target/criterion/`.
 - A Dataflow benchmark first builds the worker and the launcher of each variant, so the jobs of a round start together. The report flags a round whose jobs started more than 60 s apart. It takes `-PnumWorkers` (1), `-PmaxNumWorkers` (10), `-PworkerMachineType` (`n2-standard-4`), `-PminCpuPlatform`, `-PextraArgs` and the GCP properties of the `dataflow` task. It finds each job by its name and gives it the labels `benchmark`, `variant`, `round` and `run_id`. `-PprepareOnly` runs only the builds, without jobs.
 - The report gives the vCPU·s, the counted elements per vCPU·s, memory, PD, shuffle, the ProcessElement time of each step, the peak memory of each container, peak workers, CPU platform, warnings, and the start and end times. Cloud Monitoring gives the used vCPU·s, the container memory and the counter rate. It can be some minutes late, so the script waits up to 6 minutes for it, then marks the missing values. `-PmonitoringWait=<seconds>` changes the wait.
 - The total vCPU·s includes worker startup and idle autoscaled workers. The used vCPU·s does not. To compare the code of two builds, use the step CPU seconds per 1M elements.
 - The CPU platform of the workers changes the results by about 20% (for example, Cascade Lake or Ice Lake on `n2`). The report flags a round whose jobs ran on different platforms, a job that autoscaled beyond its initial workers, and stockout or quota warnings. Do not pin a platform with `-PminCpuPlatform` unless necessary: a pinned platform can stock out.
-- To add a Dataflow benchmark of a Rust example, call `registerRustBenchmark` (see `wordcountBenchmark`). For other launchers, give launch commands to `runDataflowBenchmark`.
+- To add a Dataflow benchmark of a Rust example, call `registerRustBenchmark` (see `wordcountBenchmark`). For other launchers, give launch commands to `runDataflowBenchmark` (see `nexmarkBenchmark`).
 - `profileCompare` takes `-Pexample` (`wordcount`) or the target properties of `profilePrism`. It alternates the order of the variants in each round. `profilePrism` builds before it records, so the profile does not include the build. The report gives the Rust and Prism CPU seconds, the Rust CPU seconds per 1M rows and the hottest frames. `-Pinput` gives the pipeline `--input` and `--output`. `-Prows` sets the rows; the default is the lines of the input.
 - `check` runs `pythonScriptsTest`, the unit tests of the Python scripts.
 
