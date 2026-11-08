@@ -33,6 +33,7 @@ members = [
     "beam/test-utils",
     "beam/testing",
     "examples/*",
+    "benchmarks/*",
 ]
 exclude = [
     "examples/build",
