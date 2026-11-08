@@ -102,9 +102,9 @@ A person reviews the candidates. The usual result merges several of them into on
 
 The scorecard divides sizes by **feature points** from [docs/sdk-parity.md](../../docs/sdk-parity.md) (supported = 1, partial = 0.5). An SDK with more features does not get a worse score. The scorecard also counts test code (non-blank, non-comment lines, no tools needed), per area with a test/prod ratio and per SDK tree:
 
-- Rust: `#[cfg(test)]` items inside sources, plus `tests/`, `benches/`, `runner-tests/`, `test-utils/` (and `testing/` crates in the tree totals);
-- Go: `*_test.go`;
-- Python: `*_test.py`, `test_*.py`, `tests/` (and `testing/` in the tree totals).
+- Rust: `#[cfg(test)]` items inside sources, plus `tests/`, `benches/`, `runner-tests/`, `test-utils/` (and `testing/` crates in the tree totals; `benchmarks/` crates split `src/` vs `tests/` like other crates);
+- Go: `*_test.go` (and `test/` in the tree totals);
+- Python: `*_test.py`, `test_*.py`, `tests/` (and `testing/`, excluding `testing/benchmarks/`, in the tree totals).
 
 Java and TypeScript have no per-area mapping. They appear only in the whole-tree test/prod totals, with `--with-java-ts`.
 
