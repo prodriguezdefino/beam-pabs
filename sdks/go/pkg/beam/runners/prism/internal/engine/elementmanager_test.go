@@ -1224,6 +1224,149 @@ func TestElementManager_AccumulatingTriggerPanes(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "fire_if_nonempty_skips_ontime_and_closes_without_late_trigger",
+			strat: WinStrat{
+				AllowedLateness:      60 * time.Millisecond,
+				Accumulating:         true,
+				OnTimeFireIfNonempty: true,
+				Trigger: &TriggerAfterEndOfWindow{
+					Early: &TriggerElementCount{ElementCount: 1},
+				},
+			},
+			steps: []tsStep{
+				{key: 'k', vals: []byte{42}, eventTime: 1},
+				{watermark: 20},
+				{key: 'k', vals: []byte{99}, eventTime: 2},
+				{watermark: 70},
+			},
+			want: []gotPane{
+				{
+					Win:    win0to10,
+					Key:    "k",
+					Pane:   typex.PaneInfo{Timing: typex.PaneEarly, Index: 0, NonSpeculativeIndex: -1, IsFirst: true, IsLast: false},
+					Values: []int{42},
+				},
+			},
+		},
+		{
+			name: "fire_if_nonempty_skips_ontime_then_late_count1",
+			strat: WinStrat{
+				AllowedLateness:      60 * time.Millisecond,
+				Accumulating:         true,
+				OnTimeFireIfNonempty: true,
+				Trigger: &TriggerAfterEndOfWindow{
+					Early: &TriggerElementCount{ElementCount: 1},
+					Late:  &TriggerElementCount{ElementCount: 1},
+				},
+			},
+			steps: []tsStep{
+				{key: 'k', vals: []byte{42}, eventTime: 1},
+				{watermark: 20},
+				{key: 'k', vals: []byte{10}, eventTime: 2},
+			},
+			want: []gotPane{
+				{
+					Win:    win0to10,
+					Key:    "k",
+					Pane:   typex.PaneInfo{Timing: typex.PaneEarly, Index: 0, NonSpeculativeIndex: -1, IsFirst: true, IsLast: false},
+					Values: []int{42},
+				},
+				{
+					Win:    win0to10,
+					Key:    "k",
+					Pane:   typex.PaneInfo{Timing: typex.PaneLate, Index: 1, NonSpeculativeIndex: 0, IsFirst: false, IsLast: false},
+					Values: []int{10, 42},
+				},
+			},
+		},
+		{
+			name: "fire_if_nonempty_with_closing_emit_always_emits_closing_pane",
+			strat: WinStrat{
+				AllowedLateness:      60 * time.Millisecond,
+				Accumulating:         true,
+				OnTimeFireIfNonempty: true,
+				ClosingEmitAlways:    true,
+				Trigger: &TriggerAfterEndOfWindow{
+					Early: &TriggerElementCount{ElementCount: 1},
+					Late:  &TriggerElementCount{ElementCount: 1},
+				},
+			},
+			steps: []tsStep{
+				{key: 'k', vals: []byte{42}, eventTime: 1},
+				{watermark: 20},
+				{watermark: 70},
+			},
+			want: []gotPane{
+				{
+					Win:    win0to10,
+					Key:    "k",
+					Pane:   typex.PaneInfo{Timing: typex.PaneEarly, Index: 0, NonSpeculativeIndex: -1, IsFirst: true, IsLast: false},
+					Values: []int{42},
+				},
+				{
+					Win:    win0to10,
+					Key:    "k",
+					Pane:   typex.PaneInfo{Timing: typex.PaneLate, Index: 1, NonSpeculativeIndex: 0, IsFirst: false, IsLast: true},
+					Values: []int{42},
+				},
+			},
+		},
+		{
+			name: "fire_if_nonempty_emits_ontime_when_new_elements_arrive",
+			strat: WinStrat{
+				AllowedLateness:      60 * time.Millisecond,
+				Accumulating:         true,
+				OnTimeFireIfNonempty: true,
+				Trigger: &TriggerAfterEndOfWindow{
+					Early: &TriggerElementCount{ElementCount: 2},
+					Late:  &TriggerElementCount{ElementCount: 1},
+				},
+			},
+			steps: []tsStep{
+				{key: 'k', vals: []byte{20, 22}, eventTime: 1},
+				{key: 'k', vals: []byte{10}, eventTime: 3},
+				{watermark: 20},
+			},
+			want: []gotPane{
+				{
+					Win:    win0to10,
+					Key:    "k",
+					Pane:   typex.PaneInfo{Timing: typex.PaneEarly, Index: 0, NonSpeculativeIndex: -1, IsFirst: true, IsLast: false},
+					Values: []int{20, 22},
+				},
+				{
+					Win:    win0to10,
+					Key:    "k",
+					Pane:   typex.PaneInfo{Timing: typex.PaneOnTime, Index: 1, NonSpeculativeIndex: 0, IsFirst: false, IsLast: false},
+					Values: []int{10, 20, 22},
+				},
+			},
+		},
+		{
+			name: "fire_if_nonempty_emits_ontime_when_no_early_pane_fired",
+			strat: WinStrat{
+				AllowedLateness:      60 * time.Millisecond,
+				Accumulating:         true,
+				OnTimeFireIfNonempty: true,
+				Trigger: &TriggerAfterEndOfWindow{
+					Early: &TriggerElementCount{ElementCount: 2},
+					Late:  &TriggerElementCount{ElementCount: 1},
+				},
+			},
+			steps: []tsStep{
+				{key: 'k', vals: []byte{42}, eventTime: 1},
+				{watermark: 20},
+			},
+			want: []gotPane{
+				{
+					Win:    win0to10,
+					Key:    "k",
+					Pane:   typex.PaneInfo{Timing: typex.PaneOnTime, Index: 0, NonSpeculativeIndex: 0, IsFirst: true, IsLast: false},
+					Values: []int{42},
+				},
+			},
+		},
 	}
 
 	for _, tc := range tests {

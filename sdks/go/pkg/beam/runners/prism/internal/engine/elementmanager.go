@@ -2330,16 +2330,32 @@ keysPerBundle:
 				continue
 			}
 
+			ss.strat.OnWatermarkFire(&state)
+			isLast := watermark > ss.closingDeadline(win) ||
+				ss.strat.AllowedLateness == 0 ||
+				ss.strat.IsNeverTrigger() ||
+				(ss.strat.Trigger != nil && state.getTriggerState(ss.strat.Trigger).finished)
+			if len(newElems) == 0 && ss.strat.OnTimeFireIfNonempty && !(isLast && ss.strat.ClosingEmitAlways) {
+				added := 0
+				if ss.strat.Accumulating && !isLast && watermark <= ss.closingDeadline(win) {
+					if ss.strat.ClosingEmitAlways {
+						added = ss.addPendingClosingLocked(win, k)
+					}
+				} else {
+					state.Accumulated = nil
+					removed += ss.takePendingClosingLocked(win, k, holdsInBundle)
+				}
+				ss.state[LinkID{}][win][k] = state
+				accumulatingPendingAdjustment += -removed + added
+				continue
+			}
+
 			winElems := make([]element, 0, priorCount+len(newElems))
 			winElems = append(winElems, state.Accumulated...)
 			winElems = append(winElems, newElems...)
 
-			ss.strat.OnWatermarkFire(&state)
 			state.Pane = computeNextWatermarkPane(state.Pane, win.MaxTimestamp() < ss.output)
-			if watermark > ss.closingDeadline(win) {
-				state.Pane.IsLast = true
-			}
-			if ss.strat.AllowedLateness == 0 || ss.strat.IsNeverTrigger() || (ss.strat.Trigger != nil && state.getTriggerState(ss.strat.Trigger).finished) {
+			if isLast {
 				state.Pane.IsLast = true
 			}
 			added := 0

@@ -91,7 +91,112 @@ func runLocalTestPipeline(t *testing.T, p *beam.Pipeline, runFn func(*jobservice
 	}
 }
 
+func runWithOnTimeBehavior(mode pipepb.OnTimeBehavior_Enum) func(*jobservices.Job) {
+	return func(j *jobservices.Job) {
+		for _, ws := range j.Pipeline.GetComponents().GetWindowingStrategies() {
+			if ws.GetAccumulationMode() == pipepb.AccumulationMode_ACCUMULATING {
+				ws.OnTimeBehavior = mode
+			}
+		}
+		RunPipeline(j)
+	}
+}
+
 func TestTriggerAccumulating(t *testing.T) {
+	t.Run("fire_if_nonempty_skips_ontime_when_no_new_elements", func(t *testing.T) {
+		p, s := beam.NewPipelineWithRoot()
+		con := teststream.NewConfig()
+		if err := con.AddElements(1000, int64(42)); err != nil {
+			t.Fatal(err)
+		}
+		if err := con.AdvanceWatermarkToInfinity(); err != nil {
+			t.Fatal(err)
+		}
+
+		col := teststream.Create(s, con)
+		keyed := beam.AddFixedKey(s, col)
+		trig := trigger.AfterEndOfWindow().
+			EarlyFiring(trigger.AfterCount(1))
+		windowed := beam.WindowInto(s, window.NewFixedWindows(10*time.Second), keyed,
+			beam.Trigger(trig),
+			beam.PanesAccumulate(),
+		)
+		grouped := beam.GroupByKey(s, windowed)
+		panes := beam.ParDo(s, formatAccumPaneFn, grouped)
+		globalPanes := beam.WindowInto(s, window.NewGlobalWindows(), panes)
+		passert.Equals(s, globalPanes,
+			"timing=early index=0 nonSpec=-1 first=true last=false vals=[42]",
+		)
+
+		runLocalTestPipeline(t, p, RunPipeline)
+	})
+
+	t.Run("fire_if_nonempty_skips_ontime_then_late_count1", func(t *testing.T) {
+		p, s := beam.NewPipelineWithRoot()
+		con := teststream.NewConfig()
+		if err := con.AddElements(1000, int64(1)); err != nil {
+			t.Fatal(err)
+		}
+		if err := con.AdvanceWatermark(20000); err != nil {
+			t.Fatal(err)
+		}
+		if err := con.AddElements(2000, int64(2)); err != nil {
+			t.Fatal(err)
+		}
+		if err := con.AdvanceWatermarkToInfinity(); err != nil {
+			t.Fatal(err)
+		}
+
+		col := teststream.Create(s, con)
+		keyed := beam.AddFixedKey(s, col)
+		trig := trigger.AfterEndOfWindow().
+			EarlyFiring(trigger.AfterCount(1)).
+			LateFiring(trigger.AfterCount(1))
+		windowed := beam.WindowInto(s, window.NewFixedWindows(10*time.Second), keyed,
+			beam.Trigger(trig),
+			beam.PanesAccumulate(),
+			beam.AllowedLateness(60*time.Second),
+		)
+		grouped := beam.GroupByKey(s, windowed)
+		panes := beam.ParDo(s, formatAccumPaneFn, grouped)
+		globalPanes := beam.WindowInto(s, window.NewGlobalWindows(), panes)
+		passert.Equals(s, globalPanes,
+			"timing=early index=0 nonSpec=-1 first=true last=false vals=[1]",
+			"timing=late index=1 nonSpec=0 first=false last=false vals=[1 2]",
+		)
+
+		runLocalTestPipeline(t, p, RunPipeline)
+	})
+
+	t.Run("fire_if_nonempty_emits_ontime_when_no_early_pane_fired", func(t *testing.T) {
+		p, s := beam.NewPipelineWithRoot()
+		con := teststream.NewConfig()
+		if err := con.AddElements(1000, int64(42)); err != nil {
+			t.Fatal(err)
+		}
+		if err := con.AdvanceWatermarkToInfinity(); err != nil {
+			t.Fatal(err)
+		}
+
+		col := teststream.Create(s, con)
+		keyed := beam.AddFixedKey(s, col)
+		trig := trigger.AfterEndOfWindow().
+			EarlyFiring(trigger.AfterCount(2))
+		windowed := beam.WindowInto(s, window.NewFixedWindows(10*time.Second), keyed,
+			beam.Trigger(trig),
+			beam.PanesAccumulate(),
+			beam.AllowedLateness(60*time.Second),
+		)
+		grouped := beam.GroupByKey(s, windowed)
+		panes := beam.ParDo(s, formatAccumPaneFn, grouped)
+		globalPanes := beam.WindowInto(s, window.NewGlobalWindows(), panes)
+		passert.Equals(s, globalPanes,
+			"timing=ontime index=0 nonSpec=0 first=true last=true vals=[42]",
+		)
+
+		runLocalTestPipeline(t, p, RunPipeline)
+	})
+
 	t.Run("early_count1_empty_ontime_late_count1", func(t *testing.T) {
 		p, s := beam.NewPipelineWithRoot()
 		con := teststream.NewConfig()
@@ -127,7 +232,7 @@ func TestTriggerAccumulating(t *testing.T) {
 			"timing=late index=2 nonSpec=1 first=false last=false vals=[1 2]",
 		)
 
-		runLocalTestPipeline(t, p, RunPipeline)
+		runLocalTestPipeline(t, p, runWithOnTimeBehavior(pipepb.OnTimeBehavior_FIRE_ALWAYS))
 	})
 
 	t.Run("early_count2_nonempty_ontime_late_count1", func(t *testing.T) {

@@ -45,9 +45,10 @@ import (
 // WinStrat configures the windowing strategy for the stage, based on the
 // stage's input PCollection.
 type WinStrat struct {
-	AllowedLateness   time.Duration // Used to extend duration
-	Accumulating      bool          // If true, elements remain pending until the last firing.
-	ClosingEmitAlways bool          // Emit a final pane when a window expires even without new data.
+	AllowedLateness      time.Duration // Used to extend duration
+	Accumulating         bool          // If true, elements remain pending until the last firing.
+	OnTimeFireIfNonempty bool          // Skip ON_TIME firing when an early pane fired and no new elements arrived.
+	ClosingEmitAlways    bool          // Emit a final pane when a window expires even without new data.
 
 	Trigger Trigger // Evaluated during execution.
 }
