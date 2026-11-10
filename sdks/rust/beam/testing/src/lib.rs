@@ -72,6 +72,6 @@ pub use test_stream::TestStream;
 /// Force-links the runner so that its `inventory` registration stays.
 #[cfg(feature = "prism")]
 mod link {
-    pub use beam_harness as _;
-    pub use beam_runner_prism as _;
+    pub(crate) use beam_harness as _;
+    pub(crate) use beam_runner_prism as _;
 }

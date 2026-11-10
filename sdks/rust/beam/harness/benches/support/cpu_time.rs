@@ -25,7 +25,7 @@ use beam_test_utils::process_cpu_time;
 use criterion::measurement::{Measurement, ValueFormatter, WallTime};
 
 /// User and system CPU time of all threads of the process, so it includes the bench runner.
-pub struct CpuTime;
+pub(crate) struct CpuTime;
 
 impl Measurement for CpuTime {
     type Intermediate = Duration;

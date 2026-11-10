@@ -27,17 +27,17 @@
 use beam_fluent::prelude::*;
 
 /// Returns an owned `String`.
-pub fn s(v: &str) -> String {
+pub(crate) fn s(v: &str) -> String {
     v.to_string()
 }
 
 /// Creates a `(String, i64)` pair.
-pub fn kv(k: &str, v: i64) -> (String, i64) {
+pub(crate) fn kv(k: &str, v: i64) -> (String, i64) {
     (k.to_string(), v)
 }
 
 /// Collects grouped values into a sorted `Vec`. Grouping does not preserve order.
-pub fn sorted_groups(
+pub(crate) fn sorted_groups(
     grouped: &PCollection<(String, BeamIterable<i64>)>,
     name: &str,
 ) -> PCollection<(String, Vec<i64>)> {
@@ -49,7 +49,7 @@ pub fn sorted_groups(
 }
 
 /// `[("a", 10), ("a", 20), ("b", 30)]`.
-pub fn pairs(p: &Pipeline) -> PCollection<(String, i64)> {
+pub(crate) fn pairs(p: &Pipeline) -> PCollection<(String, i64)> {
     p.apply(
         "Pairs",
         Create::new(vec![kv("a", 10), kv("a", 20), kv("b", 30)]),

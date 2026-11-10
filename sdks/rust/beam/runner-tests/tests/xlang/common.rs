@@ -24,13 +24,13 @@ use beam_runner_prism::PrismRunner;
 use beam_runner_tests::{Expectation, RunnerKind, test_pipeline};
 
 /// A Prism runner for one test.
-pub fn runner() -> PrismRunner {
+pub(crate) fn runner() -> PrismRunner {
     PrismRunner::new()
 }
 
 /// A test expansion service that a Gradle task starts for the tests.
 #[derive(Clone, Copy)]
-pub enum TestService {
+pub(crate) enum TestService {
     /// `sdks/java/testing/expansion-service`.
     Java,
     /// `apache_beam.runners.portability.expansion_service_test`.
@@ -57,7 +57,7 @@ impl TestService {
 
 /// Builds the pipeline of `test` against `service` and runs it on Prism.
 /// Skips when the service address is not set or Docker is not reachable.
-pub async fn run_against(service: TestService, test: &str, build: fn(&TestPipeline, &str)) {
+pub(crate) async fn run_against(service: TestService, test: &str, build: fn(&TestPipeline, &str)) {
     let var = service.address_var();
     let Ok(endpoint) = std::env::var(var) else {
         eprintln!(
@@ -86,7 +86,7 @@ fn docker_available() -> bool {
 }
 
 /// Returns `true` with a skip message for `test` when no Docker daemon is reachable.
-pub fn skip_without_docker(test: &str) -> bool {
+pub(crate) fn skip_without_docker(test: &str) -> bool {
     let skip = !docker_available();
     if skip {
         eprintln!(

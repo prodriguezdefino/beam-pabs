@@ -43,7 +43,7 @@ use crate::runner::{DataflowRunner, DataflowRunnerError, JobPoller, SubmittedJob
 
 /// How long a streaming test job may run before its assertions must be decided. Covers
 /// worker start-up, which on Dataflow alone takes several minutes.
-pub const DEFAULT_TEST_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+pub(crate) const DEFAULT_TEST_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 
 /// Test runner wrapping [`DataflowRunner`] with in-pipeline assertion monitoring.
 #[derive(Clone, Debug)]

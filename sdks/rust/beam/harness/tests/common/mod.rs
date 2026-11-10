@@ -44,10 +44,10 @@ use beam_model::pipeline as proto_pipeline;
 
 /// How long a test waits for an event that should arrive promptly. Correct code takes
 /// milliseconds; the deadline makes a lost input fail the test, not hang it.
-pub const WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+pub(crate) const WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Awaits `fut`, panicking with `what` if it does not complete within [`WAIT`].
-pub async fn within<F: IntoFuture>(what: &str, fut: F) -> F::Output {
+pub(crate) async fn within<F: IntoFuture>(what: &str, fut: F) -> F::Output {
     tokio::time::timeout(WAIT, fut)
         .await
         .unwrap_or_else(|_| panic!("timed out after {WAIT:?} waiting for {what}"))
@@ -55,7 +55,7 @@ pub async fn within<F: IntoFuture>(what: &str, fut: F) -> F::Output {
 
 /// The user state of one bundle of `descriptor` on `channel`. Panics when the descriptor
 /// declares no user state.
-pub fn bundle_user_state(
+pub(crate) fn bundle_user_state(
     descriptor: &ProcessBundleDescriptor,
     channel: beam_harness::state::StateChannel,
     cache: Option<beam_harness::user_state::UserStateCache>,
@@ -68,7 +68,7 @@ pub fn bundle_user_state(
 
 /// The side input reader of one bundle of `descriptor` on `channel`, or `None` when the
 /// descriptor reads no side inputs.
-pub fn side_input_reader(
+pub(crate) fn side_input_reader(
     descriptor: &ProcessBundleDescriptor,
     channel: Option<beam_harness::state::StateChannel>,
 ) -> Option<beam_harness::state::FnApiSideInputReader> {
@@ -80,28 +80,28 @@ pub fn side_input_reader(
 /// A one-shot latch that threads block on until another thread opens it. Waits are bounded
 /// by [`WAIT`], so a latch that never opens fails instead of hanging.
 #[derive(Default)]
-pub struct Gate {
+pub(crate) struct Gate {
     opened: std::sync::Mutex<bool>,
     changed: std::sync::Condvar,
 }
 
 impl Gate {
-    pub fn new() -> Arc<Self> {
+    pub(crate) fn new() -> Arc<Self> {
         Arc::default()
     }
 
     /// Opens the gate, releasing every current and future waiter. Idempotent.
-    pub fn open(&self) {
+    pub(crate) fn open(&self) {
         *self.opened.lock().unwrap_or_else(|e| e.into_inner()) = true;
         self.changed.notify_all();
     }
 
-    pub fn is_open(&self) -> bool {
+    pub(crate) fn is_open(&self) -> bool {
         *self.opened.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Blocks until the gate opens; panics if it is still closed after [`WAIT`].
-    pub fn wait(&self, what: &str) {
+    pub(crate) fn wait(&self, what: &str) {
         let guard = self.opened.lock().unwrap_or_else(|e| e.into_inner());
         let (guard, _) = self
             .changed
@@ -112,13 +112,13 @@ impl Gate {
 
     /// A guard that opens this gate when dropped, even during a panic, so a failing
     /// assertion cannot leave a blocked handler parked.
-    pub fn open_on_drop(self: &Arc<Self>) -> OpenOnDrop {
+    pub(crate) fn open_on_drop(self: &Arc<Self>) -> OpenOnDrop {
         OpenOnDrop(Arc::clone(self))
     }
 }
 
 /// Opens its [`Gate`] on drop. See [`Gate::open_on_drop`].
-pub struct OpenOnDrop(Arc<Gate>);
+pub(crate) struct OpenOnDrop(Arc<Gate>);
 
 impl Drop for OpenOnDrop {
     fn drop(&mut self) {
@@ -127,17 +127,17 @@ impl Drop for OpenOnDrop {
 }
 
 /// URN the harness dispatches on to recognise a user transform.
-pub const URN_PARDO: &str = "beam:transform:pardo:v1";
+pub(crate) const URN_PARDO: &str = "beam:transform:pardo:v1";
 
 /// Coder id for `WindowedValue<String, GlobalWindow>`, defined by [`windowed_string_coders`].
-pub const CODER_WINDOWED_STRING: &str = "coder_windowed_string";
+pub(crate) const CODER_WINDOWED_STRING: &str = "coder_windowed_string";
 /// Coder id for opaque bytes, defined by [`bytes_coder`].
-pub const CODER_RAW: &str = "coder_raw";
+pub(crate) const CODER_RAW: &str = "coder_raw";
 
 /// Default transform ids, so tests and fixtures cannot disagree about the wiring.
-pub const SOURCE_ID: &str = "source_transform";
-pub const STAGE_ID: &str = "transform";
-pub const SINK_ID: &str = "sink_transform";
+pub(crate) const SOURCE_ID: &str = "source_transform";
+pub(crate) const STAGE_ID: &str = "transform";
+pub(crate) const SINK_ID: &str = "sink_transform";
 
 fn function_spec(urn: &str, payload: Vec<u8>) -> Option<proto_pipeline::FunctionSpec> {
     Some(proto_pipeline::FunctionSpec {
@@ -147,7 +147,7 @@ fn function_spec(urn: &str, payload: Vec<u8>) -> Option<proto_pipeline::Function
 }
 
 /// A `ParDo` spec whose `do_fn` carries `key`, the handler key the harness resolves.
-pub fn pardo_spec(key: &str) -> Option<proto_pipeline::FunctionSpec> {
+pub(crate) fn pardo_spec(key: &str) -> Option<proto_pipeline::FunctionSpec> {
     let payload = proto_pipeline::ParDoPayload {
         do_fn: function_spec("beam:dofn:rust:v1", key.as_bytes().to_vec()),
         ..Default::default()
@@ -157,7 +157,7 @@ pub fn pardo_spec(key: &str) -> Option<proto_pipeline::FunctionSpec> {
 }
 
 /// As [`pardo_spec`], but the payload also declares the user states `state_ids`.
-pub fn stateful_pardo_spec(
+pub(crate) fn stateful_pardo_spec(
     key: &str,
     state_ids: &[String],
 ) -> Option<proto_pipeline::FunctionSpec> {
@@ -215,7 +215,7 @@ fn port_payload(coder_id: &str) -> Vec<u8> {
 }
 
 /// The three coders making up `WindowedValue<String, GlobalWindow>`.
-pub fn windowed_string_coders() -> HashMap<String, proto_pipeline::Coder> {
+pub(crate) fn windowed_string_coders() -> HashMap<String, proto_pipeline::Coder> {
     HashMap::from([
         (
             CODER_WINDOWED_STRING.to_string(),
@@ -231,7 +231,7 @@ pub fn windowed_string_coders() -> HashMap<String, proto_pipeline::Coder> {
 
 /// A single opaque-bytes coder. Read in the outer context, so one inbound chunk decodes
 /// as exactly one element.
-pub fn bytes_coder() -> HashMap<String, proto_pipeline::Coder> {
+pub(crate) fn bytes_coder() -> HashMap<String, proto_pipeline::Coder> {
     HashMap::from([(CODER_RAW.to_string(), coder(URN_BYTES, &[]))])
 }
 
@@ -252,7 +252,7 @@ struct Sink {
 
 /// Builds `ProcessBundleDescriptor`s for harness tests. Starts as a DATA_SOURCE alone;
 /// [`Self::stage`] and [`Self::sink`] extend it. Default: `WindowedValue<String, GlobalWindow>`.
-pub struct DescriptorBuilder {
+pub(crate) struct DescriptorBuilder {
     id: String,
     source_coder_id: String,
     source_output: String,
@@ -264,7 +264,7 @@ pub struct DescriptorBuilder {
 }
 
 impl DescriptorBuilder {
-    pub fn new(id: &str) -> Self {
+    pub(crate) fn new(id: &str) -> Self {
         Self {
             id: id.to_string(),
             source_coder_id: CODER_WINDOWED_STRING.to_string(),
@@ -278,7 +278,7 @@ impl DescriptorBuilder {
     }
 
     /// Replaces the coder set and points the source port at `source_coder_id`.
-    pub fn with_coders(
+    pub(crate) fn with_coders(
         self,
         source_coder_id: &str,
         coders: HashMap<String, proto_pipeline::Coder>,
@@ -291,13 +291,13 @@ impl DescriptorBuilder {
     }
 
     /// Adds one coder to the existing set, e.g. a sink port coder the source does not share.
-    pub fn with_coder(mut self, id: &str, urn: &str, components: &[&str]) -> Self {
+    pub(crate) fn with_coder(mut self, id: &str, urn: &str, components: &[&str]) -> Self {
         self.coders.insert(id.to_string(), coder(urn, components));
         self
     }
 
     /// Points the source port at `coder_id`, keeping the coder set as it is.
-    pub fn with_source_coder(self, coder_id: &str) -> Self {
+    pub(crate) fn with_source_coder(self, coder_id: &str) -> Self {
         Self {
             source_coder_id: coder_id.to_string(),
             ..self
@@ -305,12 +305,17 @@ impl DescriptorBuilder {
     }
 
     /// Appends a user transform reading `input` and writing `output`.
-    pub fn stage(self, id: &str, input: &str, output: &str) -> Self {
+    pub(crate) fn stage(self, id: &str, input: &str, output: &str) -> Self {
         self.stage_with_outputs(id, input, &[("out", output)])
     }
 
     /// Appends a user transform reading `input` and writing each `(tag, pcollection)`.
-    pub fn stage_with_outputs(mut self, id: &str, input: &str, outputs: &[(&str, &str)]) -> Self {
+    pub(crate) fn stage_with_outputs(
+        mut self,
+        id: &str,
+        input: &str,
+        outputs: &[(&str, &str)],
+    ) -> Self {
         self.stages.push(Stage {
             id: id.to_string(),
             input: input.to_string(),
@@ -325,7 +330,7 @@ impl DescriptorBuilder {
 
     /// Appends a user transform whose `ParDoPayload` declares the user states
     /// `state_ids`, so the harness treats it as keyed.
-    pub fn stateful_stage(
+    pub(crate) fn stateful_stage(
         mut self,
         id: &str,
         input: &str,
@@ -343,7 +348,12 @@ impl DescriptorBuilder {
 
     /// Declares PCollection `id` with element coder `coder_id`, windowed by the
     /// strategy `windowing_strategy_id` (empty for none).
-    pub fn pcollection(mut self, id: &str, coder_id: &str, windowing_strategy_id: &str) -> Self {
+    pub(crate) fn pcollection(
+        mut self,
+        id: &str,
+        coder_id: &str,
+        windowing_strategy_id: &str,
+    ) -> Self {
         self.pcollections.insert(
             id.to_string(),
             proto_pipeline::PCollection {
@@ -357,7 +367,7 @@ impl DescriptorBuilder {
     }
 
     /// Declares windowing strategy `id`, whose windows are encoded by `window_coder_id`.
-    pub fn windowing_strategy(mut self, id: &str, window_coder_id: &str) -> Self {
+    pub(crate) fn windowing_strategy(mut self, id: &str, window_coder_id: &str) -> Self {
         self.windowing_strategies.insert(
             id.to_string(),
             proto_pipeline::WindowingStrategy {
@@ -369,7 +379,7 @@ impl DescriptorBuilder {
     }
 
     /// Appends a DATA_SINK reading `input`, using the source's port coder.
-    pub fn sink(mut self, id: &str, input: &str) -> Self {
+    pub(crate) fn sink(mut self, id: &str, input: &str) -> Self {
         let coder_id = self.source_coder_id.clone();
         self.sinks.push(Sink {
             id: id.to_string(),
@@ -380,7 +390,7 @@ impl DescriptorBuilder {
     }
 
     /// Appends a DATA_SINK reading `input` with a port coder of its own.
-    pub fn sink_with_coder(mut self, id: &str, input: &str, coder_id: &str) -> Self {
+    pub(crate) fn sink_with_coder(mut self, id: &str, input: &str, coder_id: &str) -> Self {
         self.sinks.push(Sink {
             id: id.to_string(),
             input: input.to_string(),
@@ -445,7 +455,7 @@ impl DescriptorBuilder {
 
     /// Builds a descriptor that exercises the operator graph. Panics without a stage or a sink,
     /// or if a port references an undefined coder.
-    pub fn build(self) -> ProcessBundleDescriptor {
+    pub(crate) fn build(self) -> ProcessBundleDescriptor {
         assert!(
             !self.stages.is_empty(),
             "descriptor '{}' has no intermediate transform: the bundle processor would take \
@@ -463,7 +473,7 @@ impl DescriptorBuilder {
 
     /// Builds a descriptor without a sink: its stages emit to PCollections that nothing
     /// consumes, like a terminal ParDo. Panics without a stage.
-    pub fn build_terminal(self) -> ProcessBundleDescriptor {
+    pub(crate) fn build_terminal(self) -> ProcessBundleDescriptor {
         assert!(
             !self.stages.is_empty(),
             "descriptor '{}' has no intermediate transform",
@@ -473,7 +483,7 @@ impl DescriptorBuilder {
     }
 
     /// Builds a source-to-sink descriptor exercising the raw-forwarding path.
-    pub fn build_raw_forwarding(self) -> ProcessBundleDescriptor {
+    pub(crate) fn build_raw_forwarding(self) -> ProcessBundleDescriptor {
         assert!(
             self.stages.is_empty(),
             "descriptor '{}' has an intermediate transform; call build() instead",
@@ -501,14 +511,14 @@ impl DescriptorBuilder {
 
 /// A test harness wiring bundle: sets up a DataManager with an in-memory mpsc channel,
 /// a BundleProcessor with handlers and optional data sampler, and a ControlClient.
-pub struct TestBundle {
+pub(crate) struct TestBundle {
     pub processor: Arc<BundleProcessor>,
     pub data_out_rx: mpsc::Receiver<Elements>,
     pub data_manager: DataManager,
     pub control_client: ControlClient,
 }
 
-pub struct TestBundleBuilder {
+pub(crate) struct TestBundleBuilder {
     handlers: HashMap<String, TransformFn>,
     capacity: usize,
     data_sampler: Option<Arc<DataSampler>>,
@@ -516,7 +526,7 @@ pub struct TestBundleBuilder {
 }
 
 impl TestBundleBuilder {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             handlers: HashMap::new(),
             capacity: 64,
@@ -526,33 +536,33 @@ impl TestBundleBuilder {
     }
 
     /// The runner declares the comma-separated protocols of `urns`.
-    pub fn capabilities(mut self, urns: &str) -> Self {
+    pub(crate) fn capabilities(mut self, urns: &str) -> Self {
         let Ok(capabilities) = urns.parse();
         self.capabilities = capabilities;
         self
     }
 
-    pub fn handlers(mut self, handlers: HashMap<String, TransformFn>) -> Self {
+    pub(crate) fn handlers(mut self, handlers: HashMap<String, TransformFn>) -> Self {
         self.handlers = handlers;
         self
     }
 
-    pub fn handler(mut self, id: impl Into<String>, handler: TransformFn) -> Self {
+    pub(crate) fn handler(mut self, id: impl Into<String>, handler: TransformFn) -> Self {
         self.handlers.insert(id.into(), handler);
         self
     }
 
-    pub fn capacity(mut self, cap: usize) -> Self {
+    pub(crate) fn capacity(mut self, cap: usize) -> Self {
         self.capacity = cap;
         self
     }
 
-    pub fn data_sampler(mut self, sampler: Arc<DataSampler>) -> Self {
+    pub(crate) fn data_sampler(mut self, sampler: Arc<DataSampler>) -> Self {
         self.data_sampler = Some(sampler);
         self
     }
 
-    pub fn build(self) -> TestBundle {
+    pub(crate) fn build(self) -> TestBundle {
         let (data_out_tx, data_out_rx) = mpsc::channel::<Elements>(self.capacity);
         let data_manager = DataManager::new(data_out_tx);
         let mut processor = BundleProcessor::with_handlers(data_manager.clone(), self.handlers)
@@ -578,22 +588,22 @@ impl Default for TestBundleBuilder {
 }
 
 impl TestBundle {
-    pub fn builder() -> TestBundleBuilder {
+    pub(crate) fn builder() -> TestBundleBuilder {
         TestBundleBuilder::new()
     }
 
-    pub fn new(handlers: HashMap<String, TransformFn>) -> Self {
+    pub(crate) fn new(handlers: HashMap<String, TransformFn>) -> Self {
         Self::builder().handlers(handlers).build()
     }
 
-    pub fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self::builder().build()
     }
 }
 
 /// A source -> `STAGE_ID` -> sink descriptor over opaque bytes: one chunk in, one element
 /// out. Pair with [`identity_handlers`] unless the test registers its own [`STAGE_ID`] handler.
-pub fn linear_descriptor(id: &str) -> ProcessBundleDescriptor {
+pub(crate) fn linear_descriptor(id: &str) -> ProcessBundleDescriptor {
     DescriptorBuilder::new(id)
         .with_coders(CODER_RAW, bytes_coder())
         .stage(STAGE_ID, "pcoll_input", "pcoll_output")
@@ -602,7 +612,7 @@ pub fn linear_descriptor(id: &str) -> ProcessBundleDescriptor {
 }
 
 /// As [`linear_descriptor`], but over `WindowedValue<String, GlobalWindow>`.
-pub fn windowed_linear_descriptor(id: &str) -> ProcessBundleDescriptor {
+pub(crate) fn windowed_linear_descriptor(id: &str) -> ProcessBundleDescriptor {
     DescriptorBuilder::new(id)
         .stage(STAGE_ID, "pcoll_input", "pcoll_output")
         .sink(SINK_ID, "pcoll_output")
@@ -610,7 +620,7 @@ pub fn windowed_linear_descriptor(id: &str) -> ProcessBundleDescriptor {
 }
 
 /// Handlers that forward each element unchanged, one per named transform.
-pub fn identity_handlers(ids: &[&str]) -> HashMap<String, TransformFn> {
+pub(crate) fn identity_handlers(ids: &[&str]) -> HashMap<String, TransformFn> {
     ids.iter()
         .map(|id| {
             let handler: TransformFn =
@@ -622,7 +632,7 @@ pub fn identity_handlers(ids: &[&str]) -> HashMap<String, TransformFn> {
 
 /// One call into an [`Observer`]: what the harness handed the operator.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Observed {
+pub(crate) struct Observed {
     /// The element bytes, after any inbound reframing.
     pub element: Vec<u8>,
     /// The windowed-value header the element was delivered under.
@@ -632,7 +642,7 @@ pub struct Observed {
 }
 
 impl Observed {
-    pub fn pane(&self) -> PaneInfo {
+    pub(crate) fn pane(&self) -> PaneInfo {
         self.header.pane()
     }
 }
@@ -640,18 +650,18 @@ impl Observed {
 /// A terminal handler that records every element and emits nothing. Unlike a closure
 /// handler, it sees the whole `HandlerContext`, including header and key.
 #[derive(Clone, Default)]
-pub struct Observer {
+pub(crate) struct Observer {
     seen: Arc<std::sync::Mutex<Vec<Observed>>>,
 }
 
 impl Observer {
     /// Everything recorded so far, in delivery order.
-    pub fn seen(&self) -> Vec<Observed> {
+    pub(crate) fn seen(&self) -> Vec<Observed> {
         self.seen.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// This observer as a registrable handler; copies share one record.
-    pub fn handler(&self) -> TransformFn {
+    pub(crate) fn handler(&self) -> TransformFn {
         Arc::new(self.clone())
     }
 }
@@ -675,7 +685,7 @@ impl BundleHandler for Observer {
 }
 
 /// The outcome of [`run_bundle`].
-pub struct BundleRun {
+pub(crate) struct BundleRun {
     /// The ProcessBundle instruction's response.
     pub response: beam_model::fn_execution::InstructionResponse,
     /// Every byte each sink wrote, keyed by sink transform id.
@@ -686,7 +696,7 @@ pub struct BundleRun {
 
 impl BundleRun {
     /// The successful bundle response; panics if the bundle failed.
-    pub fn bundle_response(&self) -> &beam_model::fn_execution::ProcessBundleResponse {
+    pub(crate) fn bundle_response(&self) -> &beam_model::fn_execution::ProcessBundleResponse {
         assert!(
             self.response.error.is_empty(),
             "bundle failed: {}",
@@ -703,7 +713,7 @@ impl BundleRun {
 
 /// Registers `descriptor`, then runs one bundle whose source receives `chunks` and end of
 /// stream. Every wait is bounded by [`WAIT`].
-pub async fn run_bundle(
+pub(crate) async fn run_bundle(
     handlers: HashMap<String, TransformFn>,
     descriptor: ProcessBundleDescriptor,
     chunks: Vec<Vec<u8>>,
@@ -712,7 +722,7 @@ pub async fn run_bundle(
 }
 
 /// As [`run_bundle`], for a descriptor whose source transform is `source_id`.
-pub async fn run_bundle_from(
+pub(crate) async fn run_bundle_from(
     source_id: &str,
     handlers: HashMap<String, TransformFn>,
     descriptor: ProcessBundleDescriptor,
@@ -814,7 +824,7 @@ fn payload_varints(payload: &[u8]) -> Vec<i64> {
 }
 
 /// The `element_count` of every PCollection the infos report, keyed by PCollection id.
-pub fn element_counts(infos: &[proto_pipeline::MonitoringInfo]) -> HashMap<String, i64> {
+pub(crate) fn element_counts(infos: &[proto_pipeline::MonitoringInfo]) -> HashMap<String, i64> {
     infos
         .iter()
         .filter(|info| info.urn == beam::metrics::URN_ELEMENT_COUNT)
@@ -827,7 +837,7 @@ pub fn element_counts(infos: &[proto_pipeline::MonitoringInfo]) -> HashMap<Strin
 
 /// A `sampled_byte_size` distribution, as reported.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SampledSizes {
+pub(crate) struct SampledSizes {
     pub count: i64,
     pub sum: i64,
     pub min: i64,
@@ -835,7 +845,7 @@ pub struct SampledSizes {
 }
 
 /// The `sampled_byte_size` of every PCollection the infos report, keyed by PCollection id.
-pub fn sampled_byte_sizes(
+pub(crate) fn sampled_byte_sizes(
     infos: &[proto_pipeline::MonitoringInfo],
 ) -> HashMap<String, SampledSizes> {
     infos

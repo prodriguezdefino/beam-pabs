@@ -30,16 +30,16 @@ use thiserror::Error;
 use tracing::{debug, info, warn};
 
 /// Default Maven Central repository base URL.
-pub const MAVEN_CENTRAL_REPO: &str = "https://repo.maven.apache.org/maven2";
+pub(crate) const MAVEN_CENTRAL_REPO: &str = "https://repo.maven.apache.org/maven2";
 
 /// Canonical group ID for Apache Beam artifacts.
-pub const BEAM_GROUP_ID: &str = "org.apache.beam";
+pub(crate) const BEAM_GROUP_ID: &str = "org.apache.beam";
 
 /// Canonical prefix for automated Java expansion service targets.
-pub const AUTO_JAVA_PREFIX: &str = "autojava:";
+pub(crate) const AUTO_JAVA_PREFIX: &str = "autojava:";
 
 /// Generic automated service prefix.
-pub const AUTO_PREFIX: &str = "auto:";
+pub(crate) const AUTO_PREFIX: &str = "auto:";
 
 /// Canonical Gradle target for the Java GCP Expansion Service (BigQuery, Spanner, PubSub).
 pub const GCP_EXPANSION_SERVICE_TARGET: &str =

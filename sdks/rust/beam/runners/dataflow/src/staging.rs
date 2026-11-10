@@ -47,7 +47,7 @@ pub enum StagingError {
 }
 
 /// Normalizes a base GCS staging location and appends a relative path.
-pub fn join_gcs_path(base: &str, relative: &str) -> String {
+pub(crate) fn join_gcs_path(base: &str, relative: &str) -> String {
     let trimmed = base.trim_end_matches('/');
     let rel = relative.trim_start_matches('/');
     format!("{trimmed}/{rel}")
@@ -154,7 +154,7 @@ pub(crate) fn locate_worker_binary(
 /// Beam artifact URNs, as used in `Environment.dependencies`, under the short names this
 /// module reads best with.
 mod artifact_urn {
-    pub use beam::pipeline::{
+    pub(crate) use beam::pipeline::{
         URN_ARTIFACT_ROLE_STAGING_TO as ROLE_STAGING_TO,
         URN_ARTIFACT_TYPE_DEFERRED as TYPE_DEFERRED, URN_ARTIFACT_TYPE_FILE as TYPE_FILE,
         URN_ARTIFACT_TYPE_URL as TYPE_URL,
@@ -164,7 +164,7 @@ mod artifact_urn {
 /// Stages a local file to `{staging_location}/{job_id}/xlang/{staged_name}`.
 ///
 /// Returns `(gcs_uri, sha256_hash)`.
-pub fn stage_file_artifact(
+pub(crate) fn stage_file_artifact(
     fs: &dyn FileSystem,
     staging_location: &str,
     job_id: &str,

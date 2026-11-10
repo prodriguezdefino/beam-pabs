@@ -37,9 +37,10 @@ pub(crate) mod timer;
 
 pub use batch::{BatchConverter, BatchedDoFn, BatchedDoFnAdapter, VecBatchConverter};
 pub(super) use closure::ClosureFn;
+pub(crate) use context::HandlerContext;
 pub use context::{
-    DEFAULT_FINALIZER_EXPIRY, Finalizer, FinishBundleContext, FinishOutput, HandlerContext,
-    OutputBuilder, ProcessContext, StatefulContext, Timer,
+    DEFAULT_FINALIZER_EXPIRY, Finalizer, FinishBundleContext, FinishOutput, OutputBuilder,
+    ProcessContext, StatefulContext, Timer,
 };
 pub use input::{DoFnInput, PerWindow, Windowed};
 pub use outputs::{Outputs, WithFinalizer};

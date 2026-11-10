@@ -70,7 +70,7 @@ pub(super) struct PendingRow {
 
 impl PendingRow {
     /// Waits for the figures of the row.
-    pub async fn resolve(self) -> QueryRunSummary {
+    pub(super) async fn resolve(self) -> QueryRunSummary {
         let Self {
             query,
             config,
@@ -94,7 +94,7 @@ impl PendingRow {
 
 impl SuiteRun<'_> {
     /// Runs the query of `config` and gives its row of the summary. A failure is a row too.
-    pub async fn run_query(self, config: NexmarkConfig) -> PendingRow {
+    pub(super) async fn run_query(self, config: NexmarkConfig) -> PendingRow {
         let query = config.query.unwrap_or(NexmarkQueryName::Passthrough);
         let skip_reason = match (
             self.args.skip_queries.contains(&query),

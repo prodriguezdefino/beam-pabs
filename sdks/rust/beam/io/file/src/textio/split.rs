@@ -28,7 +28,8 @@ use beam::transforms::sdf::{
 use std::io::{BufRead, BufReader, Read};
 use std::sync::Arc;
 
-pub use crate::filebasedsource::{DEFAULT_SPLIT_SIZE, FileBasedSourceFn, FileRecordReader};
+pub use crate::filebasedsource::DEFAULT_SPLIT_SIZE;
+pub(crate) use crate::filebasedsource::{FileBasedSourceFn, FileRecordReader};
 
 /// Reads newline-delimited text records using a byte-range tracker.
 #[derive(Clone, Copy, Debug, Default)]
@@ -65,17 +66,17 @@ impl FileRecordReader<(String, String)> for TextLineWithFilenameReader {
 }
 
 /// Default buffer size for text file reads (4 MiB).
-pub const TEXTIO_BUFFER_SIZE: usize = 4 * 1024 * 1024;
+pub(crate) const TEXTIO_BUFFER_SIZE: usize = 4 * 1024 * 1024;
 
 /// An iterator-like reader yielding lines with their starting byte offsets.
-pub struct OffsetLines<R> {
+pub(crate) struct OffsetLines<R> {
     reader: R,
     current_offset: u64,
     buf: Vec<u8>,
 }
 
 impl<R: BufRead> OffsetLines<R> {
-    pub fn new(reader: R, start_offset: u64) -> Self {
+    pub(crate) fn new(reader: R, start_offset: u64) -> Self {
         Self {
             reader,
             current_offset: start_offset,
@@ -84,7 +85,7 @@ impl<R: BufRead> OffsetLines<R> {
     }
 
     /// Read the next line, returning the line's starting offset and line content.
-    pub fn next_line(&mut self) -> beam::Result<Option<(i64, String)>> {
+    pub(crate) fn next_line(&mut self) -> beam::Result<Option<(i64, String)>> {
         let line_offset = i64::try_from(self.current_offset).unwrap_or(i64::MAX);
         self.buf.clear();
 

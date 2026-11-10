@@ -31,7 +31,7 @@ use crate::values::SideInputWindowing;
 use crate::windowing::Trigger;
 
 /// Checks that the pipeline DAG and components are consistent. Returns the first error found.
-pub fn validate(
+pub(crate) fn validate(
     components: &proto::Components,
     transform_order: &[String],
 ) -> Result<(), PipelineError> {

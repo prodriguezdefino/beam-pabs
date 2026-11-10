@@ -131,7 +131,7 @@ pub fn compute_split(
 ///
 /// `current_element_progress` is the progress inside the current element, from an active
 /// splittable DoFn.
-pub fn compute_split_with_progress(
+pub(crate) fn compute_split_with_progress(
     state: &SplitState,
     estimated_input_elements: i64,
     fraction: f64,

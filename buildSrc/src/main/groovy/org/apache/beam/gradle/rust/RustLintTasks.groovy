@@ -17,8 +17,11 @@
  */
 package org.apache.beam.gradle.rust
 
+import groovy.json.JsonSlurper
+import groovy.transform.CompileDynamic
 import groovy.transform.CompileStatic
 import org.gradle.api.Action
+import org.gradle.api.GradleException
 import org.gradle.api.Task
 import org.gradle.api.file.ConfigurableFileTree
 import org.gradle.api.file.RegularFileProperty
@@ -27,6 +30,7 @@ import org.gradle.api.provider.MapProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Exec
 import org.gradle.api.tasks.PathSensitivity
+import org.gradle.process.ExecSpec
 import org.gradle.workers.WorkAction
 import org.gradle.workers.WorkParameters
 import org.gradle.workers.WorkQueue
@@ -124,6 +128,7 @@ class RustLintTasks {
     registerBuildWorkspace(build)
     registerFmt(build)
     registerClippy(build)
+    registerClippyExtras(build)
     registerPruneTarget(build)
     registerPythonScriptsTest(build)
     build.cargoTask('cleanSdk', 'Build', 'Remove the cargo target directory', ['clean'])
@@ -226,6 +231,95 @@ class RustLintTasks {
         } as Action<ExecCheckWorkParams>)
       }
     }
+  }
+
+  private static void registerClippyExtras(RustSdkBuild build) {
+    build.project.tasks.register('clippyFix') { Task task ->
+      task.group = 'Verification'
+      task.description = 'Apply the machine-applicable lint fixes to all targets (cargo clippy --fix)'
+      task.doLast {
+        List<String> fixFlags = ['--fix', '--allow-dirty', '--allow-staged', '--allow-no-vcs']
+        Map<String, String> env = build.versions.cargoEnv()
+        WorkQueue queue = build.workerExecutor.noIsolation()
+        queue.submit(ExecCheckWorkAction.class, { ExecCheckWorkParams p ->
+          p.workingDir.set(build.rustDir)
+          p.command.set(['cargo', 'clippy'] + build.workspaceScope +
+              ['--lib', '--bins', '--examples'] + fixFlags)
+          p.environment.set(env)
+          p.streamLive.set(true)
+          p.label.set('cargo clippy --fix (--lib --bins --examples)')
+        } as Action<ExecCheckWorkParams>)
+        queue.await()
+        queue.submit(ExecCheckWorkAction.class, { ExecCheckWorkParams p ->
+          p.workingDir.set(build.rustDir)
+          p.command.set(['cargo', 'clippy'] + build.workspaceScope +
+              ['--tests', '--benches'] + fixFlags + ['--'] + TEST_CLIPPY_ALLOWS)
+          p.environment.set(env)
+          p.stampFile.set(build.buildFile('tmp/clippyFix.txt'))
+          p.streamLive.set(true)
+          p.label.set('cargo clippy --fix (--tests --benches)')
+        } as Action<ExecCheckWorkParams>)
+      }
+    }
+
+    build.project.tasks.register('clippyLintReport') { Task task ->
+      task.group = 'Verification'
+      task.description = 'Count the warnings of candidate clippy lints on all targets ' +
+          '(-PclippyLints=match_bool,expect_used,...); writes build/reports/clippy-lints.txt'
+      task.doLast {
+        List<String> lints = (build.project.findProperty('clippyLints') ?: '')
+            .toString()
+            .tokenize(',')
+            .collect { String l -> l.trim() }
+            .findAll { String l -> !l.isEmpty() }
+        if (lints.isEmpty()) {
+          throw new GradleException(
+              'Set -PclippyLints=<lint>,<lint> (clippy lint names without the clippy:: prefix).')
+        }
+        ByteArrayOutputStream out = new ByteArrayOutputStream()
+        List<String> lintFlags = lints.collectMany { String l -> ['-W', "clippy::${l}".toString()] }
+        build.project.exec({ ExecSpec spec ->
+          spec.workingDir(build.rustDir)
+          spec.environment(build.versions.cargoEnv())
+          spec.commandLine(['cargo', 'clippy'] + build.workspaceScope +
+              ['--all-targets', '--keep-going', '--message-format=json', '--'] + lintFlags)
+          spec.errorOutput = new ByteArrayOutputStream()
+          spec.standardOutput = out
+          spec.ignoreExitValue = true
+        } as Action<ExecSpec>)
+        File report = build.buildFile('reports/clippy-lints.txt')
+        writeClippyLintReport(task, lints, out.toString('UTF-8'), report)
+      }
+    }
+  }
+
+  @CompileDynamic
+  private static void writeClippyLintReport(Task task, List<String> lints, String rawJson, File report) {
+    JsonSlurper slurper = new JsonSlurper()
+    List<Map<String, String>> hits = rawJson.readLines()
+        .findAll { String line -> line.startsWith('{') }
+        .collect { String line -> slurper.parseText(line) }
+        .findAll { def msg -> msg.reason == 'compiler-message' && msg.message?.code?.code }
+        .collect { def msg ->
+          def span = msg.message.spans.find { it.is_primary } ?: [:]
+          [
+            lint: msg.message.code.code.toString().replace('clippy::', ''),
+            at  : "${span.file_name}:${span.line_start}".toString(),
+          ]
+        }
+        .unique()
+    Map<String, List<String>> counts = new LinkedHashMap<>()
+    lints.each { String lint ->
+      counts[lint] = hits.findAll { Map<String, String> h -> h.lint == lint }
+          .collect { Map<String, String> h -> h.at }
+    }
+    report.parentFile.mkdirs()
+    report.text = counts.collect { String lint, List<String> at -> "${lint}: ${at.size()}" }.join('\n') +
+        '\n\n' +
+        counts.collect { String lint, List<String> at -> (["## ${lint}"] + at.sort()).join('\n') }.join('\n\n') +
+        '\n'
+    counts.each { String lint, List<String> at -> task.logger.lifecycle("${lint}: ${at.size()}") }
+    task.logger.lifecycle("Report: ${report}")
   }
 
   private static void registerPruneTarget(RustSdkBuild build) {
