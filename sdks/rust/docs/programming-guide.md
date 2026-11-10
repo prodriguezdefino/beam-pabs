@@ -312,6 +312,8 @@ impl DoFn for BatchWriter {
 output name its window and timestamp:
 `ctx.emit(v, window, timestamp)`. To flush buffered elements into their own
 windows, take `Windowed<T>` as input and keep each window with its value.
+`BundleWindows` keeps the earliest timestamp of each window of the bundle, so the
+outputs of `finish_bundle` are not later than their inputs.
 
 To run code after the runner commits a bundle (for example, to acknowledge
 messages or commit offsets), declare `type Out = WithFinalizer<O>`. The function

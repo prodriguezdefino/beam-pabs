@@ -39,8 +39,8 @@ pub use batch::{BatchConverter, BatchedDoFn, BatchedDoFnAdapter, VecBatchConvert
 pub(super) use closure::ClosureFn;
 pub(crate) use context::HandlerContext;
 pub use context::{
-    DEFAULT_FINALIZER_EXPIRY, Finalizer, FinishBundleContext, FinishOutput, OutputBuilder,
-    ProcessContext, StatefulContext, Timer,
+    BundleWindows, DEFAULT_FINALIZER_EXPIRY, Finalizer, FinishBundleContext, FinishOutput,
+    OutputBuilder, ProcessContext, StatefulContext, Timer,
 };
 pub use input::{DoFnInput, PerWindow, Windowed};
 pub use outputs::{Outputs, WithFinalizer};

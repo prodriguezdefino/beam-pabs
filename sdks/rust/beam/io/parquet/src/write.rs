@@ -25,8 +25,6 @@
 use std::sync::Arc;
 
 use beam::coders::DefaultCoder;
-use beam::internals::PipelineInternals;
-use beam::pipeline::PipelineError;
 use beam::schema::{BeamRow, Row, RowElement, Schema};
 use beam::transforms::PTransform;
 use beam::values::PCollection;
@@ -312,11 +310,9 @@ impl PTransform<PCollection<Row>> for WriteRows {
         // Without a schema, record the error and build the write with an empty schema, so the
         // later transforms still attach to its output.
         let schema = input.row_schema().unwrap_or_else(|| {
-            let pipeline = input.pipeline();
-            pipeline.record_construction_error(PipelineError::InvalidConstruction {
-                transform_id: pipeline.scope_name().unwrap_or_default(),
-                reason: "the input has no row schema".to_string(),
-            });
+            input
+                .pipeline()
+                .record_invalid_construction("the input has no row schema");
             Arc::new(Schema::builder().build())
         });
         let codec = Arc::new(SchemaRowCodec::new(schema));

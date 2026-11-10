@@ -22,7 +22,7 @@
 use std::sync::Arc;
 
 use super::{CombineFn, CombinePerKey};
-use crate::pipeline::{PipelineError, URN_COMBINE_GLOBALLY, URN_COMBINE_PER_KEY};
+use crate::pipeline::{URN_COMBINE_GLOBALLY, URN_COMBINE_PER_KEY};
 use crate::transforms::{
     Create, DisplayDataBuilder, DoFn, Flatten, HasDisplayData, Map, PTransform, ParDo,
     ProcessContext,
@@ -136,8 +136,7 @@ where
 
     fn expand(self, input: &PCollection<CF::Input>) -> PCollection<CF::Output> {
         let pipeline = input.pipeline();
-        let name = pipeline.scope_name().unwrap_or_default();
-        let output = self.expand_steps(&name, input);
+        let output = self.expand_steps(input);
 
         // Single-stage global combines carry the payload of their `CombinePerKey`. A
         // fanned-out combine leaves the outer spec unset so runners keep both stages.
@@ -160,7 +159,8 @@ where
                 payload,
             });
         }
-        let mut builder = DisplayDataBuilder::with_namespace(name);
+        let mut builder =
+            DisplayDataBuilder::with_namespace(pipeline.scope_name().unwrap_or_default());
         self.populate_display_data(&mut builder);
         pipeline.set_scope_display_data(builder.into_proto());
         output
@@ -168,8 +168,8 @@ where
 }
 
 impl<CF: CombineFn> CombineGlobally<CF> {
-    /// Applies the steps of the combine. `name` is the full name of the combine.
-    fn expand_steps(&self, name: &str, input: &PCollection<CF::Input>) -> PCollection<CF::Output> {
+    /// Applies the steps of the combine.
+    fn expand_steps(&self, input: &PCollection<CF::Input>) -> PCollection<CF::Output> {
         let combined = input
             .apply("KeyWithVoid", Map::new(|element: CF::Input| ((), element)))
             .apply(
@@ -205,12 +205,7 @@ impl<CF: CombineFn> CombineGlobally<CF> {
             None
         };
         if let Some(reason) = reason {
-            input
-                .pipeline()
-                .record_construction_error(PipelineError::InvalidConstruction {
-                    transform_id: name.to_string(),
-                    reason: reason.to_string(),
-                });
+            input.pipeline().record_invalid_construction(reason);
             return combined;
         }
 

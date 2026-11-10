@@ -87,3 +87,50 @@ fn finish_bundle_emit_carries_the_given_window_and_timestamp() {
     );
     assert_eq!(header.pane(), PaneInfo::NO_FIRING);
 }
+
+fn global() -> BoundedWindow {
+    BoundedWindow::Global(beam::windowing::GlobalWindow)
+}
+
+#[test]
+fn bundle_windows_keep_the_earliest_timestamp_of_each_window() {
+    use beam::transforms::BundleWindows;
+
+    let interval = BoundedWindow::Interval(window());
+    let mut windows = BundleWindows::new();
+    for (window, millis) in [
+        (interval, 1_500),
+        (global(), 40),
+        (interval, 1_200),
+        (global(), 70),
+        (interval, 1_900),
+    ] {
+        windows.add(window, Instant::from_millis(millis));
+    }
+    assert_eq!(
+        windows.drain().collect::<Vec<_>>(),
+        [
+            (interval, Instant::from_millis(1_200)),
+            (global(), Instant::from_millis(40)),
+        ]
+    );
+    assert_eq!(windows.drain().count(), 0, "drain removes every window");
+}
+
+#[test]
+fn bundle_windows_take_removes_one_window() {
+    use beam::transforms::BundleWindows;
+
+    let interval = BoundedWindow::Interval(window());
+    let mut windows = BundleWindows::default();
+    assert_eq!(windows.take(&global()), None);
+    windows.add(global(), Instant::from_millis(9));
+    windows.add(interval, Instant::from_millis(1_100));
+    windows.add(global(), Instant::from_millis(3));
+    assert_eq!(windows.take(&global()), Some(Instant::from_millis(3)));
+    assert_eq!(windows.take(&global()), None, "take removes the window");
+    assert_eq!(
+        windows.drain().collect::<Vec<_>>(),
+        [(interval, Instant::from_millis(1_100))]
+    );
+}

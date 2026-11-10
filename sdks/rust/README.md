@@ -123,7 +123,9 @@ beam = { package = "apache-beam", path = "../beam/sdks/rust/beam", features = ["
 | [SDK parity](docs/sdk-parity.md) | Feature-by-feature comparison against the other Beam SDKs |
 | [Metrics and telemetry](docs/metrics.md) | Fn API monitoring protocol and supported metrics |
 | [Static registration](docs/static-registration.md) | How workers find user code: registered functions in the pipeline graph, closures by a pipeline rebuild |
-| [Developing the SDK](docs/development.md) | Gradle tasks, testing, linting, coverage, mutation testing, complexity scorecard |
+| [Contributing](docs/contributing.md) | Rules for public API, code style, tests and documentation |
+| [Building and testing](docs/build.md) | Gradle tasks, testing, linting, coverage, mutation testing, complexity scorecard |
+| [Benchmarks and profiling](benchmarks/README.md) | Local profiles on Prism, harness benchmarks, Dataflow and I/O benchmarks |
 
 The API reference is in the rustdoc: `cargo doc --open -p apache-beam`.
 
@@ -233,19 +235,8 @@ the Beam repository uses it too:
 [gradle/lint.gradle](gradle/lint.gradle) defines `build`, `check` and `fmt`, and
 [gradle/tests.gradle](gradle/tests.gradle) defines `test`.
 
-For the full task reference, coverage and caching, see [docs/development.md](docs/development.md).
-
-## Roadmap
-
-The guides above document the available features. This table shows the work that remains.
-
-| Area | Item | Status |
-|---|---|---|
-| I/O | S3 filesystem | Planned |
-| Relational | Beam SQL through cross-language, Beam YAML | Exploring |
-| Platform | Lineage reporting | Unscheduled |
-| Release | Publish to crates.io | Unscheduled |
+For the full task reference, coverage and caching, see [docs/build.md](docs/build.md).
 
 ## Contributing
 
-See the [Beam Contribution Guide](https://beam.apache.org/contribute/). Each new file must have the standard Apache 2.0 license header; the repository-wide `./gradlew rat` task checks it. Before you open a PR, run `./gradlew :sdks:rust:check` (formatting and clippy).
+See the [Beam Contribution Guide](https://beam.apache.org/contribute/) and the [Rust SDK rules](docs/contributing.md). Each new file must have the standard Apache 2.0 license header; the repository-wide `./gradlew rat` task checks it. Before you open a PR, run `./gradlew :sdks:rust:check` (formatting and clippy).

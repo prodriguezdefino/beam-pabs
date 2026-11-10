@@ -30,9 +30,8 @@ Two kinds of measurement:
   by code size, cyclomatic complexity and test volume. Feature counts normalize
   the sizes (see [Complexity scorecard](#complexity-scorecard)).
 
-The Gradle tasks in [`gradle/quality.gradle`](../../gradle/quality.gradle) are
-the supported entry points; the commands are listed in
-[docs/development.md](../../docs/development.md#code-quality).
+Use the Gradle tasks in [`gradle/quality.gradle`](../../gradle/quality.gradle).
+[docs/build.md](../../docs/build.md#code-quality) lists the commands.
 
 ## Where things run: collection = container only; analysis = anywhere
 

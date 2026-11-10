@@ -48,7 +48,7 @@ mod stateful;
 pub use finalizer::{
     BundleFinalizerCollector, DEFAULT_FINALIZER_EXPIRY, Finalizer, PendingFinalizer,
 };
-pub use finish::{FinishBundleContext, FinishOutput};
+pub use finish::{BundleWindows, FinishBundleContext, FinishOutput};
 pub use handler::HandlerContext;
 pub use output::OutputBuilder;
 pub use residuals::{ResidualApplication, ResidualCollector};

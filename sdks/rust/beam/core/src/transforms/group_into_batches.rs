@@ -34,7 +34,6 @@ use super::dofn::{
 use super::reshuffle::random_seed;
 use crate::Instant;
 use crate::coders::{DefaultCoder, ShardedKey, with_scratch_buffer};
-use crate::pipeline::PipelineError;
 use crate::transforms::PTransform;
 use crate::transforms::display_data::{DisplayDataBuilder, HasDisplayData};
 use crate::values::PCollection;
@@ -207,10 +206,7 @@ impl<S, F> GroupIntoBatches<S, F> {
         let pipeline = input.pipeline();
         let name = pipeline.scope_name().unwrap_or_default();
         if let Some(reason) = self.configuration_error() {
-            pipeline.record_construction_error(PipelineError::InvalidConstruction {
-                transform_id: name.clone(),
-                reason: reason.to_string(),
-            });
+            pipeline.record_invalid_construction(reason);
         }
         let limits = self.limits();
         let mut builder = DisplayDataBuilder::with_namespace(name);

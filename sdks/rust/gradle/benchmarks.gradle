@@ -26,7 +26,7 @@
 // readers and writers of the I/O benchmarks (gradle/benchmarks/io.gradle), give their own
 // launch commands to runDataflowBenchmark. The scripts
 // in benchmarks/tools/ run the rounds and write results.json and report.md to
-// build/reports/benchmarks/<task>-<timestamp>/. See docs/development.md.
+// build/reports/benchmarks/<task>-<timestamp>/. See benchmarks/README.md.
 
 def benchScripts = "${rustDir}/benchmarks/tools"
 // -P properties that a Dataflow benchmark gives to the `dataflow` task of each variant as is.
@@ -285,14 +285,18 @@ tasks.register('profileCompare') {
 def harnessBenches = ['process_bundle', 'data_plane', 'user_state', 'side_input', 'chain_throughput', 'window_into', 'row_coder', 'logging']
 tasks.register('harnessBenchmark', Exec) {
   group = 'Verification'
-  description = 'Run the criterion benchmarks of the harness crate ' +
-      "([-Pbench=${harnessBenches.join('|')}] [-Pfilter=<benchmark id regex>] [-PsmokeTest] " +
+  description = 'Run the criterion benchmarks of the harness crate (or another crate with -Ppkg=<crate>) ' +
+      "([-Ppkg=apache-beam-harness] [-Pbench=${harnessBenches.join('|')}] [-Pfilter=<benchmark id regex>] [-PsmokeTest] " +
       '[-PsaveBaseline=<name>] [-PbaselineName=<name>] [-PcargoProfile=<profile>])'
   workingDir rustDir
+  def pkg = (project.findProperty('pkg') ?: 'apache-beam-harness').toString()
   def bench = project.findProperty('bench')?.toString()
   doFirst {
-    if (bench && !(bench in harnessBenches)) {
+    if (pkg == 'apache-beam-harness' && bench && !(bench in harnessBenches)) {
       throw new GradleException("-Pbench must be one of ${harnessBenches}, not '${bench}'")
+    }
+    if (pkg != 'apache-beam-harness' && !bench) {
+      throw new GradleException("-Pbench is required when -Ppkg is '${pkg}'")
     }
   }
   def criterionArgs = [project.findProperty('filter')?.toString()] +
@@ -301,7 +305,7 @@ tasks.register('harnessBenchmark', Exec) {
       (project.findProperty('baselineName') ? ['--baseline', project.property('baselineName')] : [])
   // `worker` builds with the fat LTO of the binaries that run on a runner.
   def profileArgs = project.findProperty('cargoProfile') ? ['--profile', project.property('cargoProfile')] : []
-  commandLine((['cargo', 'bench', '-p', 'apache-beam-harness'] + profileArgs +
+  commandLine((['cargo', 'bench', '-p', pkg] + profileArgs +
       (bench ? ['--bench', bench] : harnessBenches.collectMany { ['--bench', it] }) +
       ['--'] + criterionArgs.findAll { it })*.toString())
 }

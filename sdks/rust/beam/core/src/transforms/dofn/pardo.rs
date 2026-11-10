@@ -36,8 +36,8 @@ use crate::coders::{
     CoderRegistry, DefaultCoder, FieldMapCache, URN_GLOBAL_WINDOW, URN_ROW, URN_TIMER, coder_urn,
 };
 use crate::internals::ParDoRegistration;
+use crate::pipeline::Pipeline;
 use crate::pipeline::resources::ResourceHints;
-use crate::pipeline::{Pipeline, PipelineError};
 use crate::schema::Schema;
 use crate::transforms::{
     BundleHandler, DisplayDataBuilder, HandlerInstance, HasDisplayData, PTransform, TransformFn,
@@ -360,10 +360,9 @@ impl<M, F: IntoParDoFn<M>> PTransform<PCollection<F::In>> for ParDo<F, M> {
             .iter()
             .any(|spec| spec.family_name == ON_WINDOW_EXPIRATION_FAMILY)
         {
-            pipeline.record_construction_error(PipelineError::InvalidConstruction {
-                transform_id: name.clone(),
-                reason: format!("the timer family id '{ON_WINDOW_EXPIRATION_FAMILY}' is reserved"),
-            });
+            pipeline.record_invalid_construction(format_args!(
+                "the timer family id '{ON_WINDOW_EXPIRATION_FAMILY}' is reserved"
+            ));
         }
         let expiration = F::ON_WINDOW_EXPIRATION
             .then(|| TimerFamilySpec::event_time(ON_WINDOW_EXPIRATION_FAMILY));
@@ -380,7 +379,7 @@ impl<M, F: IntoParDoFn<M>> PTransform<PCollection<F::In>> for ParDo<F, M> {
             })
             .collect::<Vec<_>>();
 
-        let spec = graph_spec(pipeline, &name, &self.func);
+        let spec = graph_spec(pipeline, &self.func);
         let registration = ParDoRegistration::new(pipeline, name, input.id())
             .outputs(outputs)
             .side_inputs(self.side_inputs)

@@ -37,8 +37,8 @@ use super::pardo::{DoFn, IntoParDoFn, Stateful, Stateless};
 use super::sdf::SplittableDoFn;
 use super::sdf::handler::SplittableDoFnHandler;
 use super::stateful::StatefulDoFn;
+use crate::pipeline::Pipeline;
 use crate::pipeline::constants::URN_RUST_DOFN_REGISTERED;
-use crate::pipeline::{Pipeline, PipelineError};
 use crate::transforms::TransformFn;
 use crate::transforms::combine::CombineFn;
 use crate::transforms::combine::registered::{CombineStages, Combining, registered_combine};
@@ -171,11 +171,10 @@ pub(crate) struct RegisteredFields {
 }
 
 /// Returns the id and the fields of `func` if its type is registered, or `None` for the
-/// rebuild path. A registration error is recorded on `pipeline`, so it fails `validate`; the
-/// function then takes the rebuild path, so the graph stays complete.
+/// rebuild path. A registration error is recorded for the transform that expands now, so it
+/// fails `validate`; the function then takes the rebuild path, so the graph stays complete.
 pub(crate) fn registered_fields<F: 'static>(
     pipeline: &Pipeline,
-    transform_id: &str,
     func: &F,
 ) -> Option<RegisteredFields> {
     let type_id = TypeId::of::<F>();
@@ -188,31 +187,20 @@ pub(crate) fn registered_fields<F: 'static>(
             id: registration.id,
             fields,
         })
-        .inspect_err(|reason| {
-            pipeline.record_construction_error(PipelineError::InvalidConstruction {
-                transform_id: transform_id.to_string(),
-                reason: reason.clone(),
-            });
-        })
+        .inspect_err(|reason| pipeline.record_invalid_construction(reason))
         .ok()
 }
 
 /// Returns the `do_fn` spec of `func` if its type is registered, or `None` for the rebuild
 /// path. See [`registered_fields`] for errors.
-pub(crate) fn graph_spec<F: 'static>(
-    pipeline: &Pipeline,
-    transform_id: &str,
-    func: &F,
-) -> Option<proto::FunctionSpec> {
-    registered_fields(pipeline, transform_id, func).map(|RegisteredFields { id, fields }| {
-        proto::FunctionSpec {
-            urn: URN_RUST_DOFN_REGISTERED.to_string(),
-            payload: RegisteredSpec {
-                id: id.to_string(),
-                fields,
-            }
-            .encode_to_vec(),
+pub(crate) fn graph_spec<F: 'static>(pipeline: &Pipeline, func: &F) -> Option<proto::FunctionSpec> {
+    registered_fields(pipeline, func).map(|RegisteredFields { id, fields }| proto::FunctionSpec {
+        urn: URN_RUST_DOFN_REGISTERED.to_string(),
+        payload: RegisteredSpec {
+            id: id.to_string(),
+            fields,
         }
+        .encode_to_vec(),
     })
 }
 

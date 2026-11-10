@@ -320,3 +320,87 @@ fn test_validation_fails_with_no_root_transforms() {
     drop(guard);
     assert_eq!(p.validate(), Err(PipelineError::NoRootTransforms));
 }
+
+/// Records a configuration error and returns its input.
+struct RecordsError;
+
+impl beam::transforms::PTransform<beam::values::PCollection<i64>> for RecordsError {
+    type Output = beam::values::PCollection<i64>;
+
+    fn expand(self, input: &beam::values::PCollection<i64>) -> Self::Output {
+        input.pipeline().record_invalid_construction("a bad option");
+        input.clone()
+    }
+}
+
+/// Records a configuration error and returns a placeholder output of strings.
+struct ReturnsPlaceholder;
+
+impl beam::transforms::PTransform<beam::values::PCollection<i64>> for ReturnsPlaceholder {
+    type Output = beam::values::PCollection<String>;
+
+    fn expand(self, input: &beam::values::PCollection<i64>) -> Self::Output {
+        let pipeline = input.pipeline();
+        let coder_id = <String as beam::coders::DefaultCoder>::register_coder(pipeline);
+        pipeline.invalid_construction_output(format_args!("{} is not a table", "t"), &coder_id)
+    }
+}
+
+/// Applies `ReturnsPlaceholder` as `Broken`, so the error names the nested transform.
+struct Outer;
+
+impl beam::transforms::PTransform<beam::values::PCollection<i64>> for Outer {
+    type Output = beam::values::PCollection<String>;
+
+    fn expand(self, input: &beam::values::PCollection<i64>) -> Self::Output {
+        input.apply("Broken", ReturnsPlaceholder)
+    }
+}
+
+#[test]
+fn record_invalid_construction_names_the_expanding_transform() {
+    let p = Pipeline::new();
+    let _ = p
+        .apply("Create", beam::transforms::Create::new(vec![1i64]))
+        .apply("Configure", RecordsError);
+    assert_eq!(
+        p.validate(),
+        Err(PipelineError::InvalidConstruction {
+            transform_id: "Configure".to_string(),
+            reason: "a bad option".to_string(),
+        })
+    );
+}
+
+#[test]
+fn an_invalid_construction_output_takes_later_transforms() {
+    use beam::transforms::Map;
+
+    let p = Pipeline::new();
+    let placeholder = p
+        .apply("Create", beam::transforms::Create::new(vec![1i64]))
+        .apply("Outer", Outer);
+    let lengths = placeholder.apply("Length", Map::new(|s: String| s.len() as i64));
+
+    assert_eq!(
+        p.validate(),
+        Err(PipelineError::InvalidConstruction {
+            transform_id: "Outer/Broken".to_string(),
+            reason: "t is not a table".to_string(),
+        })
+    );
+    let components = p.to_proto().components.unwrap_or_default();
+    let output = &components.pcollections[placeholder.id()];
+    assert_eq!(output.unique_name, "Outer/Broken.out");
+    assert_eq!(output.coder_id, placeholder.coder_id());
+    let length = components
+        .transforms
+        .values()
+        .find(|t| t.unique_name == "Length")
+        .expect("the transform after the placeholder is in the graph");
+    assert_eq!(
+        length.inputs.values().next(),
+        Some(&placeholder.id().to_string())
+    );
+    assert!(components.pcollections.contains_key(lengths.id()));
+}

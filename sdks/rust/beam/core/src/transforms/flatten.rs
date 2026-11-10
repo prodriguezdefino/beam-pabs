@@ -24,13 +24,13 @@ use std::marker::PhantomData;
 
 use super::{DisplayDataBuilder, HasDisplayData, PTransform};
 use crate::coders::DefaultCoder;
-use crate::pipeline::{PipelineError, URN_FLATTEN};
-use crate::values::{IsBounded, PCollection, PCollectionList};
+use crate::pipeline::URN_FLATTEN;
+use crate::values::{PCollection, PCollectionList};
 
 /// Merges multiple [`PCollection`]s of the same element type into a single [`PCollection`].
 ///
 /// A runner primitive (`beam:transform:flatten:v1`), so there is no worker handler.
-/// `expand` panics if the input list is empty or the inputs have different window functions.
+/// An empty input list or inputs with different window functions are construction errors.
 pub struct Flatten<T> {
     _marker: PhantomData<T>,
 }
@@ -85,14 +85,10 @@ where
         let pipeline = input.pipeline();
         let name = pipeline.primitive_name("Flatten");
         if input.is_empty() {
-            // A configuration error: record it and return an output with no producer, so the
-            // later transforms still attach to it.
-            pipeline.record_construction_error(PipelineError::InvalidConstruction {
-                transform_id: name.clone(),
-                reason: "Flatten requires at least one input PCollection".to_string(),
-            });
-            let coder_id = T::register_coder(pipeline);
-            return pipeline.add_pcollection(&format!("{name}.out"), &coder_id, IsBounded::Bounded);
+            return pipeline.invalid_construction_output(
+                "Flatten requires at least one input PCollection",
+                &T::register_coder(pipeline),
+            );
         }
         // The output takes the coder of the first input, so a row keeps its schema.
         let coder_id = input.collections()[0]
@@ -142,22 +138,19 @@ where
                     .map(|(urn, _)| urn)
                     .collect();
                 if !mismatched.is_empty() {
-                    mismatch = Some(PipelineError::InvalidConstruction {
-                        transform_id: name.clone(),
-                        reason: format!(
-                            "every input must share one window function, but it was given \
-                             {mismatched:?} alongside {:?}. Apply the same window to each \
-                             input before flattening.",
-                            expected.map(|(urn, _)| urn)
-                        ),
-                    });
+                    mismatch = Some(format!(
+                        "every input must share one window function, but it was given \
+                         {mismatched:?} alongside {:?}. Apply the same window to each input \
+                         before flattening.",
+                        expected.map(|(urn, _)| urn)
+                    ));
                 }
             }
 
             resolved.unwrap_or_else(|| inner.default_windowing_strategy_id.clone())
         };
-        if let Some(error) = mismatch {
-            pipeline.record_construction_error(error);
+        if let Some(reason) = mismatch {
+            pipeline.record_invalid_construction(reason);
         }
 
         let out_pcoll = pipeline.add_pcollection_with_windowing::<T>(

@@ -141,8 +141,7 @@ where
     // pipeline for any stage. If the key coder cannot be determined (e.g. custom KV coder
     // without registered components) or is not registered, fall back to the rebuild path,
     // where the payload holds the composite name as the handler key.
-    let specs =
-        CombineSpecs::new::<RegK, RegCF>(pipeline, &name, reg_fn, key_coder_id.as_deref(), phase);
+    let specs = CombineSpecs::new::<RegK, RegCF>(pipeline, reg_fn, key_coder_id.as_deref(), phase);
     let combine_fn = specs.as_ref().map_or_else(
         || proto::FunctionSpec {
             urn: URN_RUST_COMBINE_FN.to_string(),

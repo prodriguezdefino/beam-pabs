@@ -20,7 +20,7 @@
 //
 // The task builds the binary with line tables, runs it on Prism with the LOOPBACK worker under
 // samply and /usr/bin/time, and writes a summary with scripts/profiling/summary.py. It runs on
-// the host only. See docs/development.md.
+// the host only. See benchmarks/README.md.
 //
 // By default it builds with the `worker` Cargo profile (fat LTO, one codegen unit), the profile
 // of the binaries that run on a runner, so local profiles inline the same code as the fleet.

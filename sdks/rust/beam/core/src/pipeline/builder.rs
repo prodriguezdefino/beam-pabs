@@ -413,6 +413,19 @@ impl Pipeline {
         });
     }
 
+    /// Records `reason` with [`record_invalid_construction`](Self::record_invalid_construction)
+    /// and returns an output with no producer and the coder `coder_id`. The later transforms
+    /// still attach to the output.
+    pub fn invalid_construction_output<T: 'static>(
+        &self,
+        reason: impl Display,
+        coder_id: &str,
+    ) -> PCollection<T> {
+        self.record_invalid_construction(reason);
+        let name = self.scope_name().unwrap_or_default();
+        self.add_pcollection(&format!("{name}.out"), coder_id, IsBounded::Bounded)
+    }
+
     /// Exports the pipeline as a Runner API `Pipeline` proto.
     pub fn to_proto(&self) -> proto::Pipeline {
         self.lock().to_proto()

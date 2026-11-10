@@ -432,7 +432,6 @@ impl CombineSpecs {
     /// when the combine takes the rebuild path.
     pub(super) fn new<K: DefaultCoder + 'static, CF: 'static>(
         pipeline: &Pipeline,
-        transform_id: &str,
         combine_fn: &CF,
         key_coder_id: Option<&str>,
         phase: CombinePhase,
@@ -446,8 +445,7 @@ impl CombineSpecs {
             CombinePhase::Pre => StandardKey::of_sharded::<K>(key_coder_id, &coders),
             CombinePhase::Full | CombinePhase::Post => StandardKey::of::<K>(key_coder_id, &coders),
         } as i32;
-        let RegisteredFields { id, fields } =
-            registered::registered_fields(pipeline, transform_id, combine_fn)?;
+        let RegisteredFields { id, fields } = registered::registered_fields(pipeline, combine_fn)?;
         Some(Self {
             spec: RegisteredCombineSpec {
                 id: id.to_string(),
