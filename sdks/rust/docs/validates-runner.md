@@ -150,8 +150,8 @@ Run the suite tasks of [Gradle Tasks](#gradle-tasks) to get the results. Each ta
 
 | Area | Covered behavior |
 |---|---|
-| Element-wise & DAGs | `Impulse`, empty and nullable `Create`, `Map`, `FlatMap`, `Filter`, diamond DAGs, tagged multi-output `ParDo` (including empty outputs and custom timestamps), `Flatten`, `Partition`, `Reshuffle` (preserving timestamps, windows, and panes), `DoFn` lifecycle order, pipeline options in `DoFn` |
-| Grouping & joins | `GroupByKey` (empty input, 64 MiB iterables, 10 KiB–100 MiB keys, nullable values), `GroupIntoBatches` (count, byte limits, sharded keys), `CoGroupByKey` (global and windowed), inner/left/right/full outer joins, `Distinct` |
+| Element-wise & DAGs | `Impulse`, empty and nullable `Create`, `Map`, `FlatMap`, `Filter`, diamond DAGs, tagged multi-output `ParDo` (including empty outputs and custom timestamps), `Flatten` (including an empty list), `Partition`, `Reshuffle` (preserving timestamps, windows, and panes), `DoFn` lifecycle order, pipeline options in `DoFn` |
+| Grouping & joins | `GroupByKey` (empty input, 256 MiB iterables read in State API pages on Dataflow, 10 KiB–100 MiB keys, nullable values), `GroupIntoBatches` (count, byte limits, sharded keys), `CoGroupByKey` (global and windowed), inner/left/right/full outer joins, `Distinct` |
 | Combine | `CombinePerKey` (combiner lifting and capacity flushes), `CombineGlobally` (with and without defaults, triggered), `Count`, `Max`/`Min`, folds, composed tuple and `Decimal` accumulators |
 | Schemas & coders | `#[derive(BeamRow)]` and dynamic `Row` elements across `ParDo`, tagged outputs, `Filter`, `GroupByKey`, and `Reshuffle`; `Option<T>` and nullable `Row` coders |
 | Static registration | `#[derive(Register)]` on `DoFn`, `SplittableDoFn`, and `CombineFn` built directly from the pipeline graph on the worker |

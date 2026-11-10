@@ -33,7 +33,7 @@ use beam::transforms::{Create, Flatten, GroupByKey, Map, ParDo};
 use beam::values::{PCollection, PDone};
 use beam::windowing::{
     AccumulationMode, ClosingBehavior, GlobalWindows, IntervalWindow, OnTimeBehavior, OutputTime,
-    Trigger, WindowInto,
+    Trigger, WindowInto, is_globally_windowed,
 };
 
 use super::mismatch::{Shown, describe_elements, multiset_difference};
@@ -469,6 +469,12 @@ impl<T: DefaultCoder> PAssert<T> {
         let Some(window) = self.window else {
             return input;
         };
+        // An empty input never runs the step below, so reject the global window here.
+        if is_globally_windowed(&input) {
+            input.pipeline().record_invalid_construction(format!(
+                "PAssert '{name}' selects window {window}, but its input is in the global window"
+            ));
+        }
         let name = name.to_string();
         let panes = self.panes;
         input.apply(

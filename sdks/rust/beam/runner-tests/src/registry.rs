@@ -220,6 +220,8 @@ validates_runner_tests! {
                 group_by_key_large_keys_100mb => build_group_by_key_large_keys_100mb,
                 reshuffle_keeps_element_metadata => build_reshuffle_keeps_element_metadata,
                 flatten_empty_inputs_then_pardo => build_flatten_empty_inputs_then_pardo,
+                flatten_empty_list => build_flatten_empty_list,
+                flatten_empty_list_then_pardo => build_flatten_empty_list_then_pardo,
                 group_into_batches_count_and_byte_limits =>
                     build_group_into_batches_count_and_byte_limits,
                 combine_globally_empty_without_defaults =>

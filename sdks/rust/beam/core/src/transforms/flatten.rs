@@ -22,15 +22,16 @@
 use std::collections::HashMap;
 use std::marker::PhantomData;
 
-use super::{DisplayDataBuilder, HasDisplayData, PTransform};
+use super::{Create, DisplayDataBuilder, HasDisplayData, PTransform};
 use crate::coders::DefaultCoder;
-use crate::pipeline::{PipelineError, URN_FLATTEN};
-use crate::values::{IsBounded, PCollection, PCollectionList};
+use crate::pipeline::URN_FLATTEN;
+use crate::values::{PCollection, PCollectionList};
 
 /// Merges multiple [`PCollection`]s of the same element type into a single [`PCollection`].
 ///
 /// A runner primitive (`beam:transform:flatten:v1`), so there is no worker handler.
-/// `expand` panics if the input list is empty or the inputs have different window functions.
+/// An empty input list gives an empty, globally windowed output. Inputs with different window
+/// functions are a construction error.
 pub struct Flatten<T> {
     _marker: PhantomData<T>,
 }
@@ -53,7 +54,8 @@ impl<T> Flatten<T> {
     ///
     /// # Panics
     ///
-    /// Panics if `collections` is empty: there is no pipeline to record the error in.
+    /// Panics if `collections` is empty: there is no pipeline to take. To flatten an empty
+    /// list, apply `Flatten` to [`PCollectionList::empty`].
     pub fn pcollections(name: impl Into<String>, collections: &[&PCollection<T>]) -> PCollection<T>
     where
         T: DefaultCoder,
@@ -83,19 +85,14 @@ where
 
     fn expand(self, input: &PCollectionList<T>) -> PCollection<T> {
         let pipeline = input.pipeline();
+        // A runner can reject a Flatten with no inputs, so an empty list expands to an
+        // empty Create.
+        let [first, ..] = input.collections() else {
+            return pipeline.apply("Empty", Create::new(Vec::new()));
+        };
         let name = pipeline.primitive_name("Flatten");
-        if input.is_empty() {
-            // A configuration error: record it and return an output with no producer, so the
-            // later transforms still attach to it.
-            pipeline.record_construction_error(PipelineError::InvalidConstruction {
-                transform_id: name.clone(),
-                reason: "Flatten requires at least one input PCollection".to_string(),
-            });
-            let coder_id = T::register_coder(pipeline);
-            return pipeline.add_pcollection(&format!("{name}.out"), &coder_id, IsBounded::Bounded);
-        }
         // The output takes the coder of the first input, so a row keeps its schema.
-        let coder_id = input.collections()[0]
+        let coder_id = first
             .registered_coder_id()
             .unwrap_or_else(|| T::register_coder(pipeline));
 
@@ -142,22 +139,19 @@ where
                     .map(|(urn, _)| urn)
                     .collect();
                 if !mismatched.is_empty() {
-                    mismatch = Some(PipelineError::InvalidConstruction {
-                        transform_id: name.clone(),
-                        reason: format!(
-                            "every input must share one window function, but it was given \
-                             {mismatched:?} alongside {:?}. Apply the same window to each \
-                             input before flattening.",
-                            expected.map(|(urn, _)| urn)
-                        ),
-                    });
+                    mismatch = Some(format!(
+                        "every input must share one window function, but it was given \
+                         {mismatched:?} alongside {:?}. Apply the same window to each input \
+                         before flattening.",
+                        expected.map(|(urn, _)| urn)
+                    ));
                 }
             }
 
             resolved.unwrap_or_else(|| inner.default_windowing_strategy_id.clone())
         };
-        if let Some(error) = mismatch {
-            pipeline.record_construction_error(error);
+        if let Some(reason) = mismatch {
+            pipeline.record_invalid_construction(reason);
         }
 
         let out_pcoll = pipeline.add_pcollection_with_windowing::<T>(

@@ -32,7 +32,6 @@ use prost::Message;
 
 use crate::coders::WindowedHeader;
 use crate::internals::HandlerContext;
-use crate::pipeline::PipelineError;
 use crate::pipeline::constants::{URN_WINDOW_FN_SESSION_WINDOWS, URN_WINDOW_INTO};
 use crate::transforms::{BundleHandler, HandlerInstance, PTransform, TransformFn, TypedElement};
 use crate::values::PCollection;
@@ -163,13 +162,10 @@ impl<T: 'static, W: WindowFn + Clone> PTransform<PCollection<T>> for WindowInto<
             (self.window_fn.merge_status(), self.window_fn.urn())
             && urn != URN_WINDOW_FN_SESSION_WINDOWS
         {
-            pipeline.record_construction_error(PipelineError::InvalidConstruction {
-                transform_id: name.clone(),
-                reason: format!(
-                    "window function '{urn}' needs merging, but only session windows merge. \
-                     Return MergeStatus::NonMerging from merge_status"
-                ),
-            });
+            pipeline.record_invalid_construction(format_args!(
+                "window function '{urn}' needs merging, but only session windows merge. \
+                 Return MergeStatus::NonMerging from merge_status"
+            ));
         }
 
         let window_coder_id =

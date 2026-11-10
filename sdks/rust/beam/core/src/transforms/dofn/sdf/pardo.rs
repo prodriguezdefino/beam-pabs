@@ -96,7 +96,7 @@ impl<S: SplittableDoFn> PTransform<PCollection<Element<S>>> for SplittableParDo<
 
         // The harness gets the expanded SDF stages from `stage_handler` of the one handler. A
         // registered type goes into the spec, so the worker needs no rebuilt pipeline.
-        let spec = graph_spec(pipeline, &name, &self.func);
+        let spec = graph_spec(pipeline, &self.func);
         let outputs = declarer.into_tags();
         let registration = ParDoRegistration::new(pipeline, name, input.id())
             .outputs(outputs)

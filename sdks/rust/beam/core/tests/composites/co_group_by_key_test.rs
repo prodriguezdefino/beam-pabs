@@ -19,15 +19,18 @@
 
 //! Tests for CoGroupByKey, KeyedPCollectionTuple, and relational joins.
 
+use std::sync::Arc;
+
 use crate::support;
 
 use beam_core::coders::{BeamIterable, Coder, Context, DefaultCoder};
 use beam_core::internals::RawUnionValue;
 use beam_core::pipeline::{URN_FLATTEN, URN_GROUP_BY_KEY, URN_PAR_DO};
 use beam_core::prelude::*;
+use beam_core::schema::{FieldType, FieldValue};
 use beam_core::transforms::display_data::{DisplayDataBuilder, HasDisplayData};
 use beam_core::transforms::{
-    CoGroupByKey, FullOuterJoin, InnerJoin, KeyedPCollectionTuple, LeftJoin, RightJoin,
+    CoGroupByKey, FullOuterJoin, InnerJoin, KeyedPCollectionTuple, LeftJoin, RightJoin, TupleTag,
 };
 use beam_testing::{TestPipeline, passert};
 
@@ -364,6 +367,47 @@ async fn cogbk_groups_every_input_by_key() {
         (1i64, (vec!["Alice".to_string()], vec![100i64, 250])),
         (2i64, (vec!["Bob".to_string()], vec![])),
         (3i64, (vec![], vec![50i64])),
+    ]);
+    p.run().await.expect("pipeline and assertions");
+}
+
+/// The values of a dynamic `Row` input decode with the schema of that input.
+#[tokio::test]
+async fn cogbk_decodes_dynamic_row_values_with_their_schema() {
+    let schema = Arc::new(Schema::builder().field("name", FieldType::string()).build());
+    let user = |name: &str| {
+        Row::new(
+            Arc::clone(&schema),
+            vec![Some(FieldValue::String(name.to_string()))],
+        )
+        .expect("the value matches the schema")
+    };
+    let p = TestPipeline::new();
+    let users = p.apply(
+        "CreateUsers",
+        Create::new(vec![(1i64, user("Alice")), (2i64, user("Bob"))]),
+    );
+    let orders = p.apply("CreateOrders", Create::new(vec![(1i64, 250i64)]));
+    let users_tag = TupleTag::<Row>::new("users");
+    let orders_tag = TupleTag::<i64>::new("orders");
+    let grouped = KeyedPCollectionTuple::of(&users_tag, &users)
+        .and(&orders_tag, &orders)
+        .apply("Grouped", CoGroupByKey::new());
+    let names = grouped.apply(
+        "Names",
+        Map::new(move |(k, res): (i64, CoGbkResult)| {
+            let users = res.get_vec(&users_tag).unwrap();
+            let names: Vec<String> = users
+                .iter()
+                .map(|row| row.get_string("name").unwrap().unwrap().to_string())
+                .collect();
+            (k, (names, res.get_vec(&orders_tag).unwrap()))
+        }),
+    );
+
+    passert::that("AssertNames", &names).contains_in_any_order([
+        (1i64, (vec!["Alice".to_string()], vec![250i64])),
+        (2i64, (vec!["Bob".to_string()], vec![])),
     ]);
     p.run().await.expect("pipeline and assertions");
 }

@@ -24,7 +24,7 @@
 
 use crate::support;
 
-use beam_core::pipeline::{URN_FLATTEN, URN_PAR_DO};
+use beam_core::pipeline::{URN_FLATTEN, URN_PAR_DO, URN_WINDOW_FN_GLOBAL_WINDOWS};
 use beam_core::prelude::*;
 use beam_core::transforms::ProcessContext;
 use beam_core::transforms::display_data::DisplayDataItem;
@@ -100,6 +100,34 @@ fn flatten_consumes_exactly_its_inputs() {
         dd_items
             .iter()
             .any(|d| d.key == "transform" && d.value == "Flatten")
+    );
+}
+
+/// A runner can reject a Flatten with no inputs, so an empty list expands to an empty Create.
+#[test]
+fn flatten_of_an_empty_list_is_an_empty_create() {
+    let p = Pipeline::new();
+    let merged = PCollectionList::<String>::empty(p.clone()).apply("MergeNone", Flatten::new());
+
+    p.validate().unwrap();
+    let proto = p.to_proto();
+    let transforms = &support::graph::components(&proto).transforms;
+    assert!(
+        transforms
+            .values()
+            .all(|t| support::graph::urn(t) != URN_FLATTEN)
+    );
+    assert_eq!(
+        support::graph::producer(&proto, merged.id()),
+        "MergeNone/Empty/Process"
+    );
+    assert_eq!(
+        support::graph::pcoll_coder(&proto, merged.id()),
+        "string_utf8"
+    );
+    assert_eq!(
+        support::graph::window_fn_urn(&proto, merged.id()),
+        URN_WINDOW_FN_GLOBAL_WINDOWS
     );
 }
 

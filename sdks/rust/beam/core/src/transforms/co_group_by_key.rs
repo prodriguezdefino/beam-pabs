@@ -36,7 +36,7 @@ use crate::coders::{
 };
 use crate::pipeline::{Pipeline, PipelineError};
 use crate::schema::Schema;
-use crate::values::{IsBounded, PCollection, PInput};
+use crate::values::{PCollection, PInput};
 
 /// Maximum elements buffered before a state-backed group switches to streaming.
 pub(crate) const MAX_BUFFERED_ITEMS: usize = 10_000;
@@ -663,13 +663,10 @@ impl<K: DefaultCoder + Eq + Hash> PTransform<KeyedPCollectionTuple<K>> for CoGro
         input.pipeline.record_display_data(&self);
         if input.inputs.is_empty() {
             let pipeline = &input.pipeline;
-            let name = pipeline.scope_name().unwrap_or_default();
-            pipeline.record_construction_error(PipelineError::InvalidConstruction {
-                transform_id: name.clone(),
-                reason: "the KeyedPCollectionTuple is empty".to_string(),
-            });
-            let coder_id = <(K, CoGbkResult)>::register_coder(pipeline);
-            return pipeline.add_pcollection(&format!("{name}.out"), &coder_id, IsBounded::Bounded);
+            return pipeline.invalid_construction_output(
+                "the KeyedPCollectionTuple is empty",
+                &<(K, CoGbkResult)>::register_coder(pipeline),
+            );
         }
 
         let tagged = input.tagged_collections();
