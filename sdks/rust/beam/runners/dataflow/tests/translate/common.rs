@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 
 /// Stands in for a pipeline's own option group.
 #[derive(clap::Args, Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct CustomArgs {
+pub(crate) struct CustomArgs {
     #[arg(long)]
     custom_string: String,
     #[arg(long)]
@@ -41,12 +41,12 @@ pub struct CustomArgs {
 impl PipelineOptionGroup for CustomArgs {}
 
 /// Parses a pipeline's command line, as `beam::options::parse` does.
-pub fn custom_pipeline(args: &[&str]) -> (PipelineOptions, CustomArgs) {
+pub(crate) fn custom_pipeline(args: &[&str]) -> (PipelineOptions, CustomArgs) {
     try_parse_from::<CustomArgs, _, _>(args.iter().copied()).expect("valid command line")
 }
 
 /// Job options for `options` with these groups set, resolved as the runner does.
-pub fn job_options_for(
+pub(crate) fn job_options_for(
     options: &PipelineOptions,
     gcp: &GcpOptions,
     worker: &WorkerOptions,
@@ -63,7 +63,7 @@ pub fn job_options_for(
 }
 
 /// Job options with these groups set and every other option at its default.
-pub fn job_options(
+pub(crate) fn job_options(
     gcp: &GcpOptions,
     worker: &WorkerOptions,
     debug: &DebugOptions,
@@ -79,7 +79,7 @@ pub fn job_options(
 }
 
 /// Returns the only display data item named `key`, failing if it is missing or repeated.
-pub fn single<'a>(dd: &'a [DisplayDataItem], key: &str) -> &'a DisplayDataItem {
+pub(crate) fn single<'a>(dd: &'a [DisplayDataItem], key: &str) -> &'a DisplayDataItem {
     let matches: Vec<&DisplayDataItem> = dd.iter().filter(|d| d.key == key).collect();
     assert_eq!(
         matches.len(),
@@ -90,7 +90,7 @@ pub fn single<'a>(dd: &'a [DisplayDataItem], key: &str) -> &'a DisplayDataItem {
 }
 
 /// Asserts the only item named `key` has this value and type.
-pub fn assert_item(dd: &[DisplayDataItem], key: &str, value: &str, item_type: &str) {
+pub(crate) fn assert_item(dd: &[DisplayDataItem], key: &str, value: &str, item_type: &str) {
     let item = single(dd, key);
     assert_eq!(
         (item.value.to_string().as_str(), item.item_type()),
@@ -100,7 +100,7 @@ pub fn assert_item(dd: &[DisplayDataItem], key: &str, value: &str, item_type: &s
 }
 
 /// Asserts no two display data items share a key.
-pub fn assert_unique_keys(dd: &[DisplayDataItem]) {
+pub(crate) fn assert_unique_keys(dd: &[DisplayDataItem]) {
     let mut keys: Vec<&str> = dd.iter().map(|d| d.key.as_str()).collect();
     keys.sort_unstable();
     let before = keys.len();

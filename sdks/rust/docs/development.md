@@ -32,6 +32,7 @@ Run builds and tests through Gradle. The rest of the Beam repository uses it too
 # Core Lifecycle Tasks
 ./gradlew :sdks:rust:build             # Compile all crates in workspace (cargo build --workspace)
 ./gradlew :sdks:rust:check             # Run formatting, clippy and script tests in parallel
+./gradlew :sdks:rust:clippyFix         # Apply the machine-applicable lint fixes (cargo clippy --fix)
 ./gradlew :sdks:rust:test              # Run all tests on a host Prism (-Ppkg=<crate>, -PtestConcurrency=4)
 ./gradlew :sdks:rust:test --continue   # Run every test binary and report all failures (cargo --no-fail-fast)
 ./gradlew :sdks:rust:fmt               # Apply code formatting (cargo fmt)

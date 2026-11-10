@@ -188,7 +188,7 @@ impl<O: Outputs> Outputs for WithFinalizer<O> {
 /// One output of a transform with a number of outputs known only when it is built, such as
 /// [`Partition`](crate::transforms::Partition). The index is the position of the output.
 #[doc(hidden)]
-pub struct Indexed<T>(pub usize, pub T);
+pub(crate) struct Indexed<T>(pub usize, pub T);
 
 fn format_index(mut n: usize, buf: &mut [u8; 20]) -> &str {
     if n == 0 {

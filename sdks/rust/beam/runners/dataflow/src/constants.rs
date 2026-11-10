@@ -23,12 +23,12 @@ use std::time::Duration;
 
 use beam::retry::Backoff;
 
-pub use beam::pipeline::{
+pub(crate) use beam::pipeline::{
     OPTION_NAMESPACE_CORE, OPTION_NAMESPACE_DATAFLOW, OPTION_NAMESPACE_GCP, OPTION_NAMESPACE_RUNNER,
 };
 
 /// Current Apache Beam SDK version, matching Beam release stream (>= 2.21.0 required by Dataflow).
-pub use beam::pipeline::BEAM_SDK_VERSION;
+pub(crate) use beam::pipeline::BEAM_SDK_VERSION;
 
 /// Default Dataflow v1b3 API endpoint.
 pub const DEFAULT_DATAFLOW_ENDPOINT: &str = "https://dataflow.googleapis.com";
@@ -64,8 +64,8 @@ pub const STAGED_MODEL_NAME: &str = "model";
 
 /// Environment & Agent Metadata
 pub const DEFAULT_DATAFLOW_MAJOR_VERSION: &str = "6";
-pub const DATAFLOW_USER_AGENT_NAME: &str = "Apache Beam Rust SDK";
-pub const DATAFLOW_RUNNER_DISPLAY_NAME: &str = "DataflowRunner";
+pub(crate) const DATAFLOW_USER_AGENT_NAME: &str = "Apache Beam Rust SDK";
+pub(crate) const DATAFLOW_RUNNER_DISPLAY_NAME: &str = "DataflowRunner";
 pub const DEFAULT_RUST_ENVIRONMENT_ID: &str = "rust_env";
 
 /// Default interval between polling requests when waiting for a Dataflow job to finish.
@@ -79,7 +79,7 @@ pub const MAX_CONSECUTIVE_JOB_STATUS_ERRORS: u32 = 10;
 pub const MAX_REQUEST_ATTEMPTS: u32 = 4;
 
 /// The retries of a request: waits from 1 second, doubled before each next retry.
-pub const REQUEST_RETRY: Backoff = Backoff {
+pub(crate) const REQUEST_RETRY: Backoff = Backoff {
     attempts: MAX_REQUEST_ATTEMPTS,
     initial: Duration::from_secs(1),
     max: Duration::from_secs(60),

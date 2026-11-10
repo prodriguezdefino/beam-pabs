@@ -161,5 +161,72 @@ tasks.register('clippy') {
   }
 }
 
+tasks.register('clippyFix') {
+  group = 'Verification'
+  description = 'Apply the machine-applicable lint fixes to all targets (cargo clippy --fix)'
+  doLast {
+    def fixFlags = ['--fix', '--allow-dirty', '--allow-staged', '--allow-no-vcs']
+    def queue = rustWorkerExecutor.noIsolation()
+    queue.submit(ExecCheckWorkAction) { p ->
+      p.workingDir.set(rustDir)
+      p.command.set(['cargo', 'clippy'] + workspaceScope +
+          ['--lib', '--bins', '--examples'] + fixFlags)
+      p.environment.set(beamCargoEnv)
+      p.streamLive.set(true)
+      p.label.set('cargo clippy --fix (--lib --bins --examples)')
+    }
+    queue.await()
+    queue.submit(ExecCheckWorkAction) { p ->
+      p.workingDir.set(rustDir)
+      p.command.set(['cargo', 'clippy'] + workspaceScope +
+          ['--tests', '--benches'] + fixFlags + ['--'] + testClippyAllows)
+      p.environment.set(beamCargoEnv)
+      p.stampFile.set(file("${buildDir}/tmp/clippyFix.txt"))
+      p.streamLive.set(true)
+      p.label.set('cargo clippy --fix (--tests --benches)')
+    }
+  }
+}
+
+// Counts the warnings of candidate lints before a lint is enabled. Does not fail.
+tasks.register('clippyLintReport') {
+  group = 'Verification'
+  description = 'Count the warnings of candidate clippy lints on all targets ' +
+      '(-PclippyLints=match_bool,expect_used,...); writes build/reports/clippy-lints.txt'
+  doLast {
+    def lints = (project.findProperty('clippyLints') ?: '').toString().tokenize(',')*.trim()
+    if (lints.isEmpty()) {
+      throw new GradleException('Set -PclippyLints=<lint>,<lint> (clippy lint names without the clippy:: prefix).')
+    }
+    def out = new ByteArrayOutputStream()
+    project.exec {
+      workingDir rustDir
+      environment beamCargoEnv
+      commandLine(['cargo', 'clippy'] + workspaceScope + ['--all-targets', '--keep-going',
+          '--message-format=json', '--'] + lints.collectMany { ['-W', "clippy::${it}".toString()] })
+      errorOutput = new ByteArrayOutputStream()
+      standardOutput = out
+      ignoreExitValue = true
+    }
+    def slurper = new groovy.json.JsonSlurper()
+    def hits = out.toString('UTF-8').readLines().findAll { it.startsWith('{') }
+        .collect { slurper.parseText(it) }
+        .findAll { it.reason == 'compiler-message' && it.message?.code?.code }
+        .collect { msg ->
+          def span = msg.message.spans.find { it.is_primary } ?: [:]
+          [lint: msg.message.code.code.toString().replace('clippy::', ''),
+           at  : "${span.file_name}:${span.line_start}".toString()]
+        }
+        .unique()
+    def counts = lints.collectEntries { lint -> [(lint): hits.findAll { it.lint == lint }*.at] }
+    def report = file("${buildDir}/reports/clippy-lints.txt")
+    report.parentFile.mkdirs()
+    report.text = counts.collect { lint, at -> "${lint}: ${at.size()}" }.join('\n') + '\n\n' +
+        counts.collect { lint, at -> (["## ${lint}"] + at.sort()).join('\n') }.join('\n\n') + '\n'
+    counts.each { lint, at -> println "${lint}: ${at.size()}" }
+    println "Report: ${report}"
+  }
+}
+
 build.dependsOn 'buildWorkspace'
 check.dependsOn 'fmtCheck', 'clippy'

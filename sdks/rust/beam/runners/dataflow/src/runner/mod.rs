@@ -123,7 +123,7 @@ impl DataflowRunnerError {
     }
 }
 
-pub use crate::constants::DEFAULT_JOB_POLL_INTERVAL;
+pub(crate) use crate::constants::DEFAULT_JOB_POLL_INTERVAL;
 
 /// Apache Beam Google Cloud Dataflow runner.
 #[derive(Clone)]

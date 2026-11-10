@@ -50,7 +50,7 @@ fn record_new_messages(
 
 /// Polls a submitted job's status one interval apart and logs the new job messages. Shared
 /// by [`wait_for_job`] and the streaming test runner.
-pub struct JobPoller<'a> {
+pub(crate) struct JobPoller<'a> {
     client: &'a dyn DataflowApiClient,
     job: &'a SubmittedJob,
     interval: Duration,
@@ -59,7 +59,7 @@ pub struct JobPoller<'a> {
 }
 
 impl<'a> JobPoller<'a> {
-    pub fn new(
+    pub(crate) fn new(
         client: &'a dyn DataflowApiClient,
         job: &'a SubmittedJob,
         interval: Duration,
@@ -74,13 +74,13 @@ impl<'a> JobPoller<'a> {
     }
 
     /// Error messages (`JOB_MESSAGE_ERROR`) recorded while polling the job.
-    pub fn errors(&self) -> &[String] {
+    pub(crate) fn errors(&self) -> &[String] {
         &self.errors
     }
 
     /// Waits one interval, then returns the job status. Retries a failed request and returns
     /// the error after [`MAX_CONSECUTIVE_JOB_STATUS_ERRORS`] consecutive failures.
-    pub async fn next_status(&mut self) -> Result<JobResponse, DataflowRunnerError> {
+    pub(crate) async fn next_status(&mut self) -> Result<JobResponse, DataflowRunnerError> {
         let job = self.job;
         let mut consecutive_errors = 0;
         loop {
@@ -135,7 +135,7 @@ impl<'a> JobPoller<'a> {
 }
 
 /// Fetches metrics for `job`, logging failures without propagating.
-pub async fn fetch_metrics(
+pub(crate) async fn fetch_metrics(
     client: &dyn DataflowApiClient,
     job: &SubmittedJob,
 ) -> Option<MetricResults> {

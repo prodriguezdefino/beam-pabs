@@ -30,7 +30,7 @@ use beam_io_managed::URN_MANAGED;
 use beam_test_utils::xlang::decode_payload;
 
 /// Decodes a Managed payload into (underlying transform URN, inline config as JSON).
-pub fn managed_target(payload: &[u8]) -> (String, serde_json::Value) {
+pub(crate) fn managed_target(payload: &[u8]) -> (String, serde_json::Value) {
     let (identifier, row) = decode_payload(payload);
     assert_eq!(identifier, URN_MANAGED);
     let urn = row

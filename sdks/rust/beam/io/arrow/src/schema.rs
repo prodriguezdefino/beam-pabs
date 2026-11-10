@@ -59,10 +59,10 @@ pub const META_LOGICAL_URN: &str = "beam:logical_type:urn";
 pub const META_LOGICAL_PAYLOAD: &str = "beam:logical_type:payload";
 
 /// Field metadata key marking a list as a Beam `ITERABLE` rather than an `ARRAY`.
-pub const META_ITERABLE: &str = "beam:iterable";
+pub(crate) const META_ITERABLE: &str = "beam:iterable";
 
 /// Time zone attached to the Arrow timestamps produced for Beam instants.
-pub const UTC: &str = "UTC";
+pub(crate) const UTC: &str = "UTC";
 
 /// Name of the Arrow list child field.
 const LIST_ITEM: &str = "item";

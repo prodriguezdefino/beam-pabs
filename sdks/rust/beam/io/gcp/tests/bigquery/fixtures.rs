@@ -28,7 +28,7 @@ use beam_test_utils::xlang::{decode_payload, error_handling, string_value};
 /// `AutoValueSchema(getters).sorted().toSnakeCase()`, every getter `@Nullable`. The Rust row
 /// is unsorted, which is fine because Managed forwards it as a name-keyed map, so the test
 /// sorts the Rust fields.
-pub const BIGQUERY_READ_CONFIG: &[(&str, &str)] = &[
+pub(crate) const BIGQUERY_READ_CONFIG: &[(&str, &str)] = &[
     ("kms_key", "STRING?"),
     ("query", "STRING?"),
     ("row_restriction", "STRING?"),
@@ -40,7 +40,7 @@ pub const BIGQUERY_READ_CONFIG: &[(&str, &str)] = &[
 /// `bigquery_storage_write:v2` and `bigquery_fileloads:v1`. Only `table` and
 /// `ErrorHandling.output` are non-nullable. Java maps `Long` to INT64, `Integer` to INT32 and
 /// `Map<String,String>` to MAP.
-pub const BIGQUERY_WRITE_CONFIG: &[(&str, &str)] = &[
+pub(crate) const BIGQUERY_WRITE_CONFIG: &[(&str, &str)] = &[
     ("auto_sharding", "BOOLEAN?"),
     ("big_lake_configuration", "MAP<STRING, STRING>?"),
     ("clustering_fields", "ARRAY<STRING>?"),
@@ -60,14 +60,14 @@ pub const BIGQUERY_WRITE_CONFIG: &[(&str, &str)] = &[
 ];
 
 /// Sorts `(field name, _)` pairs by field name.
-pub fn sorted<T>(mut v: Vec<(String, T)>) -> Vec<(String, T)> {
+pub(crate) fn sorted<T>(mut v: Vec<(String, T)>) -> Vec<(String, T)> {
     v.sort_by(|a, b| a.0.cmp(&b.0));
     v
 }
 
 /// The fields a write row sets; all other fields in [`BIGQUERY_WRITE_CONFIG`] must be null.
 #[derive(Default)]
-pub struct WriteExpect {
+pub(crate) struct WriteExpect {
     pub auto_sharding: Option<bool>,
     pub create_disposition: Option<&'static str>,
     pub error_handling: Option<&'static str>,
@@ -80,7 +80,7 @@ pub struct WriteExpect {
 }
 
 impl WriteExpect {
-    pub fn values(&self) -> Vec<(String, Option<FieldValue>)> {
+    pub(crate) fn values(&self) -> Vec<(String, Option<FieldValue>)> {
         let st = |v: Option<&str>| v.and_then(string_value);
         vec![
             (
@@ -122,7 +122,7 @@ impl WriteExpect {
 ///
 /// The workspace `serde_json` does not enable `preserve_order`, so Managed emits the keys
 /// in sorted order.
-pub fn managed_target(payload: &[u8]) -> (String, String) {
+pub(crate) fn managed_target(payload: &[u8]) -> (String, String) {
     let (identifier, row) = decode_payload(payload);
     assert_eq!(identifier, URN_MANAGED);
     (

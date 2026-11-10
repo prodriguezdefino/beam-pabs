@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 /// Runs `combine_fn` as a runner does: it deals `inputs` to `parts` partial accumulators in
 /// turn, merges the partials and extracts the output. More than one part makes the merge of
 /// the function run.
-pub fn combine_in_parts<CF: CombineFn>(
+pub(crate) fn combine_in_parts<CF: CombineFn>(
     combine_fn: &CF,
     inputs: Vec<CF::Input>,
     parts: usize,
@@ -59,7 +59,7 @@ pub fn combine_in_parts<CF: CombineFn>(
 
 /// Sums the values of a key, each times `factor`.
 #[derive(Clone, Serialize, Deserialize, Register)]
-pub struct ScaledSum {
+pub(crate) struct ScaledSum {
     pub factor: i64,
 }
 
@@ -87,9 +87,9 @@ impl CombineFn for ScaledSum {
 
 /// A key whose coder has a URN that the worker cannot delimit.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct OpaqueKey(pub i64);
+pub(crate) struct OpaqueKey(pub i64);
 
-pub struct OpaqueKeyCoder;
+pub(crate) struct OpaqueKeyCoder;
 
 impl Coder<OpaqueKey> for OpaqueKeyCoder {
     fn urn(&self) -> &'static str {
@@ -133,7 +133,7 @@ impl DefaultCoder for OpaqueKey {
 }
 
 /// The transform named `name`.
-pub fn transform(p: &Pipeline, name: &str) -> proto::PTransform {
+pub(crate) fn transform(p: &Pipeline, name: &str) -> proto::PTransform {
     p.to_proto()
         .components
         .expect("components")
@@ -144,7 +144,7 @@ pub fn transform(p: &Pipeline, name: &str) -> proto::PTransform {
 }
 
 /// The `combine_fn` spec of the `CombinePerKey` named `name`.
-pub fn combine_fn_spec(p: &Pipeline, name: &str) -> proto::FunctionSpec {
+pub(crate) fn combine_fn_spec(p: &Pipeline, name: &str) -> proto::FunctionSpec {
     let spec = transform(p, name).spec.expect("spec");
     proto::CombinePayload::decode(spec.payload.as_slice())
         .expect("CombinePayload")
@@ -153,7 +153,7 @@ pub fn combine_fn_spec(p: &Pipeline, name: &str) -> proto::FunctionSpec {
 }
 
 /// The `do_fn` spec of the `ParDo` named `name`.
-pub fn do_fn_spec(p: &Pipeline, name: &str) -> proto::FunctionSpec {
+pub(crate) fn do_fn_spec(p: &Pipeline, name: &str) -> proto::FunctionSpec {
     let spec = transform(p, name).spec.expect("spec");
     assert_eq!(spec.urn, URN_PAR_DO);
     proto::ParDoPayload::decode(spec.payload.as_slice())
@@ -162,18 +162,18 @@ pub fn do_fn_spec(p: &Pipeline, name: &str) -> proto::FunctionSpec {
         .expect("do_fn")
 }
 
-pub fn kvs(pairs: &[(&str, i64)]) -> Vec<(String, i64)> {
+pub(crate) fn kvs(pairs: &[(&str, i64)]) -> Vec<(String, i64)> {
     pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
 }
 
 #[derive(BeamRow, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct RowKey {
+pub(crate) struct RowKey {
     pub group: String,
     pub bucket: i32,
 }
 
 /// Runs `handler` over `elements` as one bundle and returns what it emitted.
-pub fn run_bundle(handler: &dyn BundleHandler, elements: &[Vec<u8>]) -> Vec<Vec<u8>> {
+pub(crate) fn run_bundle(handler: &dyn BundleHandler, elements: &[Vec<u8>]) -> Vec<Vec<u8>> {
     let mut instance = handler.instantiate();
     let mut sink = Vec::<Vec<u8>>::new();
     instance.setup().expect("setup");

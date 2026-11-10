@@ -32,14 +32,14 @@ use crate::pipeline::constants::URN_USER_STATE_MULTIMAP;
 
 /// Specification for a multimap user state cell: each key holds a list of values.
 #[derive(Clone, Debug)]
-pub struct MultimapStateSpec<K, V> {
+pub(crate) struct MultimapStateSpec<K, V> {
     name: String,
     _marker: PhantomData<(K, V)>,
 }
 
 impl<K: DefaultCoder, V: DefaultCoder> MultimapStateSpec<K, V> {
     /// Creates a multimap state specification with the given unique state ID.
-    pub fn new(name: impl Into<String>) -> Self {
+    pub(crate) fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
             _marker: PhantomData,

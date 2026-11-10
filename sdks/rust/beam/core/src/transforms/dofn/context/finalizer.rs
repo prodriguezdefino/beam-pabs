@@ -34,7 +34,7 @@ use crate::transforms::dofn::outputs::{Outputs, WithFinalizer};
 pub const DEFAULT_FINALIZER_EXPIRY: Duration = Duration::from_secs(10 * 60);
 
 /// Runs once the runner confirms that the bundle was committed.
-pub type FinalizationCallback = Box<dyn FnOnce() -> crate::Result + Send + 'static>;
+pub(crate) type FinalizationCallback = Box<dyn FnOnce() -> crate::Result + Send + 'static>;
 
 /// A callback of a bundle and the wall-clock time after which it must not run.
 pub struct PendingFinalizer {

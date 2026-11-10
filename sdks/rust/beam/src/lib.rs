@@ -145,7 +145,7 @@ static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// from enabled feature crates.
 mod link {
     #[cfg(feature = "io-file")]
-    pub use beam_io_file as _;
+    pub(crate) use beam_io_file as _;
 
     #[cfg(any(
         feature = "gcp-gcs",
@@ -153,22 +153,22 @@ mod link {
         feature = "gcp-bigtable",
         feature = "gcp-pubsub"
     ))]
-    pub use beam_io_gcp as _;
+    pub(crate) use beam_io_gcp as _;
 
     #[cfg(feature = "harness")]
-    pub use beam_harness as _;
+    pub(crate) use beam_harness as _;
 
     #[cfg(feature = "dataflow")]
-    pub use beam_runner_dataflow as _;
+    pub(crate) use beam_runner_dataflow as _;
 
     #[cfg(feature = "prism")]
-    pub use beam_runner_prism as _;
+    pub(crate) use beam_runner_prism as _;
 
     #[cfg(feature = "expansion")]
     pub use beam_expansion as _;
 
     #[cfg(feature = "ml")]
-    pub use beam_ml as _;
+    pub(crate) use beam_ml as _;
 }
 
 /// All that an ordinary pipeline needs, in both styles.

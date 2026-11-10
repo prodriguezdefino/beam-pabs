@@ -24,4 +24,4 @@
 
 #![allow(dead_code, reason = "shared test helper")]
 
-pub mod graph;
+pub(crate) mod graph;

@@ -49,7 +49,7 @@ use beam_model::fn_execution::{
 
 /// Every field of a `StateKey`, in a hashable form.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum FullKey {
+pub(crate) enum FullKey {
     Bag {
         transform_id: String,
         state_id: String,
@@ -95,7 +95,7 @@ pub enum FullKey {
 }
 
 impl FullKey {
-    pub fn bag(transform_id: &str, state_id: &str, window: &[u8], key: &[u8]) -> Self {
+    pub(crate) fn bag(transform_id: &str, state_id: &str, window: &[u8], key: &[u8]) -> Self {
         Self::Bag {
             transform_id: transform_id.to_string(),
             state_id: state_id.to_string(),
@@ -104,7 +104,7 @@ impl FullKey {
         }
     }
 
-    pub fn multimap(
+    pub(crate) fn multimap(
         transform_id: &str,
         state_id: &str,
         window: &[u8],
@@ -120,7 +120,12 @@ impl FullKey {
         }
     }
 
-    pub fn multimap_keys(transform_id: &str, state_id: &str, window: &[u8], key: &[u8]) -> Self {
+    pub(crate) fn multimap_keys(
+        transform_id: &str,
+        state_id: &str,
+        window: &[u8],
+        key: &[u8],
+    ) -> Self {
         Self::MultimapKeys {
             transform_id: transform_id.to_string(),
             state_id: state_id.to_string(),
@@ -129,7 +134,11 @@ impl FullKey {
         }
     }
 
-    pub fn iterable_side_input(transform_id: &str, side_input_id: &str, window: &[u8]) -> Self {
+    pub(crate) fn iterable_side_input(
+        transform_id: &str,
+        side_input_id: &str,
+        window: &[u8],
+    ) -> Self {
         Self::IterableSideInput {
             transform_id: transform_id.to_string(),
             side_input_id: side_input_id.to_string(),
@@ -137,7 +146,7 @@ impl FullKey {
         }
     }
 
-    pub fn multimap_side_input(
+    pub(crate) fn multimap_side_input(
         transform_id: &str,
         side_input_id: &str,
         window: &[u8],
@@ -151,7 +160,7 @@ impl FullKey {
         }
     }
 
-    pub fn ordered_list(
+    pub(crate) fn ordered_list(
         transform_id: &str,
         state_id: &str,
         window: &[u8],
@@ -240,7 +249,7 @@ impl FullKey {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Op {
+pub(crate) enum Op {
     Get,
     Append,
     Clear,
@@ -248,7 +257,7 @@ pub enum Op {
 
 /// One request the server received.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Call {
+pub(crate) struct Call {
     pub op: Op,
     pub key: FullKey,
     /// The GET continuation token (empty for a first page and for non-GETs).
@@ -258,11 +267,11 @@ pub struct Call {
 }
 
 impl Call {
-    pub fn get(key: FullKey) -> Self {
+    pub(crate) fn get(key: FullKey) -> Self {
         Self::get_page(key, b"")
     }
 
-    pub fn get_page(key: FullKey, token: &[u8]) -> Self {
+    pub(crate) fn get_page(key: FullKey, token: &[u8]) -> Self {
         Self {
             op: Op::Get,
             key,
@@ -271,7 +280,7 @@ impl Call {
         }
     }
 
-    pub fn append(key: FullKey, data: &[u8]) -> Self {
+    pub(crate) fn append(key: FullKey, data: &[u8]) -> Self {
         Self {
             op: Op::Append,
             key,
@@ -280,7 +289,7 @@ impl Call {
         }
     }
 
-    pub fn clear(key: FullKey) -> Self {
+    pub(crate) fn clear(key: FullKey) -> Self {
         Self {
             op: Op::Clear,
             key,
@@ -324,21 +333,21 @@ impl StreamRule {
 
 /// A reply the server is holding back; see [`StrictStateBackend::hold_next`]. Dropping it
 /// releases the reply, so a failing test cannot leave the request parked.
-pub struct HeldReply {
+pub(crate) struct HeldReply {
     held: std::sync::mpsc::Receiver<()>,
     release: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl HeldReply {
     /// Blocks until the server holds the reply; panics if no request arrives within `timeout`.
-    pub fn wait_held(&self, timeout: Duration) {
+    pub(crate) fn wait_held(&self, timeout: Duration) {
         self.held
             .recv_timeout(timeout)
             .expect("the held request should reach the state server");
     }
 
     /// Lets the server answer the held request. Idempotent.
-    pub fn release(&mut self) {
+    pub(crate) fn release(&mut self) {
         if let Some(release) = self.release.take() {
             let _ = release.send(());
         }
@@ -353,7 +362,7 @@ impl Drop for HeldReply {
 
 /// Storage, request log and failure plan shared with the server.
 #[derive(Default)]
-pub struct StrictStateBackend {
+pub(crate) struct StrictStateBackend {
     storage: Mutex<HashMap<FullKey, Vec<u8>>>,
     calls: Mutex<Vec<Call>>,
     /// Bytes per GET page; 0 returns everything in one page.
@@ -371,24 +380,24 @@ pub struct StrictStateBackend {
 
 impl StrictStateBackend {
     /// Stores `data` under `key`, as if a previous bundle had committed it.
-    pub fn preload(&self, key: FullKey, data: &[u8]) {
+    pub(crate) fn preload(&self, key: FullKey, data: &[u8]) {
         self.storage.lock().unwrap().insert(key, data.to_vec());
     }
 
     /// The bytes currently stored under exactly `key`.
-    pub fn stored(&self, key: &FullKey) -> Option<Vec<u8>> {
+    pub(crate) fn stored(&self, key: &FullKey) -> Option<Vec<u8>> {
         self.storage.lock().unwrap().get(key).cloned()
     }
 
     /// Splits GET responses into pages of at most `bytes` bytes.
-    pub fn set_page_size(&self, bytes: usize) {
+    pub(crate) fn set_page_size(&self, bytes: usize) {
         self.page_size.store(bytes, Ordering::SeqCst);
     }
 
     /// Delays each GET reply by `delay`, as the latency of a runner. The server reads the
     /// page when the request arrives and sends it after `delay`. Other requests on the
     /// stream do not wait for the delay, and the replies can leave out of request order.
-    pub fn set_get_delay(&self, delay: Duration) {
+    pub(crate) fn set_get_delay(&self, delay: Duration) {
         let micros = u64::try_from(delay.as_micros()).unwrap_or(u64::MAX);
         self.get_delay_us.store(micros, Ordering::SeqCst);
     }
@@ -400,7 +409,7 @@ impl StrictStateBackend {
     }
 
     /// Fails the next `op` request (only the `token` page, if given) with `message` as error.
-    pub fn fail_next(&self, op: Op, token: Option<&[u8]>, message: &str) {
+    pub(crate) fn fail_next(&self, op: Op, token: Option<&[u8]>, message: &str) {
         self.errors.lock().unwrap().push(ErrorRule {
             op,
             token: token.map(<[u8]>::to_vec),
@@ -410,7 +419,7 @@ impl StrictStateBackend {
 
     /// Answers the next `op` request (only the `token` page, if given) with `response`
     /// instead of serving it. `None` sends neither a result nor an error.
-    pub fn respond_next(
+    pub(crate) fn respond_next(
         &self,
         op: Op,
         token: Option<&[u8]>,
@@ -424,32 +433,32 @@ impl StrictStateBackend {
     }
 
     /// Every request received so far, in order.
-    pub fn calls(&self) -> Vec<Call> {
+    pub(crate) fn calls(&self) -> Vec<Call> {
         self.calls.lock().unwrap().clone()
     }
 
-    pub fn take_calls(&self) -> Vec<Call> {
+    pub(crate) fn take_calls(&self) -> Vec<Call> {
         std::mem::take(&mut *self.calls.lock().unwrap())
     }
 
     /// The `instruction_id` of every request received so far, in order. Unlike
     /// [`Self::take_calls`], nothing clears it.
-    pub fn instruction_ids(&self) -> Vec<String> {
+    pub(crate) fn instruction_ids(&self) -> Vec<String> {
         self.instruction_ids.lock().unwrap().clone()
     }
 
     /// The `worker_id` metadata of every state stream opened so far, in order.
-    pub fn stream_worker_ids(&self) -> Vec<Option<String>> {
+    pub(crate) fn stream_worker_ids(&self) -> Vec<Option<String>> {
         self.stream_worker_ids.lock().unwrap().clone()
     }
 
     /// How many state streams have been opened so far.
-    pub fn streams_opened(&self) -> usize {
+    pub(crate) fn streams_opened(&self) -> usize {
         self.stream_worker_ids.lock().unwrap().len()
     }
 
     /// Serves and records the next `op` request, then ends its stream without replying.
-    pub fn close_stream_on_next(&self, op: Op) {
+    pub(crate) fn close_stream_on_next(&self, op: Op) {
         self.stream_rules
             .lock()
             .unwrap()
@@ -458,7 +467,7 @@ impl StrictStateBackend {
 
     /// Holds the reply to the next `op` request until the returned handle is released
     /// or dropped. Later requests on the same stream queue behind it.
-    pub fn hold_next(&self, op: Op) -> HeldReply {
+    pub(crate) fn hold_next(&self, op: Op) -> HeldReply {
         let (held_tx, held_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = tokio::sync::oneshot::channel();
         self.stream_rules.lock().unwrap().push(StreamRule::Hold {
@@ -779,7 +788,7 @@ impl BeamFnState for StrictStateService {
 
 /// Handle to the background server. Dropping it stops the server and joins its thread,
 /// so the listening socket does not outlive the test.
-pub struct StrictStateServer {
+pub(crate) struct StrictStateServer {
     pub backend: Arc<StrictStateBackend>,
     endpoint: String,
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
@@ -787,7 +796,7 @@ pub struct StrictStateServer {
 }
 
 impl StrictStateServer {
-    pub fn start() -> Self {
+    pub(crate) fn start() -> Self {
         let backend = Arc::new(StrictStateBackend::default());
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -835,7 +844,7 @@ impl StrictStateServer {
         }
     }
 
-    pub fn endpoint(&self) -> &str {
+    pub(crate) fn endpoint(&self) -> &str {
         &self.endpoint
     }
 }

@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
-pub const DEFAULT_PRISM_PORT: u16 = 8073;
+pub(crate) const DEFAULT_PRISM_PORT: u16 = 8073;
 
 #[derive(Error, Debug)]
 pub enum PrismServerError {
@@ -101,7 +101,7 @@ fn prism_from_path() -> Option<PathBuf> {
 }
 
 /// Locates the Prism executable on the local system.
-pub fn find_prism_binary() -> Result<PathBuf, PrismServerError> {
+pub(crate) fn find_prism_binary() -> Result<PathBuf, PrismServerError> {
     prism_from_env()
         .or_else(prism_from_cache)
         .or_else(prism_from_path)
@@ -109,7 +109,7 @@ pub fn find_prism_binary() -> Result<PathBuf, PrismServerError> {
 }
 
 /// Tests if a TCP endpoint is currently accepting connections.
-pub fn is_endpoint_ready(addr: &SocketAddr) -> bool {
+pub(crate) fn is_endpoint_ready(addr: &SocketAddr) -> bool {
     TcpStream::connect_timeout(addr, Duration::from_millis(100)).is_ok()
 }
 

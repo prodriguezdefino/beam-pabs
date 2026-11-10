@@ -20,7 +20,7 @@
 //! Conversion of JSON values to prost protobuf values for pipeline options.
 
 /// A value that is not a JSON object gives an empty `Struct`.
-pub fn json_to_prost_struct(val: &serde_json::Value) -> prost_types::Struct {
+pub(crate) fn json_to_prost_struct(val: &serde_json::Value) -> prost_types::Struct {
     match json_to_prost_value(val).kind {
         Some(prost_types::value::Kind::StructValue(s)) => s,
         _ => prost_types::Struct::default(),
@@ -31,7 +31,7 @@ pub fn json_to_prost_struct(val: &serde_json::Value) -> prost_types::Struct {
 ///
 /// Without `serde_json`'s `arbitrary_precision` feature, numbers convert to
 /// `f64`. `OptionsSnapshot` preserves exact integers in its JSON string.
-pub fn json_to_prost_value(val: &serde_json::Value) -> prost_types::Value {
+pub(crate) fn json_to_prost_value(val: &serde_json::Value) -> prost_types::Value {
     use prost_types::value::Kind;
     let kind = match val {
         serde_json::Value::Null => Kind::NullValue(0),

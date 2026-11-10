@@ -142,7 +142,7 @@ impl<S: SplittableDoFn> BundleHandler for SdfPairWithRestrictionHandler<S> {
 /// Expanded `SPLIT_AND_SIZE_RESTRICTIONS` step: `KV(element, restriction)` ->
 /// `KV(KV(element, restriction), size: f64)`.
 #[derive(Clone)]
-pub struct SdfSplitAndSizeHandler<S> {
+pub(crate) struct SdfSplitAndSizeHandler<S> {
     pub func: S,
     field_map: FieldMapCache,
 }
@@ -315,7 +315,7 @@ impl<S: SplittableDoFn> BundleHandler for SdfProcessSizedElementsHandler<S> {
 /// Expanded `TRUNCATE_SIZED_RESTRICTIONS` step: `KV(KV(element, restriction), size: f64)` in
 /// and out. Emits nothing if the restriction is dropped.
 #[derive(Clone)]
-pub struct SdfTruncateSizedRestrictionsHandler<S> {
+pub(crate) struct SdfTruncateSizedRestrictionsHandler<S> {
     pub func: S,
     field_map: FieldMapCache,
 }

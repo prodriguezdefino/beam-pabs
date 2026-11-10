@@ -27,7 +27,7 @@ use super::{PipelineError, UNEXPANDED_PLACEHOLDER_ID, URN_COMBINE_PER_KEY, URN_P
 use crate::values::SideInputWindowing;
 
 /// Checks that the pipeline DAG and components are consistent. Returns the first error found.
-pub fn validate(
+pub(crate) fn validate(
     components: &proto::Components,
     transform_order: &[String],
 ) -> Result<(), PipelineError> {

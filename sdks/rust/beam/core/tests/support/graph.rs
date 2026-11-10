@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 use beam_model::pipeline as proto;
 
 /// The components of `pipeline`, which every exported proto has.
-pub fn components(pipeline: &proto::Pipeline) -> &proto::Components {
+pub(crate) fn components(pipeline: &proto::Pipeline) -> &proto::Components {
     pipeline
         .components
         .as_ref()
@@ -36,7 +36,7 @@ pub fn components(pipeline: &proto::Pipeline) -> &proto::Components {
 }
 
 /// The transform whose `unique_name` is exactly `name`.
-pub fn transform<'a>(pipeline: &'a proto::Pipeline, name: &str) -> &'a proto::PTransform {
+pub(crate) fn transform<'a>(pipeline: &'a proto::Pipeline, name: &str) -> &'a proto::PTransform {
     let found: Vec<_> = components(pipeline)
         .transforms
         .values()
@@ -53,7 +53,7 @@ pub fn transform<'a>(pipeline: &'a proto::Pipeline, name: &str) -> &'a proto::PT
 }
 
 /// The sorted unique names of every transform.
-pub fn transform_names(pipeline: &proto::Pipeline) -> Vec<String> {
+pub(crate) fn transform_names(pipeline: &proto::Pipeline) -> Vec<String> {
     let mut names: Vec<_> = components(pipeline)
         .transforms
         .values()
@@ -64,13 +64,13 @@ pub fn transform_names(pipeline: &proto::Pipeline) -> Vec<String> {
 }
 
 /// The URN of `t`, or `""` for a composite without a spec.
-pub fn urn(t: &proto::PTransform) -> &str {
+pub(crate) fn urn(t: &proto::PTransform) -> &str {
     t.spec.as_ref().map_or("", |s| s.urn.as_str())
 }
 
 /// The unique name of the transform producing `pcoll_id`, ignoring composites (whose
 /// outputs repeat those of their last primitive).
-pub fn producer(pipeline: &proto::Pipeline, pcoll_id: &str) -> String {
+pub(crate) fn producer(pipeline: &proto::Pipeline, pcoll_id: &str) -> String {
     let producers: Vec<_> = components(pipeline)
         .transforms
         .values()
@@ -87,7 +87,7 @@ pub fn producer(pipeline: &proto::Pipeline, pcoll_id: &str) -> String {
 
 /// For each input tag of the transform named `name`, the name of the primitive
 /// producing that input.
-pub fn input_producers(pipeline: &proto::Pipeline, name: &str) -> BTreeMap<String, String> {
+pub(crate) fn input_producers(pipeline: &proto::Pipeline, name: &str) -> BTreeMap<String, String> {
     transform(pipeline, name)
         .inputs
         .iter()
@@ -96,14 +96,14 @@ pub fn input_producers(pipeline: &proto::Pipeline, name: &str) -> BTreeMap<Strin
 }
 
 /// The sorted names of the primitives producing the inputs of the transform `name`.
-pub fn input_producer_names(pipeline: &proto::Pipeline, name: &str) -> Vec<String> {
+pub(crate) fn input_producer_names(pipeline: &proto::Pipeline, name: &str) -> Vec<String> {
     let mut names: Vec<_> = input_producers(pipeline, name).into_values().collect();
     names.sort();
     names
 }
 
 /// The single output PCollection id of the transform `name`.
-pub fn single_output<'a>(pipeline: &'a proto::Pipeline, name: &str) -> &'a str {
+pub(crate) fn single_output<'a>(pipeline: &'a proto::Pipeline, name: &str) -> &'a str {
     let t = transform(pipeline, name);
     assert_eq!(t.outputs.len(), 1, "{name} has outputs {:?}", t.outputs);
     t.outputs.values().next().unwrap()
@@ -111,7 +111,7 @@ pub fn single_output<'a>(pipeline: &'a proto::Pipeline, name: &str) -> &'a str {
 
 /// Describes the coder `coder_id` as `short_urn(components...)`, e.g.
 /// `kv(string_utf8,iterable(varint))`.
-pub fn coder_shape(pipeline: &proto::Pipeline, coder_id: &str) -> String {
+pub(crate) fn coder_shape(pipeline: &proto::Pipeline, coder_id: &str) -> String {
     let coder = components(pipeline)
         .coders
         .get(coder_id)
@@ -134,19 +134,19 @@ pub fn coder_shape(pipeline: &proto::Pipeline, coder_id: &str) -> String {
 }
 
 /// The coder shape of the PCollection `pcoll_id`.
-pub fn pcoll_coder(pipeline: &proto::Pipeline, pcoll_id: &str) -> String {
+pub(crate) fn pcoll_coder(pipeline: &proto::Pipeline, pcoll_id: &str) -> String {
     let pc = &components(pipeline).pcollections[pcoll_id];
     coder_shape(pipeline, &pc.coder_id)
 }
 
 /// The coder shape of the single output of the transform `name`.
-pub fn output_coder(pipeline: &proto::Pipeline, name: &str) -> String {
+pub(crate) fn output_coder(pipeline: &proto::Pipeline, name: &str) -> String {
     let out = single_output(pipeline, name).to_string();
     pcoll_coder(pipeline, &out)
 }
 
 /// The window-fn URN of the PCollection `pcoll_id`.
-pub fn window_fn_urn(pipeline: &proto::Pipeline, pcoll_id: &str) -> String {
+pub(crate) fn window_fn_urn(pipeline: &proto::Pipeline, pcoll_id: &str) -> String {
     let c = components(pipeline);
     let ws_id = &c.pcollections[pcoll_id].windowing_strategy_id;
     c.windowing_strategies[ws_id]

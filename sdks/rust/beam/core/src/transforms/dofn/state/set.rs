@@ -31,14 +31,14 @@ use crate::pipeline::constants::URN_USER_STATE_MULTIMAP;
 
 /// Specification for a unique-element set user state cell.
 #[derive(Clone, Debug)]
-pub struct SetStateSpec<T> {
+pub(crate) struct SetStateSpec<T> {
     name: String,
     _marker: PhantomData<T>,
 }
 
 impl<T: DefaultCoder> SetStateSpec<T> {
     /// Creates a set state specification with the given unique state ID.
-    pub fn new(name: impl Into<String>) -> Self {
+    pub(crate) fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
             _marker: PhantomData,

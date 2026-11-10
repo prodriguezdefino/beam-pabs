@@ -32,14 +32,14 @@ use crate::pipeline::constants::URN_USER_STATE_MULTIMAP;
 
 /// Specification for a key-value map user state cell.
 #[derive(Clone, Debug)]
-pub struct MapStateSpec<K, V> {
+pub(crate) struct MapStateSpec<K, V> {
     name: String,
     _marker: PhantomData<(K, V)>,
 }
 
 impl<K: DefaultCoder, V: DefaultCoder> MapStateSpec<K, V> {
     /// Creates a map state specification with the given unique state ID.
-    pub fn new(name: impl Into<String>) -> Self {
+    pub(crate) fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
             _marker: PhantomData,

@@ -222,7 +222,7 @@ impl BeamFnLogging for Services {
 }
 
 /// A runner serving a worker that runs in the same process.
-pub struct BenchRunner {
+pub(crate) struct BenchRunner {
     endpoint: String,
     requests: mpsc::Sender<InstructionRequest>,
     services: Services,
@@ -231,7 +231,7 @@ pub struct BenchRunner {
 
 impl BenchRunner {
     /// Starts the services and a worker with `handlers`. Call from a Tokio runtime.
-    pub async fn start(handlers: HashMap<String, TransformFn>) -> Arc<Self> {
+    pub(crate) async fn start(handlers: HashMap<String, TransformFn>) -> Arc<Self> {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind a local port");
@@ -272,7 +272,7 @@ impl BenchRunner {
     }
 
     /// The services' address, for the data, state and logging ports of descriptors.
-    pub fn api_service_descriptor(&self) -> ApiServiceDescriptor {
+    pub(crate) fn api_service_descriptor(&self) -> ApiServiceDescriptor {
         ApiServiceDescriptor {
             url: self.endpoint.clone(),
             ..Default::default()
@@ -308,7 +308,7 @@ impl BenchRunner {
     }
 
     /// Registers `descriptors` with the worker.
-    pub async fn register(&self, descriptors: Vec<ProcessBundleDescriptor>) {
+    pub(crate) async fn register(&self, descriptors: Vec<ProcessBundleDescriptor>) {
         let response = self
             .instruct(
                 self.next_id("register"),
@@ -323,7 +323,7 @@ impl BenchRunner {
     /// Runs one bundle of `descriptor_id`: sends `input` to `source`, waits for the response
     /// and for the end of the output, and returns the output bytes. With `cache_state`, the
     /// request carries a user state cache token, so the worker may cache state across bundles.
-    pub async fn process_bundle(
+    pub(crate) async fn process_bundle(
         &self,
         descriptor_id: &str,
         source: &str,

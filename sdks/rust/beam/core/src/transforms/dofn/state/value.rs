@@ -31,14 +31,14 @@ use crate::pipeline::constants::URN_USER_STATE_BAG;
 
 /// Specification for a single-value user state cell.
 #[derive(Clone, Debug)]
-pub struct ValueStateSpec<V> {
+pub(crate) struct ValueStateSpec<V> {
     name: String,
     _marker: PhantomData<V>,
 }
 
 impl<V: DefaultCoder> ValueStateSpec<V> {
     /// Creates a value state specification with the given unique state ID.
-    pub fn new(name: impl Into<String>) -> Self {
+    pub(crate) fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
             _marker: PhantomData,

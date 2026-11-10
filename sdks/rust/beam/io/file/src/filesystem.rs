@@ -96,7 +96,7 @@ pub trait FileSystem: Send + Sync + std::fmt::Debug {
 }
 
 /// Strips the `file://` prefix from `path` if present.
-pub fn strip_file_prefix(path: &str) -> &str {
+pub(crate) fn strip_file_prefix(path: &str) -> &str {
     path.strip_prefix("file://").unwrap_or(path)
 }
 
