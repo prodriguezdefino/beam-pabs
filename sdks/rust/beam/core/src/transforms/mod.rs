@@ -75,10 +75,11 @@ pub use beam_derive::{Outputs, Register, State, Timers};
 use dofn::ClosureFn;
 pub use dofn::sdf;
 pub use dofn::{
-    BagState, BatchConverter, BatchedDoFn, BatchedDoFnAdapter, DEFAULT_FINALIZER_EXPIRY, DoFn,
-    DoFnInput, Finalizer, FinishBundleContext, FinishOutput, MapState, MultimapState, NoTimers,
-    OrderedListState, OutputBuilder, Outputs, ParDo, ProcessContext, SetState, StateRowSchemas,
-    StatefulContext, StatefulDoFn, Timer, ValueState, VecBatchConverter, Windowed, WithFinalizer,
+    BagState, BatchConverter, BatchedDoFn, BatchedDoFnAdapter, BundleWindows,
+    DEFAULT_FINALIZER_EXPIRY, DoFn, DoFnInput, Finalizer, FinishBundleContext, FinishOutput,
+    MapState, MultimapState, NoTimers, OrderedListState, OutputBuilder, Outputs, ParDo,
+    ProcessContext, SetState, StateRowSchemas, StatefulContext, StatefulDoFn, Timer, ValueState,
+    VecBatchConverter, Windowed, WithFinalizer,
 };
 pub use failure::{ExceptionElement, Failure, FailureCoder, WithFailures};
 pub use filter::Filter;
@@ -118,11 +119,10 @@ pub trait PTransform<Input: PInput> {
 ///
 /// Apply it with `try_apply` (on [`Pipeline`](crate::pipeline::Pipeline),
 /// [`PBegin`](crate::values::PBegin), [`PCollection`](crate::values::PCollection), ...) to
-/// get the error as a value. `apply` calls [`PTransform::expand`], which panics on the
-/// error; each implementation documents this in a `# Panics` section.
+/// get the error as a value.
 ///
 /// Configuration errors that the program can fix are not reported here: `expand` records
-/// them with [`Pipeline::record_construction_error`](crate::pipeline::Pipeline::record_construction_error),
+/// them with [`Pipeline::record_invalid_construction`](crate::pipeline::Pipeline::record_invalid_construction),
 /// and [`Pipeline::validate`](crate::pipeline::Pipeline::validate) returns them.
 pub trait TryPTransform<Input: PInput> {
     /// The value this transform produces.

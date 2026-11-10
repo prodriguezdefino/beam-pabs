@@ -858,11 +858,6 @@ pub fn build_reshuffle_keeps_element_metadata(p: &TestPipeline) {
 }
 
 /// Validates `Flatten` of inputs that are all empty, then a `ParDo`: no element comes out.
-///
-/// A flatten of no inputs is a construction error, so the inputs are empty collections.
-///
-/// Covers `FlattenTest.testFlattenPCollectionsEmpty` and
-/// `FlattenTest.testFlattenPCollectionsEmptyThenParDo`.
 pub fn build_flatten_empty_inputs_then_pardo(p: &TestPipeline) {
     let a = p.apply("A", Create::new(Vec::<String>::new()));
     let b = p.apply("B", Create::new(Vec::<String>::new()));
@@ -870,6 +865,24 @@ pub fn build_flatten_empty_inputs_then_pardo(p: &TestPipeline) {
     passert::that("AssertFlattened", &flattened).empty();
     let suffixed = flattened.map("Suffix", |s: String| s + "x");
     passert::that("AssertSuffixed", &suffixed).empty();
+}
+
+/// Validates `Flatten` of an empty list: the output has no elements.
+///
+/// Covers `FlattenTest.testFlattenPCollectionsEmpty`.
+pub fn build_flatten_empty_list(p: &TestPipeline) {
+    let flattened = PCollectionList::<String>::empty(p.pipeline().clone()).flatten("Flatten");
+    passert::that("AssertEmpty", &flattened).empty();
+}
+
+/// Validates `Flatten` of an empty list, then a `ParDo`: no element comes out.
+///
+/// Covers `FlattenTest.testFlattenPCollectionsEmptyThenParDo`.
+pub fn build_flatten_empty_list_then_pardo(p: &TestPipeline) {
+    let output = PCollectionList::<String>::empty(p.pipeline().clone())
+        .flatten("Flatten")
+        .map("Identity", |s: String| s);
+    passert::that("AssertEmpty", &output).empty();
 }
 
 /// Validates `GroupIntoBatches` with a count limit and a byte limit in one transform.

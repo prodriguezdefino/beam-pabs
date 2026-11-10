@@ -43,7 +43,7 @@ class RustProfilingTasks {
       task.description = 'Profile a Rust example locally on Prism with samply and/or time ' +
           '(-Pexample=<name> [-Pbin=<bin> -Ppkg=<crate>] [-PcargoExample=<name> | -PcargoBench=<name>] ' +
           '[-PextraArgs="<pipeline flags>"] [-Prows=<n>] [-Pmode=cpu|memory|both] ' +
-          '[-PcargoProfile=worker|release] [-Pout=<dir>]). -Pmode=both runs the pipeline twice.'
+          '[-PcargoProfile=worker|release] [-Pout=<dir>]). -Pmode=both runs the pipeline two times.'
       task.dependsOn('fetchPrism')
 
       String mode = (project.findProperty('mode') ?: 'both').toString().toLowerCase()

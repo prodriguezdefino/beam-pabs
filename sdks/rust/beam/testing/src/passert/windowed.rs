@@ -27,6 +27,7 @@ use beam::coders::{
 };
 use beam::transforms::ParDo;
 use beam::values::PCollection;
+use beam::windowing::is_globally_windowed;
 
 use super::builder::PAssert;
 
@@ -38,7 +39,8 @@ use super::builder::PAssert;
 /// friends with [`that`](super::that) for that.
 ///
 /// Adds a step reading each element's windows. It fails the pipeline if an element is
-/// in the global window or its windows are not interval windows.
+/// in the global window or its windows are not interval windows. A `pcoll` in the global
+/// window is a construction error, so an empty `pcoll` cannot pass.
 ///
 /// ```no_run
 /// # use beam::prelude::*;
@@ -58,6 +60,12 @@ pub fn that_windowed<T: DefaultCoder>(
     // Each check adds the step in its own name scope, so two assertions do not collide.
     let input = pcoll.clone();
     let reify = move || {
+        // An empty input never runs the step below, so reject the global window here.
+        if is_globally_windowed(&input) {
+            input.pipeline().record_invalid_construction(
+                "that_windowed needs a windowed input, but the input is in the global window",
+            );
+        }
         input.apply(
             "ReifyWindows",
             ParDo::from_fn(

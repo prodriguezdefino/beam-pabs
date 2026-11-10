@@ -455,7 +455,7 @@ where
             &pre_ws_id,
         );
         let reg = ParDoRegistration::new(pipeline, &name, input.id()).output("out", out.id());
-        match graph_spec(pipeline, &name, &AddShardSpec { fanout }) {
+        match graph_spec(pipeline, &AddShardSpec { fanout }) {
             Some(spec) => reg.register_spec(spec),
             None => reg.register(Arc::new(AddShardHandler::new(fanout))),
         };
@@ -480,7 +480,7 @@ where
         );
         let reg =
             ParDoRegistration::new(pipeline, &name, pre_combined.id()).output("out", out.id());
-        match graph_spec(pipeline, &name, &StripShardSpec) {
+        match graph_spec(pipeline, &StripShardSpec) {
             Some(spec) => reg.register_spec(spec),
             None => reg.register(Arc::new(StripShardHandler::default())),
         };

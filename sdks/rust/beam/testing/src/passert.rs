@@ -71,9 +71,9 @@
 //! window and pane of each element, so use them on the output of a windowed
 //! aggregation, where a trigger firing emitted every element.
 //!
-//! Selection fails closed: if the windows of an element (including the global window)
-//! cannot be read as [`IntervalWindow`]s, the assertion fails. Otherwise
-//! `in_window(w).empty()` would pass on a collection that was never windowed.
+//! Selection fails closed. Input in the global window is a construction error. Windows that
+//! are not [`IntervalWindow`]s fail the assertion, so `in_window(w).empty()` cannot pass on
+//! unwindowed input.
 //!
 //! [`that_windowed`] asserts on `(element, window)` pairs. Use it to check which windows
 //! the elements landed in, without naming each window first.

@@ -28,7 +28,7 @@ use super::reshuffle::Reshuffle;
 use super::{DisplayDataBuilder, ElementSink, HasDisplayData, PTransform, TransformFn};
 use crate::coders::DefaultCoder;
 use crate::internals::ParDoRegistration;
-use crate::pipeline::{PipelineError, URN_RUST_DOFN_CREATE};
+use crate::pipeline::URN_RUST_DOFN_CREATE;
 use crate::values::{IsBounded, PBegin, PCollection, PDone};
 
 /// A root transform producing a [`PCollection`] from an in-memory collection.
@@ -86,10 +86,8 @@ impl<T: DefaultCoder> PTransform<PBegin> for Create<T> {
             .map(DefaultCoder::encode)
             .collect::<Result<Vec<_>, _>>()
             .unwrap_or_else(|e| {
-                pipeline.record_construction_error(PipelineError::InvalidConstruction {
-                    transform_id: name.clone(),
-                    reason: format!("an element does not encode: {e}"),
-                });
+                pipeline
+                    .record_invalid_construction(format_args!("an element does not encode: {e}"));
                 Vec::new()
             });
         let do_fn = proto::FunctionSpec {

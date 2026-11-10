@@ -23,6 +23,8 @@
 //! `tests/passert_runner` executes the assertions on Prism, and shows that each check
 //! can fail.
 
+use std::time::Duration;
+
 use beam::coders::{Coder, Context, IntervalWindow, IntervalWindowCoder, PaneInfo, WindowedHeader};
 use beam::options::PipelineOptions;
 use beam::pipeline::URN_GROUP_BY_KEY;
@@ -126,7 +128,11 @@ fn window_selection_adds_a_filter_step() {
     let p = Pipeline::new();
     let values = p.apply("Create", Create::new(vec![1i64]));
     passert::that("Whole", &values).has_count(1);
-    passert::that("Windowed", &values)
+    let windowed = values.apply(
+        "Window",
+        WindowInto::new(FixedWindows::of(Duration::from_millis(10))),
+    );
+    passert::that("Windowed", &windowed)
         .in_on_time_pane(IntervalWindow::new(
             Instant::from_millis(0),
             Instant::from_millis(10),
@@ -269,7 +275,11 @@ fn grouped_and_windowed_assertions_are_counted() {
     let kvs = p.apply("Create", Create::new(vec![("a".to_string(), 1i64)]));
     passert::that_grouped("PAssert", &kvs.apply("Group", GroupByKey::new()))
         .contains_in_any_order([("a".to_string(), vec![1])]);
-    passert::that_windowed("PAssertWindowed", &kvs).contains_in_any_order([]);
+    let windowed = kvs.apply(
+        "Window",
+        WindowInto::new(FixedWindows::of(Duration::from_secs(10))),
+    );
+    passert::that_windowed("PAssertWindowed", &windowed).contains_in_any_order([]);
 
     assert_eq!(passert::count_assertions(&p), 2);
     assert!(
@@ -278,6 +288,34 @@ fn grouped_and_windowed_assertions_are_counted() {
             .contains_key("PAssertWindowed/ReifyWindows")
     );
     p.validate().unwrap();
+}
+
+/// Window selection on a globally windowed input is a construction error, so an empty
+/// input cannot pass an assertion that never runs.
+#[test]
+fn window_selection_on_the_global_window_fails_validation() {
+    let window = IntervalWindow::new(Instant::from_millis(0), Instant::from_millis(10));
+    type AddAssertion = fn(&PCollection<i64>, IntervalWindow);
+    let cases: [(&str, AddAssertion); 3] = [
+        ("in_window", |empty, window| {
+            passert::that("InWindow", empty).in_window(window).empty();
+        }),
+        ("in_on_time_pane", |empty, window| {
+            passert::that("OnTime", empty)
+                .in_on_time_pane(window)
+                .has_count(0);
+        }),
+        ("that_windowed", |empty, _| {
+            passert::that_windowed("Windowed", empty).contains_in_any_order([]);
+        }),
+    ];
+    for (name, assert) in cases {
+        let p = Pipeline::new();
+        let empty = p.apply("Create", Create::new(Vec::<i64>::new()));
+        assert(&empty, window);
+        let err = p.validate().expect_err(name).to_string();
+        assert!(err.contains("global window"), "{name}: {err}");
+    }
 }
 
 #[test]

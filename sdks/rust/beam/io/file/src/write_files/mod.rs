@@ -71,8 +71,8 @@ use crate::compression::Compression;
 use crate::filename_policy::{DefaultFilenamePolicy, FilenamePolicy};
 use crate::sink::{FileSink, StreamCompression};
 use beam::coders::DefaultCoder;
-use beam::internals::{PipelineInternals, map_windowing_strategy};
-use beam::pipeline::{PipelineError, URN_RUST_DOFN, URN_WRITE_FILES};
+use beam::internals::map_windowing_strategy;
+use beam::pipeline::{URN_RUST_DOFN, URN_WRITE_FILES};
 use beam::transforms::display_data::{DisplayDataBuilder, HasDisplayData};
 use beam::transforms::{GroupByKey, PTransform, ParDo, WithKeys};
 use beam::values::{IsBounded, PCollection};
@@ -354,12 +354,7 @@ impl<T: DefaultCoder> PTransform<PCollection<T>> for WriteFiles<T> {
         unwindowed
             .into_iter()
             .chain(self.compression_error())
-            .for_each(|reason| {
-                pipeline.record_construction_error(PipelineError::InvalidConstruction {
-                    transform_id: pipeline.scope_name().unwrap_or_default(),
-                    reason,
-                });
-            });
+            .for_each(|reason| pipeline.record_invalid_construction(reason));
 
         let payload = WriteFilesPayload {
             sink: Some(FunctionSpec {

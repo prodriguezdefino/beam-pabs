@@ -170,6 +170,12 @@ let upper = p
 | `InnerJoin` / `LeftJoin` / `RightJoin` / `FullOuterJoin` | `.inner_join` / `.left_join` / `.right_join` / `.full_outer_join` |
 | `BroadcastInnerJoin` / `BroadcastLeftJoin` | `.broadcast_inner_join` / `.broadcast_left_join` |
 
+`Flatten` of an empty list gives an empty, globally windowed collection. The list must know its pipeline, so start it with `PCollectionList::empty(pipeline)`:
+
+```rust
+let none = PCollectionList::<String>::empty(p.clone()).flatten("Flatten");
+```
+
 ## ParDo and `DoFn`
 
 A [`DoFn`](../beam/core/src/transforms/dofn/pardo.rs) processes one element at a time through a [`ProcessContext`](../beam/core/src/transforms/dofn/context/mod.rs).
@@ -260,7 +266,7 @@ impl DoFn for BatchWriter {
 }
 ```
 
-`finish_bundle` has no current element, so its `FinishBundleContext` makes every output name its window and timestamp: `ctx.emit(v, window, timestamp)`. To flush buffered elements into their own windows, take `Windowed<T>` as input and keep each window with its value.
+`finish_bundle` has no current element, so its `FinishBundleContext` makes every output name its window and timestamp: `ctx.emit(v, window, timestamp)`. To flush buffered elements into their own windows, take `Windowed<T>` as input and keep each window with its value. `BundleWindows` keeps the earliest timestamp of each window of the bundle, so the outputs of `finish_bundle` are not later than their inputs.
 
 To run code after the runner commits a bundle (for example, to acknowledge messages or commit offsets), declare `type Out = WithFinalizer<O>`. The function keeps the outputs of `O` and emits each value wrapped: `ctx.emit(v.into())`. Its `ProcessContext` and `FinishBundleContext` get `ctx.finalizer(|| { …; Ok(()) }).register()?`; other functions have no `finalizer`, so a missing declaration does not compile. `DoFn`, `StatefulDoFn` and `SplittableDoFn` declare it the same way.
 

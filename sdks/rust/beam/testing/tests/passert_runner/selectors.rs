@@ -22,7 +22,7 @@
 use beam::prelude::*;
 use beam_testing::{TestPipeline, passert};
 
-use crate::{FIRST, assert_fails, kv, one_two_three, pipeline, windowed_counts};
+use crate::{FIRST, assert_fails, kv, pipeline, windowed_counts};
 
 type SelectorCase = (&'static str, &'static str, fn(&TestPipeline));
 
@@ -93,15 +93,6 @@ async fn every_selector_fails_on_the_wrong_pane() {
                 passert::that_singleton("SingleFirst", &windowed_counts(p))
                     .in_on_time_pane(FIRST)
                     .is_equal_to(kv("a", 2));
-            },
-        ),
-        (
-            "Global",
-            "cannot select a window: the element is in the global window",
-            |p| {
-                passert::that("Global", &one_two_three(p))
-                    .in_window(FIRST)
-                    .empty();
             },
         ),
     ];

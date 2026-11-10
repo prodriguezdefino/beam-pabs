@@ -339,17 +339,13 @@ fn count_globally_with_defaults_of_an_unbounded_input_is_a_construction_error() 
     assert!(err.to_string().contains("needs a bounded input"), "{err}");
 }
 
-/// Flatten rejects an empty list, so its output always has an input to take the boundedness of.
+/// A flatten of no inputs has no input to take the boundedness of, so its output is bounded.
 #[test]
-fn flatten_of_no_inputs_is_a_construction_error() {
+fn flatten_of_no_inputs_is_bounded() {
     let p = Pipeline::new();
-    PCollectionList::<i64>::empty(p.clone()).apply("Flatten", Flatten::new());
-    let err = p.validate().unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("Flatten requires at least one input PCollection"),
-        "{err}"
-    );
+    let flattened = PCollectionList::<i64>::empty(p.clone()).apply("Flatten", Flatten::new());
+    p.validate().unwrap();
+    assert_eq!(flattened.is_bounded(), IsBounded::Bounded);
 }
 
 #[test]

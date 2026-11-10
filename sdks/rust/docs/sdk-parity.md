@@ -43,7 +43,7 @@ This page compares the Rust SDK with the other Beam SDKs.
 | WithTimestamps (standalone transform) | ✅ | ❌ | ❌ | ✅ | 🔜 |
 | Allowed timestamp skew (check of output timestamps) | ✅ | ❌ | ❌ | ❌ | 🔜 |
 | Flatten / Partition | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Flatten of an empty list (gives an empty collection) | ✅ | ✅ | ❌ | ✅ | 🔜 |
+| Flatten of an empty list (gives an empty collection) | ✅ | ✅ | ❌ | ✅ | ✅ |
 | Distinct | ✅ | ✅ | ✅ | ❌ | ✅ |
 | Keys / Values / Latest / Reify | ✅ | ✅ | 🟡 | ❌ | 🔜 |
 | Deduplicate (in a time interval) | ✅ | ✅ | ❌ | ❌ | 🔜 |
@@ -64,7 +64,7 @@ Notes:
 - **Distinct**: Java and Rust also keep one element per representative value (`Distinct.withRepresentativeValueFn`, `DistinctBy`). Python `Distinct` and Go `filter.Distinct` compare whole elements.
 - **Redistribute and WithTimestamps**: Rust uses `Reshuffle` to spread elements across workers. It sets event time in a `ParDo` with `ctx.output(v).at(ts).emit()`. TypeScript has `assignTimestamps`.
 - **Allowed timestamp skew**: Java rejects an output timestamp earlier than the input timestamp minus `getAllowedTimestampSkew`. The other SDKs and Rust do not check output timestamps.
-- **Flatten of an empty list**: the caller names the pipeline: Java `PCollectionList.empty(p)`, Python `pipeline=`, TypeScript `root`. Go and Rust fail at construction.
+- **Flatten of an empty list**: the caller names the pipeline: Java `PCollectionList.empty(p)`, Python `pipeline=`, TypeScript `root`, Rust `PCollectionList::empty(pipeline)`. Go fails at construction. Rust expands an empty flatten to an empty `Create`, so the runner gets no Flatten without inputs.
 - **Keys / Values / Latest / Reify**: Go has `DropValue` and `DropKey`, but no `Latest` or `Reify`. In Rust, use `map` or `par_do_fn`.
 - **Deduplicate**: Java and Python `Deduplicate` drop a repeated element during a processing-time or event-time duration. `Distinct` keeps one element per window.
 - **`as_map`**: Java `View.asMap`, Python `AsDict` and Rust `as_map` fail on a duplicate key. Java and Rust fail when a read finds a second value for the key. Rust has no `inMemory` form. For a key coder that is not deterministic, Java compares structural values; Rust looks up keys by their encoding.

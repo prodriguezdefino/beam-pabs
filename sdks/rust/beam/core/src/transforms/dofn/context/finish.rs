@@ -108,3 +108,66 @@ impl<T: Outputs> FinishOutput<'_, '_, T> {
         self.ctx.output(self.value).windowed(&header).emit()
     }
 }
+
+/// The windows of the elements of a bundle, each with its earliest element timestamp.
+///
+/// A `DoFn` that buffers outputs adds each element in `process_element`. Then
+/// `finish_bundle` emits the outputs of each window at the earliest timestamp of the window,
+/// so the outputs are not later than their inputs.
+///
+/// ```
+/// # use beam::prelude::*;
+/// # use beam::transforms::BundleWindows;
+/// # use beam::windowing::GlobalWindow;
+/// # #[derive(Clone, Default)]
+/// # struct Buffer { pending: Vec<String>, windows: BundleWindows }
+/// # impl Buffer {
+/// fn finish_bundle(&mut self, ctx: &mut FinishBundleContext<'_, String>) -> Result {
+///     let window = BoundedWindow::Global(GlobalWindow);
+///     let Some(timestamp) = self.windows.take(&window) else {
+///         return Ok(());
+///     };
+///     self.pending
+///         .drain(..)
+///         .try_for_each(|value| ctx.emit(value, window, timestamp))
+/// }
+/// # }
+/// ```
+#[derive(Clone, Debug, Default)]
+pub struct BundleWindows {
+    windows: Vec<(BoundedWindow, Instant)>,
+}
+
+impl BundleWindows {
+    /// Creates a value with no windows.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds an element in `window` at `timestamp`.
+    pub fn add(&mut self, window: BoundedWindow, timestamp: Instant) {
+        // A bundle has few windows, and the last window is the most likely.
+        match self
+            .windows
+            .iter_mut()
+            .rev()
+            .find(|(seen, _)| *seen == window)
+        {
+            Some((_, earliest)) => *earliest = (*earliest).min(timestamp),
+            None => self.windows.push((window, timestamp)),
+        }
+    }
+
+    /// Removes `window` and returns its earliest timestamp, or `None` if no element was in it.
+    pub fn take(&mut self, window: &BoundedWindow) -> Option<Instant> {
+        let index = self.windows.iter().position(|(seen, _)| seen == window)?;
+        Some(self.windows.swap_remove(index).1)
+    }
+
+    /// Removes every window and returns each with its earliest timestamp, in the order of the
+    /// first element of each window. A `take` can move the last window into the place of the
+    /// window that it removes.
+    pub fn drain(&mut self) -> impl Iterator<Item = (BoundedWindow, Instant)> + '_ {
+        self.windows.drain(..)
+    }
+}

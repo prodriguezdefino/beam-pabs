@@ -31,9 +31,11 @@ use super::{
 };
 use crate::coders::{
     BeamIterable, BytesCoder, Coder, CoderError, CoderRegistry, Context, DefaultCoder, URN_KV,
+    coder_urn, extract_row_schema,
 };
 use crate::pipeline::{Pipeline, PipelineError};
-use crate::values::{IsBounded, PCollection, PInput};
+use crate::schema::Schema;
+use crate::values::{PCollection, PInput};
 
 /// An element from one joined input, tagged with its input index.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -92,11 +94,23 @@ impl DefaultCoder for RawUnionValue {
 }
 
 /// Result of a [`CoGroupByKey`] for one key: the grouped values of each input, by tag or index.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct CoGbkResult {
     tag_names: Arc<[String]>,
     values_by_tag: Vec<Vec<Vec<u8>>>,
+    /// The row schema of the values of each input, if they have rows. The coder does not
+    /// write it, so a decoded result has none.
+    schemas: Arc<[Option<Arc<Schema>>]>,
 }
+
+/// Compares the tags and the values. The schemas only help to decode the values.
+impl PartialEq for CoGbkResult {
+    fn eq(&self, other: &Self) -> bool {
+        self.tag_names == other.tag_names && self.values_by_tag == other.values_by_tag
+    }
+}
+
+impl Eq for CoGbkResult {}
 
 /// Coder for [`CoGbkResult`].
 #[derive(Clone, Debug)]
@@ -174,6 +188,7 @@ impl DefaultCoder for CoGbkResult {
         Ok(Self {
             tag_names,
             values_by_tag,
+            schemas: Arc::new([]),
         })
     }
 
@@ -183,11 +198,16 @@ impl DefaultCoder for CoGbkResult {
 }
 
 impl CoGbkResult {
-    /// Creates a `CoGbkResult` from tag names and grouped values.
-    pub(crate) fn new(tag_names: Arc<[String]>, values_by_tag: Vec<Vec<Vec<u8>>>) -> Self {
+    /// Creates a `CoGbkResult` from tag names, grouped values and the row schema of each input.
+    pub(crate) fn new(
+        tag_names: Arc<[String]>,
+        values_by_tag: Vec<Vec<Vec<u8>>>,
+        schemas: Arc<[Option<Arc<Schema>>]>,
+    ) -> Self {
         Self {
             tag_names,
             values_by_tag,
+            schemas,
         }
     }
 
@@ -223,10 +243,11 @@ impl CoGbkResult {
         let Some(raw_list) = self.values_by_tag.get(index) else {
             return Ok(BeamIterable::default());
         };
+        let schema = self.schemas.get(index).and_then(Option::as_ref);
         let values = raw_list
             .iter()
             .map(|bytes| {
-                V::decode(bytes).map_err(|e| {
+                V::decode_with_schema(bytes, schema).map_err(|e| {
                     crate::Error::from(e).context(format!(
                         "Failed to decode CoGbkResult value for tag index {index}"
                     ))
@@ -246,6 +267,8 @@ impl CoGbkResult {
 pub struct KeyedPCollectionTuple<K> {
     pipeline: Pipeline,
     tag_names: Vec<String>,
+    /// The row schema of the values of each input, in tag order.
+    schemas: Vec<Option<Arc<Schema>>>,
     inputs: Vec<TaggedInput<K>>,
 }
 
@@ -263,6 +286,7 @@ impl<K: DefaultCoder + Eq + Hash> KeyedPCollectionTuple<K> {
         Self {
             pipeline,
             tag_names: Vec::new(),
+            schemas: Vec::new(),
             inputs: Vec::new(),
         }
     }
@@ -299,6 +323,7 @@ impl<K: DefaultCoder + Eq + Hash> KeyedPCollectionTuple<K> {
         };
         let step_name = format!("Tag[{tag_name}]");
         self.tag_names.push(tag_name);
+        self.schemas.push(value_row_schema(pcoll));
 
         // The closure owns a handle to the input, because the step is added later.
         let input = pcoll.clone();
@@ -395,28 +420,24 @@ impl<K: DefaultCoder + Eq + Hash> PTransform<KeyedPCollectionTuple<K>> for CoGro
     fn expand(self, input: &KeyedPCollectionTuple<K>) -> Self::Output {
         input.pipeline.record_display_data(&self);
         if input.inputs.is_empty() {
-            // A configuration error: record it and return an output with no producer, so the
-            // later transforms still attach to it.
             let pipeline = &input.pipeline;
-            let name = pipeline.scope_name().unwrap_or_default();
-            pipeline.record_construction_error(PipelineError::InvalidConstruction {
-                transform_id: name.clone(),
-                reason: "the KeyedPCollectionTuple is empty".to_string(),
-            });
-            let coder_id = <(K, CoGbkResult)>::register_coder(pipeline);
-            return pipeline.add_pcollection(&format!("{name}.out"), &coder_id, IsBounded::Bounded);
+            return pipeline.invalid_construction_output(
+                "the KeyedPCollectionTuple is empty",
+                &<(K, CoGbkResult)>::register_coder(pipeline),
+            );
         }
 
         let tagged = input.tagged_collections();
         let flattened = Flatten::pcollections("Flatten", &tagged.iter().collect::<Vec<_>>());
         let grouped = flattened.apply("GroupByKey", GroupByKey::new());
         let tag_names: Arc<[String]> = input.tag_names.clone().into();
+        let schemas: Arc<[Option<Arc<Schema>>]> = input.schemas.clone().into();
         grouped.apply(
             "ConstructCoGbkResult",
             ParDo::new(ClosureFn::new(
                 "ConstructCoGbkResult",
                 move |(k, raw_values): (K, BeamIterable<RawUnionValue>), ctx| {
-                    ctx.emit((k, construct_result(&tag_names, raw_values)?))
+                    ctx.emit((k, construct_result(&tag_names, &schemas, raw_values)?))
                 },
             )),
         )
@@ -427,6 +448,7 @@ impl<K: DefaultCoder + Eq + Hash> PTransform<KeyedPCollectionTuple<K>> for CoGro
 /// gave, so the values go into a `Vec` by position, without a hash map.
 fn construct_result(
     tag_names: &Arc<[String]>,
+    schemas: &Arc<[Option<Arc<Schema>>]>,
     raw_values: BeamIterable<RawUnionValue>,
 ) -> crate::Result<CoGbkResult> {
     let tag_count = tag_names.len();
@@ -445,5 +467,21 @@ fn construct_result(
             values.push(value);
             Ok(())
         })?;
-    Ok(CoGbkResult::new(Arc::clone(tag_names), by_tag))
+    Ok(CoGbkResult::new(
+        Arc::clone(tag_names),
+        by_tag,
+        Arc::clone(schemas),
+    ))
+}
+
+/// The row schema of the values of `pcoll`, from the value component of its `KV` coder.
+fn value_row_schema<K: 'static, V: 'static>(pcoll: &PCollection<(K, V)>) -> Option<Arc<Schema>> {
+    let pipeline = pcoll.pipeline().lock();
+    let coders = &pipeline.components.coders;
+    let value_coder_id = coders
+        .get(pcoll.coder_id())
+        .filter(|coder| coder_urn(coder) == URN_KV)?
+        .component_coder_ids
+        .get(1)?;
+    extract_row_schema(value_coder_id, coders)
 }
