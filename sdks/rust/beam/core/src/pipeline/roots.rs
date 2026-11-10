@@ -24,7 +24,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Computes the root (top-level) transform IDs in shallow topological order, as
 /// `beam_runner_api.proto` requires: a recursive traversal in this order is topological.
-pub fn compute_root_transform_ids(
+pub(crate) fn compute_root_transform_ids(
     components: &proto::Components,
     transform_order: &[String],
 ) -> Vec<String> {

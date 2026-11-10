@@ -41,15 +41,21 @@ use beam_model::pipeline as proto;
 use crate::pipeline::Pipeline;
 
 pub use backend::{UserStateBackend, UserStateError};
-pub use bag::{BagState, BagStateSpec};
+pub use bag::BagState;
+pub(crate) use bag::BagStateSpec;
 pub use bag_values::{StateBag, StateBagIter};
-pub use map::{MapState, MapStateSpec};
-pub use multimap::{MultimapState, MultimapStateSpec};
-pub use ordered_list::{OrderedListState, OrderedListStateSpec};
+pub use map::MapState;
+pub(crate) use map::MapStateSpec;
+pub use multimap::MultimapState;
+pub(crate) use multimap::MultimapStateSpec;
+pub use ordered_list::OrderedListState;
+pub(crate) use ordered_list::OrderedListStateSpec;
 pub use row_schemas::StateRowSchemas;
 use row_schemas::check_row_schema;
-pub use set::{SetState, SetStateSpec};
-pub use value::{ValueState, ValueStateSpec};
+pub use set::SetState;
+pub(crate) use set::SetStateSpec;
+pub use value::ValueState;
+pub(crate) use value::ValueStateSpec;
 
 /// Identifier of a bound user state cell: a static literal or a shared owned string.
 #[derive(Clone, Debug)]

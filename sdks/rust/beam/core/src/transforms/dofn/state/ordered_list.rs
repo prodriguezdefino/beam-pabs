@@ -34,14 +34,14 @@ use crate::pipeline::constants::URN_USER_STATE_ORDERED_LIST;
 
 /// Specification for an ordered list user state cell.
 #[derive(Clone, Debug)]
-pub struct OrderedListStateSpec<T> {
+pub(crate) struct OrderedListStateSpec<T> {
     name: String,
     _marker: PhantomData<T>,
 }
 
 impl<T: DefaultCoder> OrderedListStateSpec<T> {
     /// Creates an ordered list state specification with the given unique state ID.
-    pub fn new(name: impl Into<String>) -> Self {
+    pub(crate) fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
             _marker: PhantomData,

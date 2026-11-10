@@ -35,7 +35,7 @@ use beam_runner_dataflow::{
 
 /// In-memory mock Dataflow client for testing and offline development.
 #[derive(Debug, Clone, Default)]
-pub struct MockDataflowClient {
+pub(crate) struct MockDataflowClient {
     jobs: Arc<Mutex<Vec<JobResponse>>>,
     messages: Arc<Mutex<Vec<JobMessageItem>>>,
     metrics: Arc<Mutex<Option<JobMetricsResponse>>>,
@@ -58,7 +58,7 @@ pub struct MockDataflowClient {
 }
 
 impl MockDataflowClient {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
@@ -67,7 +67,7 @@ impl MockDataflowClient {
     /// Terminal-state tests need the state in place before `create_job` returns. Mutating
     /// it afterwards from a spawned task races the runner's poll loop, and losing that race
     /// means the first poll observes the default success state instead.
-    pub fn with_initial_job_state(state: impl Into<String>) -> Self {
+    pub(crate) fn with_initial_job_state(state: impl Into<String>) -> Self {
         Self {
             initial_job_state: Some(state.into()),
             ..Self::default()
@@ -76,14 +76,14 @@ impl MockDataflowClient {
 
     /// Creates a mock where a job with the same name, made by the request `request_id`, is
     /// already active, so `create_job` returns that job.
-    pub fn with_active_job(request_id: impl Into<String>) -> Self {
+    pub(crate) fn with_active_job(request_id: impl Into<String>) -> Self {
         Self {
             active_request_id: Some(request_id.into()),
             ..Self::default()
         }
     }
 
-    pub fn set_job_state(&self, job_id: &str, state: &str) {
+    pub(crate) fn set_job_state(&self, job_id: &str, state: &str) {
         if let Ok(mut guard) = self.jobs.lock()
             && let Some(j) = guard.iter_mut().find(|j| j.id == job_id)
         {
@@ -92,7 +92,7 @@ impl MockDataflowClient {
     }
 
     /// Scripts the outcomes of the next `get_job` calls; see `get_job_script`.
-    pub fn script_get_job<'a>(&self, steps: impl IntoIterator<Item = Result<&'a str, u16>>) {
+    pub(crate) fn script_get_job<'a>(&self, steps: impl IntoIterator<Item = Result<&'a str, u16>>) {
         self.get_job_script
             .lock()
             .unwrap()
@@ -100,24 +100,24 @@ impl MockDataflowClient {
     }
 
     /// Number of `get_job` calls made so far.
-    pub fn get_job_calls(&self) -> usize {
+    pub(crate) fn get_job_calls(&self) -> usize {
         *self.get_job_calls.lock().unwrap()
     }
 
     /// Every job passed to `create_job`, in submission order.
-    pub fn submitted_jobs(&self) -> Vec<DataflowJob> {
+    pub(crate) fn submitted_jobs(&self) -> Vec<DataflowJob> {
         self.submitted.lock().unwrap().clone()
     }
 
-    pub fn add_message(&self, msg: impl Into<String>) {
+    pub(crate) fn add_message(&self, msg: impl Into<String>) {
         self.add_message_with_importance(msg, "JOB_MESSAGE_BASIC");
     }
 
-    pub fn add_error_message(&self, msg: impl Into<String>) {
+    pub(crate) fn add_error_message(&self, msg: impl Into<String>) {
         self.add_message_with_importance(msg, JOB_MESSAGE_ERROR);
     }
 
-    pub fn add_message_with_importance(
+    pub(crate) fn add_message_with_importance(
         &self,
         msg: impl Into<String>,
         importance: impl Into<String>,
@@ -133,22 +133,22 @@ impl MockDataflowClient {
         }
     }
 
-    pub fn set_metrics(&self, metrics: JobMetricsResponse) {
+    pub(crate) fn set_metrics(&self, metrics: JobMetricsResponse) {
         *self.metrics.lock().unwrap() = Some(metrics);
     }
 
     /// Scripts the responses of the next `get_job_metrics` calls; see `metrics_script`.
-    pub fn script_metrics(&self, responses: impl IntoIterator<Item = JobMetricsResponse>) {
+    pub(crate) fn script_metrics(&self, responses: impl IntoIterator<Item = JobMetricsResponse>) {
         self.metrics_script.lock().unwrap().extend(responses);
     }
 
     /// Number of `get_job_metrics` calls made so far.
-    pub fn get_job_metrics_calls(&self) -> usize {
+    pub(crate) fn get_job_metrics_calls(&self) -> usize {
         *self.get_job_metrics_calls.lock().unwrap()
     }
 
     /// Every state requested through `update_job`, as `(job_id, state)`, in call order.
-    pub fn update_requests(&self) -> Vec<(String, JobState)> {
+    pub(crate) fn update_requests(&self) -> Vec<(String, JobState)> {
         self.update_requests.lock().unwrap().clone()
     }
 }

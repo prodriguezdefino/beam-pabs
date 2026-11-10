@@ -33,7 +33,7 @@
 //! chain, not on the size of the bundle.
 
 mod build;
-pub mod instances;
+pub(super) mod instances;
 mod sink;
 mod stats;
 

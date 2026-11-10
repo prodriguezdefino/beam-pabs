@@ -32,14 +32,14 @@ use crate::pipeline::constants::URN_USER_STATE_BAG;
 
 /// Specification for a bag user state cell.
 #[derive(Clone, Debug)]
-pub struct BagStateSpec<V> {
+pub(crate) struct BagStateSpec<V> {
     name: String,
     _marker: PhantomData<V>,
 }
 
 impl<V: DefaultCoder> BagStateSpec<V> {
     /// Creates a bag state specification with the given unique state ID.
-    pub fn new(name: impl Into<String>) -> Self {
+    pub(crate) fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
             _marker: PhantomData,

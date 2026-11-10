@@ -31,7 +31,7 @@ use beam_io_managed::{SNAPSHOTS, urns};
 use beam_test_utils::xlang::{MockExpansionServer, MockExpansionService, Route};
 use serde_json::Value;
 
-pub fn config_json(row: &Row) -> Value {
+pub(crate) fn config_json(row: &Row) -> Value {
     let config = row
         .get_string("config")
         .expect("valid test payload")
@@ -42,7 +42,7 @@ pub fn config_json(row: &Row) -> Value {
 /// Starts a mock of the Managed expansion service. Reads return `output`, an Iceberg write
 /// returns `snapshots`, and each transform also returns the output that its
 /// `error_handling` config names.
-pub fn start_mock_service() -> MockExpansionServer {
+pub(crate) fn start_mock_service() -> MockExpansionServer {
     MockExpansionService::new()
         .with_route(urns::ICEBERG_READ, Route::source())
         .with_route(urns::KAFKA_READ, Route::source())
@@ -53,7 +53,7 @@ pub fn start_mock_service() -> MockExpansionServer {
 }
 
 /// (underlying transform URN, inline config) of each expansion request that `server` saw.
-pub fn seen_targets(server: &MockExpansionServer) -> Vec<(String, Option<String>)> {
+pub(crate) fn seen_targets(server: &MockExpansionServer) -> Vec<(String, Option<String>)> {
     server
         .seen()
         .into_iter()

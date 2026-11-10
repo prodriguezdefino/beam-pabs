@@ -32,10 +32,10 @@ use crate::options::{DataflowJobOptions, DataflowOptions};
 
 mod job;
 
-pub use crate::constants::*;
+pub(crate) use crate::constants::*;
+pub(crate) use job::{AutoscalingSettings, PackageItem, SdkHarnessContainerImage, WorkerPool};
 pub use job::{
-    AutoscalingSettings, DataflowEnvironment, DataflowJob, PackageItem, SdkHarnessContainerImage,
-    SdkOptionsPayload, SdkPipelineOptions, UserAgent, Version, WorkerPool,
+    DataflowEnvironment, DataflowJob, SdkOptionsPayload, SdkPipelineOptions, UserAgent, Version,
 };
 
 /// Errors that can occur during pipeline translation.

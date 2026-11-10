@@ -57,6 +57,9 @@ unused_lifetimes = "warn"
 unused_import_braces = "warn"
 unused_macro_rules = "warn"
 single_use_lifetimes = "warn"
+# A `pub` item that no crate root exposes is `pub(crate)`. Then `dead_code` reports it when
+# nothing uses it.
+unreachable_pub = "warn"
 
 [workspace.lints.clippy]
 redundant_clone = "warn"

@@ -27,7 +27,7 @@ use beam_test_utils::xlang::{error_handling, string_value};
 /// AutoValue getter names sorted, then snake_cased. Only `getBootstrapServers()` and
 /// `getTopic()` are non-null; `Integer` -> INT32, `Map<String,String>` -> MAP, and
 /// `ErrorHandling` has a non-null `getOutput()`.
-pub const KAFKA_READ_CONFIG: &[(&str, &str)] = &[
+pub(crate) const KAFKA_READ_CONFIG: &[(&str, &str)] = &[
     ("allow_duplicates", "BOOLEAN?"),
     ("auto_offset_reset_config", "STRING?"),
     ("bootstrap_servers", "STRING"),
@@ -51,7 +51,7 @@ pub const KAFKA_READ_CONFIG: &[(&str, &str)] = &[
 
 /// Configuration schema Java derives for `KafkaWriteSchemaTransformConfiguration` (same
 /// naming rules). `getFormat()`, `getTopic()` and `getBootstrapServers()` are non-null.
-pub const KAFKA_WRITE_CONFIG: &[(&str, &str)] = &[
+pub(crate) const KAFKA_WRITE_CONFIG: &[(&str, &str)] = &[
     ("bootstrap_servers", "STRING"),
     ("error_handling", "ROW<output: STRING>?"),
     ("file_descriptor_path", "STRING?"),
@@ -63,7 +63,7 @@ pub const KAFKA_WRITE_CONFIG: &[(&str, &str)] = &[
     ("with_gcp_adc", "BOOLEAN?"),
 ];
 
-pub fn string_map(entries: &[(&str, &str)]) -> Option<FieldValue> {
+pub(crate) fn string_map(entries: &[(&str, &str)]) -> Option<FieldValue> {
     Some(FieldValue::Map(
         entries
             .iter()
@@ -74,7 +74,7 @@ pub fn string_map(entries: &[(&str, &str)]) -> Option<FieldValue> {
 
 /// Fields a read row sets; everything else in [`KAFKA_READ_CONFIG`] must be null.
 #[derive(Default)]
-pub struct ReadExpect {
+pub(crate) struct ReadExpect {
     pub allow_duplicates: Option<bool>,
     pub auto_offset_reset_config: Option<&'static str>,
     pub bootstrap_servers: &'static str,
@@ -97,7 +97,7 @@ pub struct ReadExpect {
 }
 
 impl ReadExpect {
-    pub fn values(self) -> Vec<(String, Option<FieldValue>)> {
+    pub(crate) fn values(self) -> Vec<(String, Option<FieldValue>)> {
         let st = |v: Option<&str>| v.and_then(string_value);
         let b = |v: Option<bool>| v.map(FieldValue::Boolean);
         let i = |v: Option<i32>| v.map(FieldValue::Int32);
@@ -142,7 +142,7 @@ impl ReadExpect {
 
 /// Fields a write row sets; everything else in [`KAFKA_WRITE_CONFIG`] must be null.
 #[derive(Default)]
-pub struct WriteExpect {
+pub(crate) struct WriteExpect {
     pub bootstrap_servers: &'static str,
     pub error_handling: Option<&'static str>,
     pub file_descriptor_path: Option<&'static str>,
@@ -155,7 +155,7 @@ pub struct WriteExpect {
 }
 
 impl WriteExpect {
-    pub fn values(self) -> Vec<(String, Option<FieldValue>)> {
+    pub(crate) fn values(self) -> Vec<(String, Option<FieldValue>)> {
         let st = |v: Option<&str>| v.and_then(string_value);
         let b = |v: Option<bool>| v.map(FieldValue::Boolean);
         [

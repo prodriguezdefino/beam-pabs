@@ -37,21 +37,21 @@ use beam_model::fn_execution::{
 };
 
 /// The default number of samples that one PCollection keeps.
-pub const DEFAULT_MAX_SAMPLES: usize = 10;
+pub(crate) const DEFAULT_MAX_SAMPLES: usize = 10;
 
 /// After the first [`DEFAULT_MAX_SAMPLES`] elements, a PCollection samples one element in this
 /// many.
-pub const DEFAULT_SAMPLE_EVERY_N: u64 = 1000;
+pub(crate) const DEFAULT_SAMPLE_EVERY_N: u64 = 1000;
 
 /// The experiment that samples all PCollections and the failed elements.
-pub const ENABLE_DATA_SAMPLING_EXPERIMENT: &str = "enable_data_sampling";
+pub(crate) const ENABLE_DATA_SAMPLING_EXPERIMENT: &str = "enable_data_sampling";
 
 /// The experiment that samples the failed elements only.
-pub const ENABLE_ALWAYS_ON_EXCEPTION_SAMPLING_EXPERIMENT: &str =
+pub(crate) const ENABLE_ALWAYS_ON_EXCEPTION_SAMPLING_EXPERIMENT: &str =
     "enable_always_on_exception_sampling";
 
 /// The experiment that turns off the sampling of failed elements.
-pub const DISABLE_ALWAYS_ON_EXCEPTION_SAMPLING_EXPERIMENT: &str =
+pub(crate) const DISABLE_ALWAYS_ON_EXCEPTION_SAMPLING_EXPERIMENT: &str =
     "disable_always_on_exception_sampling";
 
 /// The failed bundles that the sampler remembers, to keep one sample per failure.
