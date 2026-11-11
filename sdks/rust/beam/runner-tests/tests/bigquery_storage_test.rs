@@ -17,9 +17,8 @@
  * under the License.
  */
 
-//! Native BigQuery Storage reads on PrismRunner against fake Storage Read and BigQuery clients.
+//! BigQuery Storage reads on PrismRunner against fake Storage Read and BigQuery clients.
 //! No test calls Google Cloud; `bigquery_storage_it` reads real tables.
-#![expect(clippy::unwrap_used, reason = "test fixtures panic on setup failure")]
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -29,15 +28,14 @@ use beam::io::arrow::arrow_array::{ArrayRef, Int64Array, RecordBatch, TimestampM
 use beam::io::arrow::arrow_ipc::CompressionType;
 use beam::io::arrow::arrow_ipc::writer::{IpcWriteOptions, StreamWriter};
 use beam::io::arrow::arrow_schema::{DataType, Field, Schema as ArrowSchema, TimeUnit};
-use beam::io::gcp::bigquery::storage::read::{
-    ArrowCompression, QueryPriority, ReadOptions, ReadRows,
-};
-use beam::io::gcp::bigquery::storage::schema::beam_schema;
+use beam::io::gcp::bigquery::read::{ArrowCompression, QueryPriority, ReadOptions, ReadRows};
+use beam::io::gcp::bigquery::schema::beam_schema;
 use beam::io::gcp::options::GcpOptions;
 use beam::options::PipelineOptions;
 use beam::pipeline::Pipeline;
 use beam::schema::{BeamRow, Row};
 use beam_fluent::prelude::PCollectionExt;
+use beam_runner_prism::PrismRunner;
 use google_cloud_bigquery::client::Read;
 use google_cloud_bigquery::model::arrow_serialization_options::CompressionCodec;
 use google_cloud_bigquery::model::read_session::TableReadOptions;
@@ -59,7 +57,6 @@ use google_cloud_gax::error::rpc::{Code, Status};
 use google_cloud_gax::options::RequestOptions;
 use google_cloud_gax::response::Response;
 use google_cloud_gax::streaming::ResponseStream;
-use beam_runner_prism::PrismRunner;
 use tokio::sync::{Notify, mpsc};
 
 /// Rows in each response of the fake.

@@ -17,8 +17,8 @@
  * under the License.
  */
 
-//! Iceberg benchmark in a Rust pipeline: the streaming `ingest` shape with the native Kafka
-//! read and the native Iceberg write.
+//! Iceberg benchmark in a Rust pipeline: the streaming `ingest` shape with the Kafka read and
+//! the Iceberg write.
 //!
 //! The pipeline reads the DeviceMetric JSON records of `--topic`, counts them in the `Touch`
 //! step of the Kafka benchmark (`e2e/rows`, `e2e/latency_ms`), parses each record into a
@@ -31,9 +31,9 @@
 
 use std::time::Duration;
 
-use beam::io::iceberg::{Catalog, PartitionField, Transform, Write, WriteOptions};
-use beam::io::kafka::native::codec::Raw;
-use beam::io::kafka::native::read::{ConsumerPool, PoolSize, Read, ReadOptions, StartOffset};
+use beam::io::iceberg::{Catalog, PartitionField, PartitionTransform, Write, WriteOptions};
+use beam::io::kafka::codec::Raw;
+use beam::io::kafka::read::{ConsumerPool, PoolSize, Read, ReadOptions, StartOffset};
 use beam::options::PipelineOptionGroup;
 use beam::prelude::*;
 use beam_benchmark_io::{
@@ -212,7 +212,10 @@ pub fn write_options(args: &Args) -> WriteOptions {
         None => catalog,
     };
     let options = WriteOptions::new(catalog, &args.table)
-        .with_partition_fields([PartitionField::new("timestamp_ms", Transform::Hour)])
+        .with_partition_fields([PartitionField::new(
+            "timestamp_ms",
+            PartitionTransform::Hour,
+        )])
         .with_table_property("gcp.biglake.table-management.enabled", "true")
         .with_table_property("gcp.biglake.bigquery-dml.enabled", "true")
         .with_table_property("write.parquet.compression-codec", "zstd");
@@ -226,9 +229,10 @@ pub fn write_options(args: &Args) -> WriteOptions {
         Some(shards) => options.with_num_shards(shards),
         None => options,
     };
-    match args.object_storage {
-        true => options.with_table_property("write.object-storage.enabled", "true"),
-        false => options,
+    if args.object_storage {
+        options.with_table_property("write.object-storage.enabled", "true")
+    } else {
+        options
     }
 }
 

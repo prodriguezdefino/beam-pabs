@@ -25,8 +25,8 @@
 //!
 //! `--transport` selects the topic:
 //!
-//! - `kafka`: the cross-language Kafka read and write, expanded through Managed. Records that
-//!   the Java transforms cannot decode or serialize go to an error output.
+//! - `kafka`: the Kafka read and write of `beam::io::kafka`. Records that the read cannot decode, and
+//!   payloads that Kafka rejects, go to a failure output.
 //! - `pubsub`: the cross-language Pub/Sub read and write.
 //!
 //! The `ouroboros` counters `seeded`, `evolved`, `ascended` and `malformed` show the progress.

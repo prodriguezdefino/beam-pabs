@@ -31,11 +31,7 @@ import org.apache.beam.sdk.io.iceberg.IcebergIO;
 import org.apache.beam.sdk.io.kafka.KafkaIO;
 import org.apache.beam.sdk.metrics.Counter;
 import org.apache.beam.sdk.metrics.Distribution;
-import org.apache.beam.sdk.metrics.MetricNameFilter;
-import org.apache.beam.sdk.metrics.MetricQueryResults;
-import org.apache.beam.sdk.metrics.MetricResult;
 import org.apache.beam.sdk.metrics.Metrics;
-import org.apache.beam.sdk.metrics.MetricsFilter;
 import org.apache.beam.sdk.options.Default;
 import org.apache.beam.sdk.options.Description;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
@@ -62,8 +58,8 @@ import org.slf4j.LoggerFactory;
  * catalog. The table is partitioned by the hour of {@code timestamp_ms}. {@code IcebergIO} takes
  * no table properties, so the catalog sets them with its {@code table-default.} properties.
  *
- * <p>The program drains the job at {@code --expectedRows} or {@code --drainAfterSeconds}. {@code
- * ./gradlew :sdks:rust:icebergBenchmark -Ppipeline=java -Pwriter=java-native} runs this class.
+ * <p>{@code ./gradlew :sdks:rust:icebergBenchmark -Ppipeline=java -Pwriter=java-native} runs this
+ * class; {@code benchmarks/tools/job_wait.py} waits for and drains the submitted job.
  */
 public class IcebergBenchmark {
   private static final Logger LOG = LoggerFactory.getLogger(IcebergBenchmark.class);
@@ -121,16 +117,6 @@ public class IcebergBenchmark {
     String getGroupId();
 
     void setGroupId(String value);
-
-    @Description("Drain the job once e2e/rows reaches at least this count.")
-    Long getExpectedRows();
-
-    void setExpectedRows(Long value);
-
-    @Description("Drain the job after this many seconds.")
-    Long getDrainAfterSeconds();
-
-    void setDrainAfterSeconds(Long value);
 
     @Description("The REST catalog endpoint.")
     @Default.String(BIGLAKE)
@@ -299,86 +285,7 @@ public class IcebergBenchmark {
         .build();
   }
 
-  static long committedRows(PipelineResult result) {
-    try {
-      MetricQueryResults metrics =
-          result
-              .metrics()
-              .queryMetrics(
-                  MetricsFilter.builder()
-                      .addNameFilter(MetricNameFilter.named("e2e", "rows"))
-                      .build());
-      long total = 0;
-      for (MetricResult<Long> counter : metrics.getCounters()) {
-        Long attempted = counter.getAttempted();
-        if (attempted != null) {
-          total += attempted;
-        }
-      }
-      return total;
-    } catch (Exception e) {
-      LOG.warn("Could not query e2e/rows metric", e);
-      return 0;
-    }
-  }
-
-  static void drain(String project, String region, String jobId)
-      throws IOException, InterruptedException {
-    int code =
-        new ProcessBuilder(
-                "gcloud",
-                "dataflow",
-                "jobs",
-                "drain",
-                jobId,
-                "--project=" + project,
-                "--region=" + region)
-            .inheritIO()
-            .start()
-            .waitFor();
-    if (code != 0) {
-      throw new IOException("gcloud dataflow jobs drain exited with " + code);
-    }
-  }
-
-  static void waitForStreamingJob(PipelineResult result, Options options)
-      throws IOException, InterruptedException {
-    DataflowPipelineJob job = (DataflowPipelineJob) result;
-    String jobId = job.getJobId();
-    System.out.println("JOB_ID=" + jobId);
-    System.out.flush();
-    Long expectedRows = options.getExpectedRows();
-    Long drainAfterSeconds = options.getDrainAfterSeconds();
-    long startMs = System.currentTimeMillis();
-    boolean drained = false;
-    while (true) {
-      PipelineResult.State state = job.getState();
-      long rows = committedRows(job);
-      long elapsedSeconds = (System.currentTimeMillis() - startMs) / 1000;
-      LOG.info("Job {}: state={} e2e/rows={} elapsed={}s", jobId, state, rows, elapsedSeconds);
-      if (state.isTerminal()) {
-        if (state != PipelineResult.State.DONE && !"DRAINED".equals(state.name())) {
-          throw new IllegalStateException("Job " + jobId + " finished in state " + state);
-        }
-        if (expectedRows != null && rows < expectedRows) {
-          throw new IllegalStateException(
-              "Job " + jobId + " finished with " + rows + " rows, expected " + expectedRows);
-        }
-        return;
-      }
-      boolean due =
-          (expectedRows != null && rows >= expectedRows)
-              || (drainAfterSeconds != null && elapsedSeconds >= drainAfterSeconds);
-      if (due && !drained && state == PipelineResult.State.RUNNING) {
-        LOG.info("Draining job {} at e2e/rows={} ({}s)", jobId, rows, elapsedSeconds);
-        drain(options.getProject(), options.getRegion(), jobId);
-        drained = true;
-      }
-      Thread.sleep(15_000);
-    }
-  }
-
-  public static void main(String[] args) throws IOException, InterruptedException {
+  public static void main(String[] args) throws IOException {
     Options options = PipelineOptionsFactory.fromArgs(args).withValidation().as(Options.class);
     if (!"ingest".equals(options.getShape()) || !"java-native".equals(options.getWriter())) {
       throw new IllegalArgumentException("Use --shape=ingest --writer=java-native");
@@ -407,6 +314,14 @@ public class IcebergBenchmark {
                 .withPartitionFields(Arrays.asList("hour(timestamp_ms)"))
                 .withTriggeringFrequency(
                     Duration.standardSeconds(options.getTriggeringFrequencySeconds())));
-    waitForStreamingJob(p.run(), options);
+    PipelineResult result = p.run();
+    if (result instanceof DataflowPipelineJob) {
+      System.out.println("JOB_ID=" + ((DataflowPipelineJob) result).getJobId());
+      return;
+    }
+    PipelineResult.State state = result.waitUntilFinish();
+    if (state != PipelineResult.State.DONE) {
+      throw new IllegalStateException("The job finished in state " + state);
+    }
   }
 }

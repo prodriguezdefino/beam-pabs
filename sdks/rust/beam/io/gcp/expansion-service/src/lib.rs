@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! SchemaTransform providers for the native Google Cloud connectors.
+//! SchemaTransform providers for the Google Cloud connectors.
 //!
 //! The configuration of each provider has the field names and types of the Java provider for
 //! the same service, so a caller can send the same configuration to either. Options that only

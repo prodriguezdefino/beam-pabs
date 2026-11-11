@@ -1,0 +1,149 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Cloud Bigtable benchmark on Dataflow (`bigtableBenchmark`).
+//
+// Shapes (-Pshape):
+// - bt_to_gcs: read a Bigtable table with -Preader, pass each row through a step in the
+//   pipeline language (the e2e/rows counter and text formatter), and write the formatted lines
+//   to Cloud Storage (-Poutput).
+// - gcs_to_bt: read formatted lines from Cloud Storage (-Pinput), parse each line into a
+//   batched mutation row in the pipeline language (counting e2e/rows), and mutate -PbigtableTable
+//   with -Pwriter.
+//
+// Readers (-Preader, or -Preaders=a,b, bt_to_gcs):
+// - Python pipeline (-Ppipeline=python): java (Java BigtableReadSchemaTransformProvider) and
+//   rust (Rust BigtableReadProvider).
+// - Java pipeline (-Ppipeline=java): java-native (BigtableIO.read()), java-schema
+//   (BigtableReadSchemaTransformProvider in-process) and rust (Rust BigtableReadProvider).
+// - Rust pipeline (-Ppipeline=rust): rust (ReadRows in one Rust worker container).
+//
+// Writers (-Pwriter, or -Pwriters=a,b, gcs_to_bt):
+// - Python pipeline (-Ppipeline=python): java (Java BigtableWriteSchemaTransformProvider) and
+//   rust (Rust BigtableWriteProvider).
+// - Java pipeline (-Ppipeline=java): java-native (BigtableIO.write()), java-schema
+//   (BigtableWriteSchemaTransformProvider in-process) and rust (Rust BigtableWriteProvider).
+// - Rust pipeline (-Ppipeline=rust): rust (WriteMutations in one Rust worker container).
+
+registerDataflowBenchmark(
+    task: 'bigtableBenchmark',
+    compileTask: 'compileBigtableJavaBenchmark',
+    dir: 'bigtable',
+    label: 'bigtable',
+    jobPrefix: 'bt',
+    pythonScript: 'bigtable_benchmark.py',
+    mainClass: 'BigtableBenchmark',
+    counter: 'rows',
+    counterShapes: ['bt_to_gcs', 'gcs_to_bt'],
+    io: { shape -> [namespace: 'e2e', rows: 'rows'] },
+    rustPackage: 'apache-beam-benchmark-bigtable',
+    rustShapes: ['bt_to_gcs', 'gcs_to_bt'],
+    defaultShape: 'bt_to_gcs',
+    shapes: ['bt_to_gcs', 'gcs_to_bt'],
+    readShapes: ['bt_to_gcs'],
+    writeShapes: ['gcs_to_bt'],
+    readers: [
+      python: ['java', 'rust'],
+      java  : ['java-native', 'java-schema', 'rust'],
+      rust  : ['rust'],
+    ],
+    writers: [
+      python: ['java', 'rust'],
+      java  : ['java-native', 'java-schema', 'rust'],
+      rust  : ['rust'],
+    ],
+    description: 'Read or write a Cloud Bigtable table on Dataflow ' +
+        '([-Ppipeline=python|java|rust] [-Pshape=bt_to_gcs|gcs_to_bt] ' +
+        '[-Preader=java|rust (Python) or java-native|java-schema|rust (Java) or rust (Rust), bt_to_gcs] ' +
+        '[-Pwriter=java|rust (Python) or java-native|java-schema|rust (Java) or rust (Rust), gcs_to_bt] ' +
+        '[-PbigtableProject=<project>] -PbigtableInstance=<instance> -PbigtableTable=<table> ' +
+        '[-PbigtableMaterializedView=<view> (Rust bt_to_gcs)] ' +
+        '[-PappProfile=<profile>] [-Pflatten=true|false] [-Pinput=<gs://...>, gcs_to_bt] ' +
+        '[-Poutput=<gs://...>, bt_to_gcs] [-PexpectedRows=<n>] ' +
+        '[-PnumWorkers=4] [-PmaxNumWorkers=<n>] [-PworkerMachineType=n2-standard-4] ' +
+        '[-PextraArgs="<pipeline flags>"])',
+    configure: { Map run ->
+      def bigtableProject = (benchProps('bigtableProject') ?: run.gcpProject)?.toString()
+      def bigtableInstance = benchProps('bigtableInstance')?.toString()
+      def bigtableTable = benchProps('bigtableTable')?.toString()
+      def materializedView = project.findProperty('bigtableMaterializedView')?.toString()
+      if (!bigtableProject || !bigtableInstance || !(bigtableTable || materializedView)) {
+        throw new GradleException('Set -PbigtableInstance and -PbigtableTable (or ' +
+            'example.benchmark.bigtableInstance and example.benchmark.bigtableTable in ' +
+            'sdks/rust/.local/sdk.properties), or -PbigtableMaterializedView.')
+      }
+      if (materializedView && (run.pipeline != 'rust' || run.writes)) {
+        throw new GradleException('-PbigtableMaterializedView applies only to -Ppipeline=rust -Pshape=bt_to_gcs.')
+      }
+      def rawAppProfile = (project.findProperty('appProfile') ?:
+          benchProps('bigtableAppProfile'))?.toString()
+      def appProfile = (rawAppProfile && rawAppProfile != 'none') ? rawAppProfile : null
+      def connector = run.writes ? run.writer : run.reader
+      if (appProfile && !['rust', 'java-native'].contains(connector)) {
+        def flagName = run.writes ? 'writer' : 'reader'
+        throw new GradleException("${flagName.capitalize()} '${connector}' does not support -PappProfile: " +
+            "use -P${flagName}=rust or -P${flagName}=java-native, or pass -PappProfile=none.")
+      }
+
+      def target = materializedView ?
+          "${run.flag('bigtable_materialized_view')}=${materializedView}" :
+          "${run.flag('bigtable_table')}=${bigtableTable}"
+      def args = [
+        "${run.flag('bigtable_project')}=${bigtableProject}",
+        "${run.flag('bigtable_instance')}=${bigtableInstance}",
+        target,
+      ]
+      def labels = [
+        'app_profile': appProfile ? appProfile.toLowerCase().replace('_', '-') : 'default',
+        'target'     : materializedView ? 'materialized-view' : 'table',
+      ]
+
+      if (run.writes) {
+        if (project.hasProperty('output')) {
+          throw new GradleException('-Poutput applies to -Pshape=bt_to_gcs only, not to gcs_to_bt.')
+        }
+        def input = (project.findProperty('input') ?: benchProps('bigtableInput'))?.toString()
+        if (!input) {
+          throw new GradleException('gcs_to_bt needs -Pinput=<gs://...> ' +
+              '(or example.benchmark.bigtableInput in sdks/rust/.local/sdk.properties).')
+        }
+        args << "--input=${input}"
+      } else {
+        if (project.hasProperty('input')) {
+          throw new GradleException('-Pinput applies to -Pshape=gcs_to_bt only, not to bt_to_gcs.')
+        }
+        def flatten = (project.findProperty('flatten') ?: 'false').toString().toLowerCase()
+        if (!['true', 'false'].contains(flatten)) {
+          throw new GradleException("Unknown flatten '${flatten}': use true or false.")
+        }
+        def output = (project.findProperty('output') ?:
+            "${run.tempLocation}/bigtable_benchmark/{job_name}/out").toString()
+        args << "${run.flag('flatten')}=${flatten}"
+        args << "--output=${output}"
+        labels['flatten'] = flatten
+      }
+      if (appProfile) {
+        args << "${run.flag('app_profile')}=${appProfile}"
+      }
+      [
+        readerLabel: run.reader,
+        labels     : labels,
+        args       : args,
+      ]
+    },
+)

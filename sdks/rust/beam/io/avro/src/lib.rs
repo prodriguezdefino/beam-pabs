@@ -31,6 +31,7 @@
 //! `arrow_io`. The written Avro schema is derived from the Beam schema; nullable fields
 //! become `["null", T]` unions. Reads split at data-block sync markers.
 
+pub mod datum;
 mod error;
 mod sink;
 mod source;

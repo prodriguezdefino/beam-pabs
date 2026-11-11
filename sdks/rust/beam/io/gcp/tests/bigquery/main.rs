@@ -17,13 +17,9 @@
  * under the License.
  */
 
-//! Tests for Google Cloud BigQuery: the cross-language transforms, table specs, and the
-//! native Storage Read and Write connectors (`storage_*`).
+//! Tests for the Google Cloud BigQuery connectors: table specs, and the Storage Read
+//! and Storage Write connectors (`storage_*`).
 
-mod builders;
-mod fixtures;
-mod pipeline;
-mod read;
 mod storage_read;
 mod storage_read_failures;
 mod storage_read_options;
@@ -38,4 +34,3 @@ mod storage_write_options;
 mod storage_write_projection;
 mod storage_write_schema;
 mod table;
-mod write;

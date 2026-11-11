@@ -112,8 +112,11 @@ pub mod io {
     #[cfg(feature = "json")]
     pub use beam_io_json as json;
 
-    /// Kafka I/O: the native connector in `beam::io::kafka::native` (feature `kafka-native`),
-    /// and the cross-language `beam::io::kafka::KafkaRead` and `KafkaWrite` (feature `kafka`).
+    /// Beam schema and `Row` bridge to Protocol Buffers: `beam::io::proto::ProtoSchema`.
+    #[cfg(feature = "proto")]
+    pub use beam_io_proto as proto;
+
+    /// Kafka I/O: `beam::io::kafka`.
     #[cfg(feature = "kafka")]
     pub use beam_io_kafka as kafka;
 
@@ -180,8 +183,8 @@ mod link {
 ///
 /// Holds the core prelude (`apply` style: `pcoll.apply(.., Map::new())`), the fluent
 /// extension traits (method style: `pcoll.map(..)`), [`textio`](beam_io_file::textio),
-/// [`run`](beam_core::runners::run) and [`submit`](beam_core::runners::submit). Import other connectors
-/// and RunInference from their own modules: `beam::io::parquet::parquetio`,
+/// [`run`](beam_core::runners::run) and [`submit`](beam_core::runners::submit). Import other
+/// connectors and RunInference from their own modules: `beam::io::parquet::parquetio`,
 /// `beam::io::avro::avroio`, `beam::ml`, and so on.
 pub mod prelude {
     pub use beam_core::prelude::*;

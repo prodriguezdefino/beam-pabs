@@ -21,12 +21,12 @@
 
 use std::sync::Arc;
 
+use beam::schema::{Field, FieldType, FieldValue, Row, Schema};
 use beam_io_arrow::arrow_array::cast::AsArray;
 use beam_io_arrow::arrow_array::types::TimestampMicrosecondType;
 use beam_io_arrow::arrow_array::{Array, RecordBatch};
 use beam_io_arrow::arrow_schema::{DataType, TimeUnit};
 use beam_io_arrow::{beam_to_arrow_schema, micros_instant_type, rows_to_record_batch};
-use beam::schema::{Field, FieldType, FieldValue, Row, Schema};
 use beam_io_iceberg::arrow::{Adapter, table_arrow_schema};
 
 use crate::common::{device_metric, metric, table};

@@ -17,11 +17,12 @@
  * under the License.
  */
 
-//! Arrow to Beam schemas and rows of the native Storage Read connector. No test calls
+//! Arrow to Beam schemas and rows of the Storage Read connector. No test calls
 //! BigQuery.
 
 use std::sync::Arc;
 
+use beam::schema::{FieldType, FieldValue, Schema};
 use beam_io_arrow::arrow_array::{
     ArrayRef, Int64Array, ListArray, RecordBatch, StructArray, Time64MicrosecondArray,
     TimestampMicrosecondArray,
@@ -29,8 +30,7 @@ use beam_io_arrow::arrow_array::{
 use beam_io_arrow::arrow_buffer::OffsetBuffer;
 use beam_io_arrow::arrow_schema::{DataType, Field, Fields, Schema as ArrowSchema, TimeUnit};
 use beam_io_arrow::{date_type, decimal_type, micros_instant_type};
-use beam::schema::{FieldType, FieldValue, Schema};
-use beam_io_gcp::bigquery::storage::schema::{batch_to_rows, beam_schema, table_schema_to_beam_schema};
+use beam_io_gcp::bigquery::schema::{batch_to_rows, beam_schema, table_schema_to_beam_schema};
 use google_cloud_bigquery_v2::model::TableFieldSchema;
 
 fn datetime_and_time_fields() -> Vec<Field> {
@@ -77,7 +77,7 @@ fn rows_hold_datetime_and_time_as_text() {
         Arc::new(TimestampMicrosecondArray::from(vec![Some(micros), None])),
         Arc::new(Time64MicrosecondArray::from(vec![Some(clock), None])),
     ];
-    let batch = RecordBatch::try_new(arrow_schema.clone(), columns).unwrap();
+    let batch = RecordBatch::try_new(Arc::clone(&arrow_schema), columns).unwrap();
     let schema = Arc::new(beam_schema(&arrow_schema).unwrap());
     let rows = batch_to_rows(&batch, &schema).unwrap();
 
@@ -121,7 +121,7 @@ fn nested_datetime_columns_become_strings() {
     )
     .unwrap();
     let arrow_schema = Arc::new(ArrowSchema::new(vec![field]));
-    let batch = RecordBatch::try_new(arrow_schema.clone(), vec![Arc::new(lists)]).unwrap();
+    let batch = RecordBatch::try_new(Arc::clone(&arrow_schema), vec![Arc::new(lists)]).unwrap();
     let schema = Arc::new(beam_schema(&arrow_schema).unwrap());
     let rows = batch_to_rows(&batch, &schema).unwrap();
 

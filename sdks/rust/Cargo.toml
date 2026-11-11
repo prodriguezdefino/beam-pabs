@@ -29,6 +29,7 @@ members = [
     "beam/ml",
     "beam/runners/*",
     "beam/io/*",
+    "beam/io/gcp/core",
     "beam/io/gcp/expansion-service",
     "beam/io/gcp/googleapis",
     "beam/io/kafka/expansion-service",
@@ -98,6 +99,8 @@ semicolon_if_nothing_returned = "warn"
 [workspace.dependencies]
 prost = "0.14"
 prost-types = "0.14"
+# Descriptor pools and dynamic messages of the PROTO format (apache-beam-io-proto).
+prost-reflect = "0.16"
 tonic = { version = "0.14", features = ["tls-native-roots"] }
 tonic-prost = "0.14"
 tonic-prost-build = "0.14"
@@ -109,7 +112,7 @@ criterion = { version = "0.8", default-features = false, features = ["cargo_benc
 bytes = "1.7"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["float_roundtrip"] }
-base64 = "0.22"
+base64 = "0.23"
 sha2 = "0.11"
 tracing = "0.1"
 tracing-subscriber = "0.3"
@@ -120,7 +123,7 @@ inventory = "0.3"
 globset = "0.4"
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 snap = "1.1"
-zstd = { version = "0.14", default-features = false }
+zstd = { version = "0.13", default-features = false }
 # Masked CRC32C of TFRecord framing.
 crc32c = "0.6"
 regex = "1.13"
@@ -160,12 +163,13 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 arrow-array = { version = "58.4.1", default-features = false }
 arrow-buffer = { version = "58.4.1", default-features = false }
 arrow-schema = { version = "58.4.1", default-features = false }
+arrow-cast = { version = "58.4.1", default-features = false }
 arrow-ipc = { version = "58.4.1", default-features = false, features = ["lz4", "zstd"] }
 parquet = { version = "58.4.1", default-features = false, features = ["arrow", "flate2-zlib-rs", "lz4", "snap", "zstd"] }
 arrow-avro = { version = "58.4.1", default-features = false, features = ["deflate", "snappy", "zstd"] }
 # Static librdkafka, OpenSSL, zlib and zstd: the worker binary links only libc, libm and libgcc_s,
 # which the distroless runtime image has. See docs/rust-native-io-providers.md, Kafka dependencies.
-rdkafka = { version = "0.39", default-features = false, features = ["tokio", "libz-static", "zstd", "ssl-vendored"] }
+rdkafka = { version = "0.39", default-features = false, features = ["libz-static", "zstd", "ssl-vendored"] }
 iceberg = "0.11.0"
 iceberg-catalog-rest = "0.11.0"
 # The trait objects of the `iceberg` storage API need `typetag`, and its credentials need `http`.
@@ -184,6 +188,7 @@ beam_harness = { package = "apache-beam-harness", path = "beam/harness", version
 beam_external = { package = "apache-beam-external", path = "beam/external", version = "2.79.0-SNAPSHOT" }
 beam_expansion = { package = "apache-beam-expansion", path = "beam/expansion", version = "2.79.0-SNAPSHOT" }
 beam_io_file = { package = "apache-beam-io-file", path = "beam/io/file", version = "2.79.0-SNAPSHOT" }
+beam_gcp_core = { package = "apache-beam-gcp-core", path = "beam/io/gcp/core", version = "2.79.0-SNAPSHOT" }
 beam_io_gcp = { package = "apache-beam-io-gcp", path = "beam/io/gcp", version = "2.79.0-SNAPSHOT", default-features = false }
 beam_io_gcp_googleapis = { package = "apache-beam-io-gcp-googleapis", path = "beam/io/gcp/googleapis", version = "2.79.0-SNAPSHOT" }
 beam_io_kafka = { package = "apache-beam-io-kafka", path = "beam/io/kafka", version = "2.79.0-SNAPSHOT" }
@@ -193,6 +198,7 @@ beam_io_arrow = { package = "apache-beam-io-arrow", path = "beam/io/arrow", vers
 beam_io_parquet = { package = "apache-beam-io-parquet", path = "beam/io/parquet", version = "2.79.0-SNAPSHOT" }
 beam_io_avro = { package = "apache-beam-io-avro", path = "beam/io/avro", version = "2.79.0-SNAPSHOT" }
 beam_io_json = { package = "apache-beam-io-json", path = "beam/io/json", version = "2.79.0-SNAPSHOT" }
+beam_io_proto = { package = "apache-beam-io-proto", path = "beam/io/proto", version = "2.79.0-SNAPSHOT" }
 beam_io_tfrecord = { package = "apache-beam-io-tfrecord", path = "beam/io/tfrecord", version = "2.79.0-SNAPSHOT" }
 beam_runner_prism = { package = "apache-beam-runner-prism", path = "beam/runners/prism", version = "2.79.0-SNAPSHOT" }
 beam_runner_dataflow = { package = "apache-beam-runner-dataflow", path = "beam/runners/dataflow", version = "2.79.0-SNAPSHOT" }

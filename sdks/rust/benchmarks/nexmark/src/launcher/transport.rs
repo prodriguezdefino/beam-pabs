@@ -19,16 +19,18 @@
 
 //! Event and result exchange through Cloud Pub/Sub and Apache Kafka.
 //!
-//! The transforms are cross-language: the graph build calls a Java expansion service. Events
-//! travel as [`EventCoder`] bytes, the wire format of the Java Nexmark `Event.CODER`. Results
-//! travel as UTF-8 text, the `{:?}` form that the text sink also writes.
+//! The Pub/Sub transforms are cross-language: the graph build calls a Java expansion service.
+//! The Kafka transforms are the Kafka connector of the Rust SDK. Events travel as
+//! [`EventCoder`] bytes, the wire format of the Java Nexmark `Event.CODER`. Results travel as
+//! UTF-8 text, the `{:?}` form that the text sink also writes.
 
 use std::fmt::Debug;
 use std::sync::Once;
 
 use beam::coders::{Coder, CoderError, Context, DefaultCoder};
 use beam::io::gcp::pubsub::{self, PubsubFormat, PubsubRead, PubsubWrite, PubsubWriteFormat};
-use beam::io::kafka::{self, KafkaRead, KafkaWrite, OffsetReset};
+use beam::io::kafka::read::{Read, ReadOptions, StartOffset};
+use beam::io::kafka::write::{Write, WriteOptions};
 use beam::metrics::Metrics;
 use beam::prelude::*;
 
@@ -119,26 +121,23 @@ fn pubsub_payload(row: &Row) -> Option<&[u8]> {
 
 /// Reads events from `--kafka_topic`, from the earliest offset.
 ///
-/// The Kafka transforms do not carry record timestamps, so each event gets its own
-/// `date_time` as timestamp.
+/// The record timestamp is the time of the publisher, so each event gets its own `date_time`
+/// as timestamp.
 pub(super) fn read_kafka_events(
     pipeline: &Pipeline,
     args: &NexmarkArgs,
 ) -> Result<PCollection<Event>, LauncherError> {
     let (servers, topic) = kafka_target(args, args.kafka_topic.as_deref(), "--kafka_topic")?;
-    let read = KafkaRead::new(servers, topic).with_auto_offset_reset(OffsetReset::Earliest);
-    let read = if args.google_managed_kafka_auth {
-        read.with_google_managed_kafka_auth()
+    let options = ReadOptions::new(servers, topic).with_start_offset(StartOffset::Earliest);
+    let options = if args.google_managed_kafka_auth {
+        options.with_google_auth()
     } else {
-        read
+        options
     };
-    let read = with_service(
-        read,
-        args.expansion_service.as_deref(),
-        KafkaRead::with_expansion_service,
-    );
-    let rows = pipeline.try_apply("ReadKafkaEvents", read)?;
-    let events = decode_rows(&rows, "DecodeKafkaEvents", kafka::payload_bytes);
+    let values = pipeline.try_apply("ReadKafkaEvents", Read::new(options))?;
+    let events = decode_each(&values, "DecodeKafkaEvents", |value: Vec<u8>| {
+        decode_event(&value).map_err(|err| err.to_string())
+    });
     Ok(with_event_time_from_data(&events))
 }
 
@@ -169,12 +168,10 @@ pub(super) fn write_kafka_events(
     args: &NexmarkArgs,
 ) -> Result<(), LauncherError> {
     let (servers, topic) = kafka_target(args, args.kafka_topic.as_deref(), "--kafka_topic")?;
-    let rows = events
-        .par_do_fn("EncodeEvents", |event: Event, ctx| {
-            ctx.emit(kafka::raw_bytes_row(encode_event(&event)?))
-        })
-        .with_row_schema(&kafka::raw_bytes_schema());
-    let _ = rows.try_apply("WriteKafkaEvents", kafka_write(servers, topic, args))?;
+    let payloads = events.par_do_fn("EncodeEvents", |event: Event, ctx| {
+        ctx.emit(encode_event(&event)?)
+    });
+    let _rejected = payloads.try_apply("WriteKafkaEvents", kafka_write(servers, topic, args))?;
     Ok(())
 }
 
@@ -214,12 +211,10 @@ where
         args.kafka_results_topic.as_deref(),
         "--kafka_results_topic",
     )?;
-    let rows = results
-        .map("FormatResults", |result: T| {
-            kafka::raw_bytes_row(format!("{result:?}").into_bytes())
-        })
-        .with_row_schema(&kafka::raw_bytes_schema());
-    let _ = rows.try_apply("WriteKafkaResults", kafka_write(servers, topic, args))?;
+    let payloads = results.map("FormatResults", |result: T| {
+        format!("{result:?}").into_bytes()
+    });
+    let _rejected = payloads.try_apply("WriteKafkaResults", kafka_write(servers, topic, args))?;
     Ok(())
 }
 
@@ -239,18 +234,15 @@ fn pubsub_write(topic: &str, args: &NexmarkArgs, config: &NexmarkConfig) -> Pubs
     )
 }
 
-fn kafka_write(servers: &str, topic: &str, args: &NexmarkArgs) -> KafkaWrite {
-    let write = KafkaWrite::new(servers, topic);
-    let write = if args.google_managed_kafka_auth {
-        write.with_google_managed_kafka_auth()
+/// The write of the payloads. The records that Kafka rejects go to the output of the write,
+/// which the benchmark drops.
+fn kafka_write(servers: &str, topic: &str, args: &NexmarkArgs) -> Write {
+    let options = WriteOptions::new(servers, topic);
+    Write::new(if args.google_managed_kafka_auth {
+        options.with_google_auth()
     } else {
-        write
-    };
-    with_service(
-        write,
-        args.expansion_service.as_deref(),
-        KafkaWrite::with_expansion_service,
-    )
+        options
+    })
 }
 
 /// `--bootstrap_servers` and the topic of `flag`.

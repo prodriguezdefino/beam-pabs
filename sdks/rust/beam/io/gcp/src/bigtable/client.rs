@@ -38,7 +38,7 @@ use super::proto::{
     MutateRowsRequest, MutateRowsResponse, ReadRowsRequest, ReadRowsResponse, SampleRowKeysRequest,
     SampleRowKeysResponse,
 };
-use crate::grpc::{API_CLIENT, connect};
+use beam_gcp_core::grpc::{API_CLIENT, connect};
 
 /// Default Bigtable data API endpoint.
 pub const DEFAULT_ENDPOINT: &str = "https://bigtable.googleapis.com";
@@ -98,9 +98,10 @@ impl RoutingCookies {
     }
 }
 
-/// The clients of the process by endpoint URI. The scheme keeps an emulator apart from TLS.
-static CLIENTS: LazyLock<Mutex<HashMap<String, Arc<OnceCell<Client>>>>> =
-    LazyLock::new(Mutex::default);
+type ClientPool = HashMap<(String, bool), Arc<OnceCell<Client>>>;
+
+/// Process-wide client pool keyed on `(uri, tls)`.
+static CLIENTS: LazyLock<Mutex<ClientPool>> = LazyLock::new(Mutex::default);
 
 /// Normalizes an endpoint string or `host:port` into a URI. A `host:port` is plaintext.
 pub fn resolve_endpoint(explicit: Option<&str>) -> String {
@@ -123,13 +124,14 @@ pub struct BigtableClient {
 
 impl BigtableClient {
     /// Connects to `endpoint` (or [`EMULATOR_ENV`] / [`DEFAULT_ENDPOINT`] when `None`). All
-    /// calls for the same endpoint share one client. Call on
+    /// calls for the same `(uri, tls)` pair share one client. Call on
     /// [`crate::runtime::client_runtime`] only.
     pub async fn connect(endpoint: Option<&str>) -> io::Result<Self> {
         let uri = resolve_endpoint(endpoint);
+        let tls = !uri.starts_with("http://");
         let cell = CLIENTS
             .lock()
-            .map(|mut clients| Arc::clone(clients.entry(uri.clone()).or_default()))
+            .map(|mut clients| Arc::clone(clients.entry((uri.clone(), tls)).or_default()))
             .map_err(|_| io::Error::other("The Bigtable client cache is poisoned"))?;
         let inner = cell
             .get_or_try_init(|| connect(&uri, DEFAULT_ENDPOINT, POOL_CHANNELS))
@@ -241,6 +243,7 @@ fn to_status(error: &Error) -> Status {
 /// - `routing_cookie`: retries send the `x-goog-cbt-cookie*` headers back.
 /// - `retry_info`: retries wait for the delay of the `RetryInfo` error detail.
 static FEATURE_FLAGS: LazyLock<String> = LazyLock::new(|| {
+    use base64::Engine as _;
     use prost::Message as _;
     let flags = super::proto::FeatureFlags {
         mutate_rows_rate_limit: true,
@@ -250,29 +253,5 @@ static FEATURE_FLAGS: LazyLock<String> = LazyLock::new(|| {
         retry_info: true,
         ..Default::default()
     };
-    url_safe_base64(&flags.encode_to_vec())
+    base64::engine::general_purpose::URL_SAFE.encode(flags.encode_to_vec())
 });
-
-fn url_safe_base64(input: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
-    for chunk in input.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
-        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
-        let triple = (b0 << 16) | (b1 << 8) | b2;
-        out.push(ALPHABET[((triple >> 18) & 0x3F) as usize] as char);
-        out.push(ALPHABET[((triple >> 12) & 0x3F) as usize] as char);
-        if chunk.len() > 1 {
-            out.push(ALPHABET[((triple >> 6) & 0x3F) as usize] as char);
-        } else {
-            out.push('=');
-        }
-        if chunk.len() > 2 {
-            out.push(ALPHABET[(triple & 0x3F) as usize] as char);
-        } else {
-            out.push('=');
-        }
-    }
-    out
-}

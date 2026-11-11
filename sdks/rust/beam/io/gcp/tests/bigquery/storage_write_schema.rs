@@ -17,13 +17,13 @@
  * under the License.
  */
 
-//! Beam to BigQuery types of the native Storage Write connector: the columns of a created
+//! Beam to BigQuery types of the Storage Write connector: the columns of a created
 //! table, the Arrow types that a write sends, and the rows that come back from a rejected
 //! request. No test calls BigQuery.
-#![expect(clippy::unwrap_used, reason = "test fixtures panic on setup failure")]
 
 use std::sync::Arc;
 
+use beam::schema::{FieldType, FieldValue, Row, Schema};
 use beam_io_arrow::arrow_array::cast::AsArray;
 use beam_io_arrow::arrow_array::types::{
     Decimal128Type, Decimal256Type, Int64Type, Time64MicrosecondType, TimestampMicrosecondType,
@@ -32,8 +32,7 @@ use beam_io_arrow::arrow_array::{Array, ArrayRef, RecordBatch};
 use beam_io_arrow::arrow_buffer::i256;
 use beam_io_arrow::arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema, TimeUnit};
 use beam_io_arrow::{date_type, decimal_type, micros_instant_type};
-use beam::schema::{FieldType, FieldValue, Row, Schema};
-use beam_io_gcp::bigquery::storage::schema::{
+use beam_io_gcp::bigquery::schema::{
     table_arrow_schema, table_fields, write_array, write_batch_to_rows, write_field,
 };
 use google_cloud_bigquery_v2::model::TableFieldSchema;

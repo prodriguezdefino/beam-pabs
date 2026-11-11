@@ -36,6 +36,7 @@ Run builds and tests through Gradle. The rest of the Beam repository uses it too
 ./gradlew :sdks:rust:build -Ppkg=apache-beam-io-gcp -PonlyFeatures=bigtable  # One crate with only these features (also for test)
 ./gradlew :sdks:rust:check             # Run formatting, clippy and script tests in parallel
 ./gradlew :sdks:rust:clippyFix         # Apply the machine-applicable lint fixes (cargo clippy --fix)
+./gradlew :sdks:rust:clippyLintReport -PclippyLints=match_bool,expect_used  # Count warnings of candidate lints across all targets
 ./gradlew :sdks:rust:test              # Run all tests on a host Prism (-Ppkg=<crate>, -PtestConcurrency=4)
 ./gradlew :sdks:rust:test --continue   # Run every test binary and report all failures (cargo --no-fail-fast)
 ./gradlew :sdks:rust:fmt               # Apply code formatting (cargo fmt)
@@ -72,7 +73,9 @@ Run builds and tests through Gradle. The rest of the Beam repository uses it too
 ./gradlew :sdks:rust:bigQueryIntegrationTest     # Native BigQuery reads against public tables on Prism
 ./gradlew :sdks:rust:gcpExpansionServicePythonTest  # Python pipelines on Prism against the GCP expansion service
 ./gradlew :sdks:rust:gcpExpansionServicePythonTestDataflow  # The same Python pipelines on Dataflow ([-Ptests=bigquery_storage] [-PtestFilter=unbounded])
-./gradlew :sdks:rust:kafkaExpansionServiceImage  # Expansion service image of the native Kafka connector
+./gradlew :sdks:rust:kafkaExpansionServiceImage  # Expansion service image of the Kafka connector of the Rust SDK
+./gradlew :sdks:rust:kafkaExpansionServiceDataflowImage # The same image for linux/amd64, pushed for Dataflow
+./gradlew :sdks:rust:kafkaExpansionServiceTestingImage  # Kafka expansion service image for its Python tests on Prism
 ./gradlew :sdks:rust:kafkaExpansionServicePythonTest  # Python pipelines on Prism against the Kafka expansion service and a local broker in Docker
 
 # Tasks that other tasks use

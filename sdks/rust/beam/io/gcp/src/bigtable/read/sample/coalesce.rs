@@ -71,7 +71,7 @@ impl SampleCoalescer {
     }
 
     /// Feeds one `SampleRowKeysResponse` tablet boundary into the coalescer.
-    pub fn feed(&mut self, sample: SampleRowKeysResponse) {
+    pub fn feed(&mut self, sample: &SampleRowKeysResponse) {
         let sample_end = sample.row_key.to_vec();
         let offset = sample.offset_bytes.max(0);
         let tablet_size = (offset - self.prev_offset_bytes).max(1);

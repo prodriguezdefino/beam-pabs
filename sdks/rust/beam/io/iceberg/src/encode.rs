@@ -22,15 +22,16 @@
 
 use std::sync::Arc;
 
-use beam_io_arrow::arrow_array::RecordBatch;
-use beam_io_arrow::{EncodedBatch, RowBatchBuilder, RowCodec};
 use beam::Instant;
 use beam::coders::{DefaultCoder, RowCoder};
+use beam::internals::failed_row_schema;
 use beam::metrics::Metrics;
-use beam::schema::{Field, FieldType, FieldValue, Row, Schema};
+use beam::schema::{FieldValue, Row, Schema};
 use beam::transforms::{BundleWindows, DoFn, FinishBundleContext, ProcessContext};
 use beam::values::{AnySideInput, SingletonView};
 use beam::windowing::{BoundedWindow, GlobalWindow};
+use beam_io_arrow::arrow_array::RecordBatch;
+use beam_io_arrow::{EncodedBatch, RowBatchBuilder, RowCodec};
 use iceberg::spec::{Schema as TableSchema, TableMetadata};
 
 use crate::METRICS;
@@ -48,10 +49,7 @@ const GLOBAL: BoundedWindow = BoundedWindow::Global(GlobalWindow);
 
 /// The schema of the error output for rows of `schema`: the rejected row and the reason.
 pub fn error_schema(schema: &Schema) -> Schema {
-    Schema::new(vec![
-        Field::new("failed_row", FieldType::row(schema.clone())),
-        Field::new("error_message", FieldType::string()),
-    ])
+    failed_row_schema(schema)
 }
 
 /// The batch of some elements, and an error row for each element that does not convert.
@@ -269,9 +267,10 @@ impl<T: DefaultCoder + Send + Sync + 'static> DoFn for EncodeFn<T> {
         // The write puts its input in the global window first.
         self.windows.add(GLOBAL, ctx.timestamp());
         self.buffer.push(element);
-        match self.buffer.len() >= self.batch_rows {
-            true => self.flush()?.into_iter().try_for_each(|out| ctx.emit(out)),
-            false => Ok(()),
+        if self.buffer.len() >= self.batch_rows {
+            self.flush()?.into_iter().try_for_each(|out| ctx.emit(out))
+        } else {
+            Ok(())
         }
     }
 

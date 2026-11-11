@@ -259,7 +259,7 @@ Decimals:
 | Resource hints, per-transform | ✅ | ✅ | ❌ | ❌ | ✅ |
 | Resource hints, pipeline-level | ✅ | ✅ | ✅ | ❌ | ✅ |
 | Managed I/O | ✅ | ✅ | ❌ | ❌ | ✅ xlang |
-| Lineage reporting | ✅ | ✅ | ❌ | ❌ | ❌ |
+| Lineage reporting | ✅ | ✅ | ❌ | ❌ | ✅ |
 | Worker runs user code without rebuilding the pipeline | ✅ | ✅ | ✅ | ✅ | 🟡 |
 
 Notes:
@@ -274,7 +274,8 @@ Notes:
 - **Providing** transforms means that the SDK ships an expansion service, so
   other SDKs can call its transforms. Go and TypeScript have only the generated
   gRPC stubs, not a server implementation. Rust ships `apache-beam-expansion`
-  and the `beam-expansion-service` binary.
+  and the `beam-expansion-service`, `beam-gcp-expansion-service`, and
+  `beam-kafka-expansion-service` binaries.
 - **Consuming** cross-language transforms: the `beam:transforms:xlang:test:*` cases of
   `ValidateRunnerXlangTest.java` run as Rust pipelines on Prism. They run against the Java
   test expansion service (`validatesCrossLanguageRunnerJavaServicePrism`). They also run
@@ -284,14 +285,14 @@ Notes:
   service is the Java expansion service.
 - For all SDKs, Flex Template support is mostly tooling outside this
   repository, so the source does not show the Go value.
+- **Lineage reporting**: `beam::metrics::Lineage` (`Lineage::sources()`, `Lineage::sinks()`)
+  records source and sink identifiers as string-set metrics (`lineage:sources`,
+  `lineage:sinks`). The BigQuery, Bigtable, Kafka and Iceberg connectors report them.
 - **Managed I/O** has the same model as Python.
   `beam::io::managed::{ManagedRead, ManagedWrite}` expand Java's
-  `beam:transform:managed:v1` with the connector config as YAML (Iceberg,
-  Iceberg CDC read, Kafka, BigQuery, Postgres, MySQL, SQL Server, Delta Lake;
-  constants in `beam::io::managed`, e.g. `managed::ICEBERG`). The typed Kafka and
-  BigQuery transforms also expand through Managed, so runners such as Dataflow
-  can manage and upgrade them. The BigQuery Storage Write v2 and File Loads
-  methods have no Managed equivalent, so they expand directly.
+  `beam:transform:managed:v1` with the connector config as YAML. The connectors are
+  Iceberg, Iceberg CDC read, Kafka, BigQuery, Postgres, MySQL, SQL Server and Delta Lake.
+  Their constants are in `beam::io::managed`, for example `managed::ICEBERG`.
 - **Resource hints**: Rust supports pipeline-level and per-transform hints
   (`beam:resources:min_ram_bytes:v1`, `beam:resources:cpu_count:v1`,
   `beam:resources:accelerator:v1`, `beam:resources:max_active_bundles_per_worker:v1`,
@@ -337,9 +338,9 @@ Dataflow does not execute it.
 | Azure Blob | ✅ | ✅ | 🟡 | ❌ |
 | HDFS | ✅ | ✅ | ❌ | ❌ |
 | Pub/Sub | ✅ | ✅ | ✅ xlang | ✅ xlang |
-| BigQuery | ✅ | ✅ xlang | ✅ xlang | ✅ xlang |
-| Bigtable | ✅ | ✅ | ✅ | ✅ xlang |
-| Kafka | ✅ | ✅ xlang | ✅ xlang | ✅ xlang |
+| BigQuery | ✅ | ✅ xlang | ✅ xlang | ✅ / xlang (Managed) |
+| Bigtable | ✅ | ✅ | ✅ | ✅ |
+| Kafka | ✅ | ✅ xlang | ✅ xlang | ✅ / xlang |
 | JDBC (Postgres, MySQL, SQL Server) | ✅ | ✅ xlang | ✅ xlang | ✅ xlang |
 | Iceberg | ✅ | ✅ xlang | ❌ | ✅ (write) / xlang |
 | Delta Lake (read) | ✅ | ✅ xlang | ❌ | ✅ xlang |
@@ -361,11 +362,46 @@ Notes:
   uncompressed and compressed files. Uncompressed, Gzip and Deflate files are byte
   compatible with TensorFlow and the Java and Python SDKs. TensorFlow does not read Zstd or
   Snappy files.
-- **BigQuery**: native in Java (`BigQueryIO`). Python, Go and Rust use cross-language Storage Read API and Storage Write API transforms from the Java SchemaTransform providers (`beam:schematransform:org.apache.beam:bigquery_storage_read:v1` / `bigquery_write:v1`).
-- **Bigtable**: native in Java, Python and Go. Rust uses the Java SchemaTransform providers (`beam:schematransform:org.apache.beam:bigtable_read:v1` / `bigtable_write:v1`) through `beam::io::gcp::bigtable::{BigtableRead, BigtableWrite}`. These providers accept only project, instance and table, plus `flatten` on read. The Java providers do not expose app profiles, emulator host, row filters, key ranges or write flow control, so Rust and the Python cross-language wrapper cannot set them.
-- **Kafka**: native in Java. Python, Go and Rust use the Java SchemaTransform providers (`beam:schematransform:org.apache.beam:kafka_read:v1` / `kafka_write:v1`). Rust exposes them as `beam::io::kafka::{KafkaRead, KafkaWrite}` behind the `kafka` feature, and they expand through Managed I/O. You can configure consumer/producer properties (security, SASL, group id, …), RAW/STRING/JSON/AVRO/PROTO formats, Confluent schema registry, bounded reads and redistribution. The providers do not expose record keys and headers. On `KafkaRead` and `KafkaWrite`, `with_error_handling` sends failed records to an error output. The plain transforms do not return this output. To get the errors from `KafkaRead`, expand `to_managed()?.with_all_outputs()` and take the error output tag. For `KafkaWrite`, expand `to_managed()?.with_outputs()`. `KafkaRead` does not support error handling together with the Confluent schema registry.
-- **Iceberg (native write)**: Rust `beam::io::iceberg::{Write, WriteRows}` (feature `iceberg`) appends a `#[derive(BeamRow)]` struct or a schema row to one table of a REST catalog, in batch and streaming. It writes Parquet data files through the SDK file systems, supports vended credentials and BigLake, and commits one snapshot for each table and triggering period. Dynamic destinations, upserts and the read go through Managed I/O.
-- **Iceberg, Delta Lake & JDBC**: native in Java. Python and Rust use them through Managed I/O (`beam.managed.Read/Write` in Python, `beam::io::managed::{ManagedRead, ManagedWrite}` in Rust), which expands the Java SchemaTransforms cross-language. Iceberg and the JDBC databases support read and write. Delta Lake is read-only. Go has no Managed API.
+- **BigQuery**: native in Java (`BigQueryIO`). Python and Go use cross-language Storage Read
+  and Storage Write transforms from the Java SchemaTransform providers
+  (`beam:schematransform:org.apache.beam:bigquery_storage_read:v1` / `bigquery_write:v1`).
+  Rust has Storage Read and Storage Write connectors in `beam::io::gcp::bigquery::{read, write}`
+  (feature `gcp-bigquery`), including `ReadRows::typed::<T>()` and `WriteRows::typed::<T>()` for
+  `#[derive(BeamRow)]` structs. The Storage Write API cannot replace the rows of a table. For
+  `WRITE_TRUNCATE`, load jobs, CDC writes and dynamic destinations, Rust uses `ManagedWrite`
+  with `managed::BIGQUERY`.
+- **Bigtable**: native in Java, Python and Go. Rust has its own connectors in
+  `beam::io::gcp::bigtable::{read, write}` (feature `gcp-bigtable`). They support app
+  profiles, materialized and authorized views, row filters, key ranges, write flow control
+  and error outputs.
+- **Kafka**: native in Java (`KafkaIO`) and Rust (`beam::io::kafka::{read, write}`, feature
+  `kafka`, on librdkafka). Python and Go use cross-language SchemaTransform providers
+  (`beam:schematransform:org.apache.beam:kafka_read:v1` / `kafka_write:v1`).
+  `beam-kafka-expansion-service` serves the Rust connector to other SDKs. The Rust connector
+  supports:
+  - consumer and producer properties, and Google Cloud Managed Kafka authentication
+  - bounded and unbounded reads, a reshuffle after the read (the `Redistribute` read
+    option), and dead-letter error outputs
+  - codecs in `beam::io::kafka::codec`: `Raw`, `Utf8`, `Json` (`beam::io::json`), `Avro`
+    (`beam::io::avro::datum`, plain or with a Confluent `SchemaRegistry`), `Proto`
+    (`beam::io::proto` on `prost-reflect`, with maps and groups), `BeamRow`, `Payload`
+    (rows of one field), `Typed` (`Typed::new` on any row codec, also a codec of your own)
+    and `WithMetadata` (keys, headers and timestamps)
+
+  For dynamic topic writes or inline `.proto` schema text, Rust uses `ManagedRead` or
+  `ManagedWrite` with `managed::KAFKA`.
+- **Iceberg**: Rust `beam::io::iceberg::{Write, WriteRows}` (feature `iceberg`) appends a
+  `#[derive(BeamRow)]` struct or a schema row to one table of a REST catalog. It works in
+  batch and streaming. It writes Parquet data files through the SDK file systems and
+  supports vended credentials and BigLake. It commits one snapshot for each table and
+  triggering period. Dynamic destinations, upserts and the read go through Managed I/O.
+- **Iceberg, Delta Lake & JDBC**: native in Java. Python and Rust use them through Managed
+  I/O (`beam.managed.Read/Write` in Python, `beam::io::managed::{ManagedRead, ManagedWrite}`
+  in Rust). Managed I/O expands the Java SchemaTransforms cross-language. Iceberg and the
+  JDBC databases support read and write. Delta Lake is read-only. Go has no Managed API.
+- **Dynamic destinations**: Java `FileIO.writeDynamic` and Python `WriteToFiles(destination=..)`
+  write each element to a destination that the element selects. Rust file sinks write all
+  elements to one destination.
 
 ## Ecosystem
 

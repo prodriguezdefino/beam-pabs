@@ -22,7 +22,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Expansion service with the native Google Cloud connectors of the Apache Beam Rust SDK"
+description = "Expansion service with the Google Cloud connectors of the Apache Beam Rust SDK"
 
 [lib]
 name = "beam_io_gcp_expansion"
@@ -32,10 +32,10 @@ name = "beam-gcp-expansion-service"
 path = "src/main.rs"
 
 [dependencies]
-# The SDK facade: the connectors are `beam::io::gcp::bigquery::storage` and
+# The SDK facade: the connectors are `beam::io::gcp::bigquery` and
 # `beam::io::gcp::bigtable`. Its `mimalloc` feature installs mimalloc as the global allocator
 # of the worker.
-beam = { package = "apache-beam", path = "../../..", version = "2.79.0-SNAPSHOT", default-features = false, features = ["gcp-bigquery-storage", "gcp-bigtable", "mimalloc"] }
+beam = { package = "apache-beam", path = "../../..", version = "2.79.0-SNAPSHOT", default-features = false, features = ["gcp-bigquery", "gcp-bigtable", "mimalloc"] }
 bytes = { workspace = true }
 beam_expansion = { workspace = true }
 tokio = { workspace = true }

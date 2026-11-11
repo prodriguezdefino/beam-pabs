@@ -101,9 +101,44 @@ class TestJobWait(unittest.TestCase):
 
   def test_batch_job_is_checked_but_not_drained(self):
     batch = lambda state: {**job(state), "type": "JOB_TYPE_BATCH"}
-    result, drains, _ = run_wait({"async": True, "expected_rows": 10},
+    result, drains, _ = run_wait({"expected_rows": 10},
                                  [batch("RUNNING"), batch("DONE")], lambda j: 10)
     self.assertEqual((drains, result["error"]), ([], None))
+    over, _, _ = run_wait({"expected_rows": 10}, [batch("DONE")], lambda j: 12)
+    self.assertEqual(over["error"], "job ended with 12 rows, expected 10")
+
+  def test_a_failed_counter_read_is_read_again_once(self):
+    batch = {**job("DONE"), "type": "JOB_TYPE_BATCH"}
+    reads = iter([None, 10])
+    result, _, _ = run_wait({"expected_rows": 10}, [batch], lambda j: next(reads))
+    self.assertIsNone(result["error"])
+
+  def test_an_unknown_row_count_is_not_zero_rows(self):
+    batch = {**job("DONE"), "type": "JOB_TYPE_BATCH"}
+    result, _, _ = run_wait({"expected_rows": 10}, [batch], lambda j: None)
+    self.assertEqual(result["error"],
+                     "job ended, but its row counter could not be read (expected 10)")
+    zero, _, _ = run_wait({"expected_rows": 10}, [batch], lambda j: 0.0)
+    self.assertEqual(zero["error"], "job ended with 0 rows, expected 10")
+
+  def test_drains_after_producer_finishes(self):
+    clock, drains, ready = Clock(), [], []
+    polls = iter([job("PENDING"), job("RUNNING"), job("RUNNING"), job("RUNNING"), job("DRAINED")])
+    producer_done = {"at": None}
+
+    def on_poll():
+      if clock.now == 60.0:
+        producer_done["at"] = 60.0
+
+    with contextlib.redirect_stdout(io.StringIO()):
+      result = job_wait.wait({"drain_after_producer_seconds": 30},
+                             lambda: next(polls), lambda j: None, drains.append,
+                             on_poll=on_poll, on_running=lambda: ready.append(clock.now),
+                             producer_done_at=lambda: producer_done["at"],
+                             sleep=clock.sleep, clock=lambda: clock.now)
+    self.assertEqual(ready, [30.0])
+    self.assertEqual(len(drains), 1)
+    self.assertIsNone(result["error"])
 
 
 if __name__ == "__main__":

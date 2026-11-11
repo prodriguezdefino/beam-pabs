@@ -213,8 +213,7 @@ pub struct NexmarkArgs {
     #[arg(long)]
     pub google_managed_kafka_auth: bool,
 
-    /// Expansion service for the Pub/Sub and Kafka transforms, instead of the default Java
-    /// service.
+    /// Expansion service for the Pub/Sub transforms, instead of the default Java service.
     #[arg(long)]
     pub expansion_service: Option<String>,
 

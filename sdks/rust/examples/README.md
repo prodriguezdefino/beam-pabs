@@ -53,9 +53,9 @@ tests:
 | [`windowing`](#sliding-windows--sessions-windowing) | Sliding windows, session windows |
 | [`stateful_buffering`](#stateful-buffering-with-timers-stateful_buffering) | `BagState`, `CombiningState`, event-time and processing-time timers |
 | [`splittable_dofn`](#splittable-dofn-splittable_dofn) | `OffsetRange` restriction, initial splits, self-checkpoints |
-| [`bigquery_tornadoes`](#bigquery-tornadoes-cross-language) | Java BigQuery read and write |
-| [`bigtable_wordcount`](#bigtable-wordcount-cross-language-bigtable_wordcount) | Java Bigtable read and write |
-| [`ouroboros`](#ouroboros-cross-language-streaming-ouroboros) | Java Kafka or Pub/Sub read and write, Managed error handling |
+| [`bigquery_tornadoes`](#bigquery-tornadoes-bigquery_tornadoes) | BigQuery Storage Read and Storage Write |
+| [`bigtable_wordcount`](#bigtable-wordcount-bigtable_wordcount) | Bigtable read and write |
+| [`ouroboros`](#ouroboros-streaming-ouroboros) | Kafka or Java Pub/Sub read and write, failure outputs |
 | [`iceberg_wordcount`](#iceberg-wordcount-managed-io-iceberg_wordcount) | Managed I/O Iceberg, Managed outputs |
 | [`windowed_wordcount`](#windowed-wordcount-fixed-tumbling-windows) | Event timestamps, fixed windows |
 | [`leaderboard`](#mobile-gaming-leaderboard-triggers-speculative-panes--allowed-lateness) | Triggers, accumulation, allowed lateness |
@@ -265,14 +265,14 @@ self-checkpoint). `--input` (a path or glob) is required. `--output` defaults to
   -PextraArgs="--input=/path/to/texts/*.txt --output=/tmp/lines.txt"
 ```
 
-## BigQuery Tornadoes (Cross-Language)
+## BigQuery Tornadoes (`bigquery_tornadoes`)
 
-This pipeline mixes native Rust processing with Java cross-language I/O transforms through the Beam Expansion Service:
+This pipeline reads and writes BigQuery with the Storage Read and Storage Write connectors:
 
-1. Reads weather station observations with the Java BigQuery Storage Read API (`--input`, default `apache-beam-testing.samples.weather_stations`, or `--input_query`).
-2. Filters for tornado events and extracts the month in Rust.
+1. Reads weather station observations with the Storage Read API (`ReadRows`). It reads the `--input` table (default `apache-beam-testing.samples.weather_stations`) or the `--input_query` query.
+2. Filters for tornado events and extracts the month.
 3. Computes monthly tornado counts with the `CountTornadoes` composite.
-4. Writes `(month, tornado_count)` rows to the `--output` table with the Java BigQuery Write transform. `--output` is required.
+4. Writes `(month, tornado_count)` rows to the `--output` table with the Storage Write API (`WriteRows`). `--output` is required.
 
 ```bash
 # Run with Portable Prism runner:
@@ -285,12 +285,12 @@ This pipeline mixes native Rust processing with Java cross-language I/O transfor
   -PextraArgs="--output=<project>:<dataset>.tornadoes"
 ```
 
-## Bigtable WordCount (Cross-Language, `bigtable_wordcount`)
+## Bigtable WordCount (`bigtable_wordcount`)
 
-This pipeline transfers word counts to and from Cloud Bigtable using the Java `bigtable_write` and `bigtable_read` SchemaTransforms:
+This pipeline transfers word counts to and from Cloud Bigtable with the Bigtable connectors:
 
-- `--mode=write` (default): Counts the words of `--input` with `wordcount::CountWords` and writes one row per word (`<column_family>:count`) with `BigtableWrite`.
-- `--mode=read`: Reads the table with `BigtableRead`, decodes each column in Rust, and writes `word: count` lines to `--output`. `--output` is required in this mode.
+- `--mode=write` (default): Counts the words of `--input` with `wordcount::CountWords`. Writes one row per word (`<column_family>:count`) with `WriteMutations`.
+- `--mode=read`: Reads the table with `ReadRows`, decodes each column, and writes `word: count` lines to `--output`. `--output` is required in this mode.
 
 `--column_family` defaults to `counts`. The table and its column family must exist first:
 
@@ -304,14 +304,13 @@ gcloud bigtable instances tables create <table> --instance=<instance> --column-f
   -PextraArgs="--bigtable_project=<project> --bigtable_instance=<instance> --bigtable_table=<table> --mode=read --output=gs://<bucket>/counts"
 ```
 
-## Ouroboros (Cross-Language Streaming, `ouroboros`)
+## Ouroboros (Streaming, `ouroboros`)
 
 This streaming pipeline reads from and writes to the same topic (`--loop_topic`).
 `--transport` selects the messaging system:
 
-- `kafka`: the Java `kafka_read` and `kafka_write` SchemaTransforms, expanded through
-  Managed I/O. The read starts at the earliest offset. `--bootstrap_servers` is required,
-  and `--group_id` is optional.
+- `kafka`: the Kafka read and write of `beam::io::kafka`. The read starts at the earliest
+  offset. `--bootstrap_servers` is required, and `--group_id` is optional.
 - `pubsub`: the Java Pub/Sub SchemaTransforms (`PubsubRead`, `PubsubWrite`, RAW format). The
   read uses `--subscription` if it is set, else `--loop_topic`.
 
@@ -320,9 +319,9 @@ JSON message on each pass. After `--max_cycles` passes (default `5`), a message 
 loop. The `ouroboros` counters `seeded`, `evolved`, `ascended` and `malformed` show the
 progress. The job runs until you cancel it.
 
-On Kafka, both transforms use Managed error handling (`with_error_handling`, expanded with
-`to_managed()?.with_all_outputs()` or `with_outputs()`). Records that Java cannot decode or
-serialize increment `kafka_read_errors` or `kafka_write_errors` and do not fail the bundle.
+On Kafka, the read uses `Read::with_failures`, and the write returns the records that Kafka
+rejects. A record with no value increments `kafka_read_errors`. A record that Kafka rejects
+increments `kafka_write_errors`. Neither fails the bundle.
 
 ```bash
 # Kafka on Google Cloud Dataflow
@@ -338,7 +337,7 @@ serialize increment `kafka_read_errors` or `kafka_write_errors` and do not fail 
   -PextraArgs="--transport=kafka --bootstrap_servers=<bootstrap-host>:9092 --gmk --loop_topic=<topic> --num_seeds=3 --streaming=true"
 ```
 
-`--gmk` applies `KafkaRead`/`KafkaWrite::with_google_managed_kafka_auth()` (SASL_SSL and OAUTHBEARER with worker Google credentials). Run workers on a network attached to the cluster (`--network` and `--subnetwork`). Use the `bootstrap-*` host from the private Cloud DNS zone created by Google Cloud Managed Service for Apache Kafka (`gcloud dns record-sets list --zone=gmk-...`).
+`--gmk` applies `ReadOptions::with_google_auth()` and `WriteOptions::with_google_auth()`. They use SASL_SSL and OAUTHBEARER with the Google credentials of the worker. Run workers on a network attached to the cluster (`--network` and `--subnetwork`). Google Cloud Managed Service for Apache Kafka makes a private Cloud DNS zone. Use the `bootstrap-*` host from that zone (`gcloud dns record-sets list --zone=gmk-...`).
 
 ## Iceberg WordCount (Managed I/O, `iceberg_wordcount`)
 

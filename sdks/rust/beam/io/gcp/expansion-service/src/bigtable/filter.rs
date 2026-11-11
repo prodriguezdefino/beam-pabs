@@ -17,8 +17,8 @@
  * under the License.
  */
 
-//! Server-side `RowFilter` of a read configuration: the encoded `row_filter` and the native
-//! value bitmask options.
+//! Server-side `RowFilter` of a read configuration: the encoded `row_filter` and the value
+//! bitmask options.
 
 use beam::io::gcp::bigtable::RowFilterExt as _;
 use beam::io::gcp::bigtable::proto::RowFilter;
@@ -46,7 +46,7 @@ pub(super) fn with_filters(
     let Some(bitmask) = bitmask_filter(bitmask)? else {
         return Ok(options);
     };
-    let filter = match options.decoded_filter()? {
+    let filter = match options.decoded_filter().map_err(|e| e.to_string())? {
         Some(row_filter) => RowFilter::chain([row_filter, bitmask]),
         None => bitmask,
     };

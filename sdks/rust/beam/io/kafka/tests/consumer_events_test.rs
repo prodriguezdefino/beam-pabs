@@ -25,7 +25,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use beam_io_kafka::native::client::{Connection, ReadId, is_polling_events, shared_consumer};
+use beam_io_kafka::client::{Connection, ReadId, is_polling_events, shared_consumer};
 
 /// Waits up to 5 s for `done`.
 fn eventually(done: impl Fn() -> bool) -> bool {
@@ -38,14 +38,12 @@ fn eventually(done: impl Fn() -> bool) -> bool {
 
 #[test]
 fn one_consumer_serves_every_holder_of_a_slot_and_the_event_thread_runs_while_one_is_held() {
-    let connection = Connection {
-        bootstrap_servers: "localhost:9".to_string(),
-        properties: [("client.id", "consumer-test"), ("group.id", "pool-group")]
-            .iter()
+    let connection = Connection::new("localhost:9").with_properties(
+        [("client.id", "consumer-test"), ("group.id", "pool-group")]
+            .into_iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect::<BTreeMap<_, _>>(),
-        ..Connection::default()
-    };
+    );
     let read = ReadId::unique();
     let get = |slot| shared_consumer(&connection, read, slot);
     let first = get(0).unwrap();

@@ -25,17 +25,17 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use beam_io_arrow::arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
 use beam::coders::DefaultCoder;
 use beam::prelude::{Create, Pipeline};
 use beam::schema::{FieldType, Schema};
-use bytes::Bytes;
-use beam_io_gcp::bigquery::storage::write::buffered::{StreamState, WriteBufferedFn};
-use beam_io_gcp::bigquery::storage::write::encode::{Encoder, schema_bytes};
-use beam_io_gcp::bigquery::storage::write::error_schema;
-use beam_io_gcp::bigquery::storage::write::projection::{FieldSelection, Selection};
-use beam_io_gcp::bigquery::storage::write::table::Destination;
+use beam_io_arrow::arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
+use beam_io_gcp::bigquery::write::buffered::{StreamState, WriteBufferedFn};
+use beam_io_gcp::bigquery::write::encode::{Encoder, schema_bytes};
+use beam_io_gcp::bigquery::write::error_schema;
+use beam_io_gcp::bigquery::write::projection::{FieldSelection, Selection};
+use beam_io_gcp::bigquery::write::table::Destination;
 use beam_io_gcp::runtime::{block_on_async, client_runtime};
+use bytes::Bytes;
 use google_cloud_auth::credentials::anonymous::Builder as Anonymous;
 use google_cloud_bigquery::client::Write;
 use tonic::codegen::{BoxFuture, http};
@@ -416,4 +416,27 @@ fn retire_fails_on_another_finalize_error() {
     );
     let error = result.expect_err("the finalize failed").to_string();
     assert!(error.contains("Cannot finalize"), "{error}");
+}
+
+#[test]
+fn opening_a_buffered_stream_records_sink_lineage() {
+    use std::collections::BTreeSet;
+
+    use beam::internals::{MetricsContainer, MetricsScope};
+    use beam::metrics::{LINEAGE_NAMESPACE, LINEAGE_SINKS, MetricResults};
+
+    let container = Arc::new(MetricsContainer::new());
+    let (result, _) = {
+        let _scope = MetricsScope::enter(Arc::clone(&container), Arc::from("WriteBuffered"));
+        retire(&state(10, 9), Ok(9), Ok(10))
+    };
+    assert!(result.is_ok(), "{result:?}");
+    let metrics = MetricResults::from_container(&container);
+    let sinks = metrics
+        .string_set(LINEAGE_NAMESPACE, LINEAGE_SINKS)
+        .expect("sink lineage recorded");
+    assert_eq!(
+        sinks.values(),
+        &BTreeSet::from(["bigquery:p.d.t".to_string()])
+    );
 }

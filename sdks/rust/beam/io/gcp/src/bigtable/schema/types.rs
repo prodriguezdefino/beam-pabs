@@ -293,6 +293,7 @@ impl From<BigtableMutation> for Row {
             ),
             BigtableMutation::DeleteFromRow { key } => (key, None, None, None, None, None, None),
         };
+        #[expect(clippy::expect_used, reason = "fields match mutation_schema")]
         Row::new(
             mutation_schema(),
             vec![

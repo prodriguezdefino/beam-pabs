@@ -17,51 +17,61 @@
  * under the License.
  */
 
-//! Apache Kafka I/O connectors for the Apache Beam Rust SDK.
+//! The Apache Kafka I/O connector of the Apache Beam Rust SDK, on librdkafka.
 //!
-//! The crate has two connectors:
+//! The connector reads and writes Kafka in the Rust worker. [`read`] reads the records of a
+//! topic, and [`write`] writes elements to a topic. [`codec`] maps record values to elements
+//! and back. [`client`] holds the connection to a cluster, and [`auth`] the Google
+//! authentication of Google Cloud Managed Service for Apache Kafka. The Kafka expansion
+//! service serves the connector to Python, Java and Go pipelines.
 //!
-//! - [`native`] (feature `native`): reads and writes Kafka in the Rust worker, on librdkafka.
-//!   The Kafka expansion service serves it to Python, Java and Go pipelines.
-//! - The Java connector through cross-language expansion: [`KafkaRead`] and [`KafkaWrite`]
-//!   expand on the Java expansion service, through Managed I/O.
+//! Pipelines use the crate as `beam::io::kafka` with the facade feature `kafka`. For a feature
+//! that the connector does not have, use the Kafka transforms of the Managed API
+//! (`beam::io::managed`, feature `managed`).
 //!
-//! Pipelines use the crate as `beam::io::kafka`: the `beam` facade enables it with the
-//! feature `kafka`, and the native connector with `kafka-native`.
+//! The consumer and producer properties are librdkafka properties, not the properties of the
+//! Java Kafka client. For SASL, set `sasl.mechanism`, `sasl.username` and `sasl.password`:
+//! librdkafka has no `sasl.jaas.config`.
 //!
-//! # Reading from Kafka through Java
+//! # Reading from Kafka
 //! ```no_run
+//! use std::time::Duration;
+//!
 //! use beam::prelude::*;
-//! use beam_io_kafka::{KafkaFormat, KafkaRead, OffsetReset};
+//! use beam_io_kafka::codec::Utf8;
+//! use beam_io_kafka::read::{Read, ReadOptions, StartOffset};
 //!
 //! let p = Pipeline::new();
-//! // Each element is a row `(payload: STRING)`.
-//! let lines: PCollection<Row> = p.apply(
-//!     "KafkaRead",
-//!     KafkaRead::new("broker-1:9092,broker-2:9092", "events")
-//!         .with_format(KafkaFormat::String)
-//!         .with_auto_offset_reset(OffsetReset::Earliest)
-//!         // Bounded: stop after 60s. Omit for an unbounded, streaming read.
-//!         .with_max_read_time_seconds(60),
+//! let lines: PCollection<String> = p.apply(
+//!     "ReadFromKafka",
+//!     Read::new(
+//!         ReadOptions::new("broker-1:9092,broker-2:9092", "events")
+//!             .with_start_offset(StartOffset::Earliest)
+//!             // Bounded: stop after 60s. Omit for an unbounded, streaming read.
+//!             .with_max_read_time(Duration::from_secs(60)),
+//!     )
+//!     .with_decoder(Utf8),
 //! );
 //! ```
 //!
-//! # Writing to Kafka through Java
+//! # Writing to Kafka
 //! ```no_run
 //! use beam::prelude::*;
-//! use beam_io_kafka::{KafkaWrite, raw_bytes_row, raw_bytes_schema};
+//! use beam_io_kafka::write::{Write, WriteOptions};
 //!
 //! # let p = Pipeline::new();
-//! p.apply("Create", Create::new(vec![raw_bytes_row(b"hello".to_vec())]))
-//!     .with_row_schema(&raw_bytes_schema())
-//!     .apply(
-//!         "KafkaWrite",
-//!         KafkaWrite::new("broker-1:9092", "events"),
-//!     );
+//! let failed = p
+//!     .apply("Create", Create::new(vec![b"hello".to_vec()]))
+//!     .apply("WriteToKafka", Write::new(WriteOptions::new("broker-1:9092", "events")));
 //! ```
 
-#[cfg(feature = "native")]
-pub mod native;
-mod xlang;
+pub mod auth;
+pub mod client;
+pub mod codec;
+pub mod context;
+pub mod read;
+pub mod write;
 
-pub use xlang::*;
+/// Metric namespace of the Kafka connector.
+#[doc(hidden)]
+pub const METRICS: &str = "kafka";

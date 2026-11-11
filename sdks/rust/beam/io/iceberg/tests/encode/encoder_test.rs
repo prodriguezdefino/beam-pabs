@@ -21,9 +21,9 @@
 
 use std::sync::Arc;
 
-use beam_io_arrow::{BeamRowCodec, SchemaRowCodec};
 use beam::coders::RowCoder;
 use beam::schema::{BeamRow, FieldValue, RowElement};
+use beam_io_arrow::{BeamRowCodec, SchemaRowCodec};
 use beam_io_iceberg::arrow::{decode_batch, schema_bytes};
 use beam_io_iceberg::encode::Encoder;
 

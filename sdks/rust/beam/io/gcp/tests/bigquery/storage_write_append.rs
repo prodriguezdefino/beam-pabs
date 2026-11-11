@@ -23,7 +23,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use beam_io_gcp::bigquery::storage::write::append::{Failure, append_at};
+use beam_io_gcp::bigquery::write::append::{Failure, append_at};
 use google_cloud_bigquery::error::AppendError;
 use google_cloud_bigquery::model::ArrowRecordBatch;
 
@@ -76,4 +76,84 @@ async fn an_answer_in_time_succeeds_at_the_given_offset() {
     )
     .await;
     assert!(result.is_ok(), "{result:?}");
+}
+
+/// Runs an append that fails twice with `error` and then succeeds, and returns the metrics of
+/// the transform.
+async fn append_after_two_failures(
+    error: impl Fn() -> google_cloud_gax::error::Error,
+) -> beam::metrics::MetricResults {
+    use std::sync::Arc;
+
+    use beam::internals::{MetricsContainer, MetricsScope};
+    use beam::metrics::MetricResults;
+
+    let calls = AtomicU32::new(0);
+    let container = Arc::new(MetricsContainer::new());
+    let result = {
+        let _scope = MetricsScope::enter(Arc::clone(&container), Arc::from("Write"));
+        append_at(
+            |_, _| {
+                let failed = calls.fetch_add(1, Ordering::Relaxed) < 2;
+                let result = if failed {
+                    Err(AppendError::from(error()))
+                } else {
+                    Ok(())
+                };
+                async move { result }
+            },
+            &ArrowRecordBatch::default(),
+            0,
+            false,
+            Duration::from_secs(5),
+        )
+        .await
+    };
+    assert!(result.is_ok(), "{result:?}");
+    MetricResults::from_container(&container)
+}
+
+#[tokio::test(start_paused = true)]
+async fn transient_failures_record_append_retries_and_retry_waits() {
+    use beam::metrics::{
+        RETRY_WAIT_COUNTER_NAME, THROTTLE_TIME_COUNTER_NAME, THROTTLE_TIME_NAMESPACE,
+    };
+    use google_cloud_gax::error::Error as GaxError;
+
+    let metrics = append_after_two_failures(|| GaxError::io("transient socket reset")).await;
+    assert_eq!(
+        metrics.counter_for_transform("Write", "bigquery", "append_retries"),
+        Some(2)
+    );
+    let waited = metrics
+        .counter_for_transform("Write", "bigquery", RETRY_WAIT_COUNTER_NAME)
+        .expect("retry_wait_msecs recorded");
+    assert!((1_500..=3_000).contains(&waited), "{waited}");
+    assert_eq!(
+        metrics.counter_for_transform("Write", THROTTLE_TIME_NAMESPACE, THROTTLE_TIME_COUNTER_NAME),
+        None,
+        "a socket reset is not server push-back"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn resource_exhausted_records_throttling_msecs() {
+    use beam::metrics::{
+        RETRY_WAIT_COUNTER_NAME, THROTTLE_TIME_COUNTER_NAME, THROTTLE_TIME_NAMESPACE,
+    };
+    use google_cloud_gax::error::Error as GaxError;
+    use google_cloud_gax::error::rpc::{Code, Status};
+
+    let metrics = append_after_two_failures(|| {
+        GaxError::service(Status::default().set_code(Code::ResourceExhausted))
+    })
+    .await;
+    let throttled = metrics
+        .counter_for_transform("Write", THROTTLE_TIME_NAMESPACE, THROTTLE_TIME_COUNTER_NAME)
+        .expect("throttling_msecs recorded");
+    assert!((1_500..=3_000).contains(&throttled), "{throttled}");
+    assert_eq!(
+        metrics.counter_for_transform("Write", "bigquery", RETRY_WAIT_COUNTER_NAME),
+        None
+    );
 }

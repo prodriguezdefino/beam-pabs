@@ -154,8 +154,8 @@ rows, where each label is the decimal id.
 ## BigQuery Summary
 
 With `--export_summary_to_bigquery`, the launcher runs one more batch job after the suite. The
-job appends one row for each query to `--bigquery_table` through the cross-language BigQuery
-write (`CREATE_IF_NEEDED`, `WRITE_APPEND`) and uses `--expansion_service`.
+job appends one row for each query to `--bigquery_table` with the BigQuery Storage Write
+connector (`CREATE_IF_NEEDED`, `WRITE_APPEND`).
 
 | Column | Value |
 |---|---|
@@ -189,21 +189,22 @@ the side of the exchange, for Kafka too:
 | `--kafka_topic=<t>`, `--bootstrap_servers=<host:port,...>` | Kafka publisher and query |
 | `--kafka_results_topic=<t>` | `--sink_type=KAFKA` |
 | `--google_managed_kafka_auth` | Kafka read and write on Google Cloud Managed Service for Apache Kafka (SASL OAUTHBEARER) |
-| `--expansion_service=<host:port>` | Instead of the default Java expansion service |
+| `--expansion_service=<host:port>` | Pub/Sub, instead of the default Java expansion service |
 
 - A query job that reads a topic needs `--streaming`. `PUBLISH_ONLY` also runs in batch.
 - Events are the bytes of the Java Nexmark `Event.CODER`. Results are their text form, UTF-8.
 - The Pub/Sub publisher sets the `id` attribute and, unless `--use_pubsub_publish_time`, the
   `timestamp` attribute, so event time equals generator time. With the publish time, also set
   `--use_wallclock_event_time`.
-- The transforms are cross-language. The graph build needs Java and the expansion service.
+- The Pub/Sub transforms are cross-language. The graph build needs Java and the expansion
+  service. The Kafka transforms are the Kafka connector of the Rust SDK.
 - The launcher does not create or delete topics or subscriptions. Create them before the run.
   A missing name stops the launcher before it submits a job.
 - Results go to `--pubsub_results_topic`, not to the event topic, so a `COMBINED` query does
   not read them back as events.
 - A message that is not an event increments the `nexmark/decode_errors` counter, and the read
   drops it. It does not increment `fatal`, which makes the streaming monitor cancel the job.
-- The Kafka transforms carry no record timestamps, so each event read from Kafka gets its own
+- The record timestamp is the time of the publisher, so each event read from Kafka gets its own
   `date_time` as timestamp. The reader starts at the earliest offset: use a new or empty
   topic for each run.
 - Run Pub/Sub and Kafka with `--use_wallclock_event_time`, so event times are near the read
@@ -312,8 +313,8 @@ to 10 seconds before it checkpoints.
 ## Dataflow Notes
 
 - `-PusePublicIps=false`, or `--no_use_public_ips` in `-PextraArgs`, gives the workers private
-  IPs only. The subnetwork then needs Private Google Access. Cross-language jobs (Pub/Sub,
-  Kafka, BigQuery) pull the Java container from Docker Hub, so they need public IPs or NAT.
+  IPs only. The subnetwork then needs Private Google Access. Cross-language jobs (Pub/Sub)
+  pull the Java container from Docker Hub, so they need public IPs or NAT.
 - Query 10 waits on shuffle writes and on GCS files, not on CPU.
 
 ## Differences from Java Nexmark

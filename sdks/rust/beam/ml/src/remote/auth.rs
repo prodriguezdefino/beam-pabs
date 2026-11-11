@@ -19,7 +19,9 @@
 
 //! Credentials for remote endpoints.
 
-use beam::options::{Secret, SecretError, SecretValue};
+use beam::options::{Secret, SecretValue};
+
+use super::RemoteInferenceError;
 
 /// How requests to a remote endpoint authenticate.
 ///
@@ -41,12 +43,21 @@ pub enum RemoteAuth {
 
 impl RemoteAuth {
     /// Fetches the credentials this refers to.
-    pub async fn resolve(&self) -> Result<ResolvedAuth, SecretError> {
+    ///
+    /// # Errors
+    ///
+    /// Fails if the worker cannot resolve a secret or has no Application Default Credentials.
+    pub async fn resolve(&self) -> Result<ResolvedAuth, RemoteInferenceError> {
         Ok(match self {
             Self::None => ResolvedAuth::None,
             Self::ApiKey(secret) => ResolvedAuth::ApiKey(secret.resolve().await?),
             Self::BearerToken(secret) => ResolvedAuth::BearerToken(secret.resolve().await?),
-            Self::ApplicationDefault => ResolvedAuth::ApplicationDefault,
+            Self::ApplicationDefault => {
+                beam_gcp_core::auth::authorization()
+                    .await
+                    .map_err(|e| RemoteInferenceError::Authentication(e.to_string()))?;
+                ResolvedAuth::ApplicationDefault
+            }
         })
     }
 }
@@ -67,19 +78,24 @@ pub enum ResolvedAuth {
 
 impl ResolvedAuth {
     /// Adds these credentials to `request`.
-    pub async fn authenticate(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        match self {
+    ///
+    /// # Errors
+    ///
+    /// Fails if the Application Default Credentials give no token.
+    pub async fn authenticate(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<reqwest::RequestBuilder, RemoteInferenceError> {
+        Ok(match self {
             Self::None => request,
             Self::ApiKey(key) => request.header("x-goog-api-key", key.expose()),
             Self::BearerToken(token) => request.bearer_auth(token.expose()),
-            // Without credentials the request goes as it is, and the endpoint answers why.
-            Self::ApplicationDefault => match beam_io_gcp::auth::authorization().await {
-                Ok(authorization) => request.header("authorization", authorization),
-                Err(e) => {
-                    tracing::debug!("A remote request has no Google credentials: {e}");
-                    request
-                }
-            },
-        }
+            Self::ApplicationDefault => {
+                let authorization = beam_gcp_core::auth::authorization()
+                    .await
+                    .map_err(|e| RemoteInferenceError::Authentication(e.to_string()))?;
+                request.header("authorization", authorization)
+            }
+        })
     }
 }

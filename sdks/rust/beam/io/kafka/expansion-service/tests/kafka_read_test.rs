@@ -20,13 +20,17 @@
 //! Configuration and registration of the Kafka read provider. No test connects to a broker.
 
 use std::collections::BTreeMap;
+use std::num::NonZeroU32;
 use std::time::Duration;
 
-use beam::io::kafka::native::codec::managed::Format;
-use beam::io::kafka::native::read::StartOffset;
+use beam::io::kafka::read::{Redistribute, StartOffset};
 use beam::schema::BeamRow;
 use beam_expansion::{SchemaTransformProvider, SchemaTransformRegistration};
+use beam_io_kafka_expansion::Format;
 use beam_io_kafka_expansion::{KafkaReadConfig, KafkaReadProvider, URN_KAFKA_READ};
+use prost::Message;
+use prost_types::field_descriptor_proto::{Label, Type};
+use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet};
 
 fn config(format: &str) -> KafkaReadConfig {
     KafkaReadConfig {
@@ -80,6 +84,11 @@ fn the_config_has_the_fields_of_the_managed_kafka_read() {
             "max_idle_per_call_ms",
             "consumer_pool_size",
             "reshuffle_partitions",
+            "redistributed",
+            "redistribute_num_keys",
+            "redistribute_by_record_key",
+            "allow_duplicates",
+            "offset_deduplication",
         ]
     );
 }
@@ -94,6 +103,10 @@ fn the_config_row_round_trips() {
         max_idle_per_call_ms: Some(1_500),
         consumer_pool_size: Some(3),
         reshuffle_partitions: Some(true),
+        redistributed: Some(true),
+        redistribute_num_keys: Some(8),
+        allow_duplicates: Some(true),
+        offset_deduplication: Some(false),
         ..config("STRING")
     };
     let row = config.to_row().unwrap();
@@ -117,17 +130,23 @@ fn a_valid_config_gives_the_read_options() {
     .unwrap();
     let (options, format) = options;
     assert!(matches!(format, Format::String(_)));
-    assert_eq!(options.topic, "events");
-    assert_eq!(options.connection.bootstrap_servers, "broker:9092");
-    assert_eq!(options.connection.group_id(), Some("g"));
-    assert_eq!(options.start_offset, StartOffset::Earliest);
-    assert_eq!(options.max_read_time, Some(Duration::from_secs(30)));
-    assert_eq!(options.commit_expiry, Duration::from_secs(60));
-    assert_eq!(options.max_read_time_per_call, Duration::from_secs(2));
-    assert_eq!(options.max_idle_per_call, Duration::from_millis(1_500));
-    assert_eq!(options.consumer_pool.size(), 3);
-    assert!(options.reshuffle_partitions);
-    assert!(!config("RAW").read_options().unwrap().0.reshuffle_partitions);
+    assert_eq!(options.topic(), "events");
+    assert_eq!(options.connection().bootstrap_servers(), "broker:9092");
+    assert_eq!(options.connection().group_id(), Some("g"));
+    assert_eq!(options.start_offset(), StartOffset::Earliest);
+    assert_eq!(options.max_read_time(), Some(Duration::from_secs(30)));
+    assert_eq!(options.commit_expiry(), Duration::from_secs(60));
+    assert_eq!(options.max_read_time_per_call(), Duration::from_secs(2));
+    assert_eq!(options.max_idle_per_call(), Duration::from_millis(1_500));
+    assert_eq!(options.consumer_pool().size(), 3);
+    assert!(options.reshuffle_partitions());
+    assert!(
+        !config("RAW")
+            .read_options()
+            .unwrap()
+            .0
+            .reshuffle_partitions()
+    );
 }
 
 #[test]
@@ -142,7 +161,7 @@ fn the_start_offset_falls_back_to_the_consumer_property_then_to_latest() {
     };
     let starts: Vec<StartOffset> = [config("RAW"), from_property, explicit]
         .into_iter()
-        .map(|config| config.read_options().unwrap().0.start_offset)
+        .map(|config| config.read_options().unwrap().0.start_offset())
         .collect();
     assert_eq!(
         starts,
@@ -180,7 +199,7 @@ fn json_reads_need_a_json_schema() {
 fn an_invalid_config_says_why() {
     let cases = [
         (config("AVRO"), "Avro schema"),
-        (config("PROTO"), "not support"),
+        (config("PROTO"), "file_descriptor_path"),
         (config("XML"), "Unknown format"),
         (config("JSON"), "JSON Schema"),
         (
@@ -272,11 +291,148 @@ fn an_invalid_config_says_why() {
                 confluent_schema_registry_url: Some("http://registry".to_string()),
                 ..config("RAW")
             },
-            "schema registry",
+            "confluent_schema_registry_subject",
+        ),
+        (
+            KafkaReadConfig {
+                redistributed: Some(true),
+                redistribute_by_record_key: Some(true),
+                ..config("RAW")
+            },
+            "redistribute_by_record_key",
+        ),
+        (
+            KafkaReadConfig {
+                redistributed: Some(true),
+                redistribute_num_keys: Some(-1),
+                ..config("RAW")
+            },
+            "redistribute_num_keys",
+        ),
+        (
+            KafkaReadConfig {
+                file_descriptor_path: Some("/no/such/file.pb".to_string()),
+                message_name: Some("test.Event".to_string()),
+                ..config("PROTO")
+            },
+            "/no/such/file.pb",
         ),
     ];
     cases.into_iter().for_each(|(config, expected)| {
         let error = config.read_options().unwrap_err();
         assert!(error.contains(expected), "{error}");
     });
+}
+
+#[test]
+fn redistributed_adds_a_reshuffle_after_the_read() {
+    let redistribute = |config: KafkaReadConfig| config.read_options().unwrap().0.redistribute();
+    assert_eq!(redistribute(config("RAW")), Redistribute::Off);
+    assert_eq!(
+        redistribute(KafkaReadConfig {
+            redistributed: Some(true),
+            allow_duplicates: Some(true),
+            offset_deduplication: Some(true),
+            ..config("RAW")
+        }),
+        Redistribute::Random
+    );
+    assert_eq!(
+        redistribute(KafkaReadConfig {
+            redistributed: Some(true),
+            redistribute_num_keys: Some(0),
+            ..config("RAW")
+        }),
+        Redistribute::Random
+    );
+    assert_eq!(
+        redistribute(KafkaReadConfig {
+            redistributed: Some(true),
+            redistribute_num_keys: Some(4),
+            ..config("RAW")
+        }),
+        Redistribute::Keys(NonZeroU32::new(4).unwrap())
+    );
+    assert_eq!(
+        redistribute(KafkaReadConfig {
+            redistributed: Some(false),
+            redistribute_num_keys: Some(4),
+            redistribute_by_record_key: Some(true),
+            ..config("RAW")
+        }),
+        Redistribute::Off
+    );
+}
+
+#[test]
+fn the_registry_properties_do_not_reach_the_consumer() {
+    let (options, _) = KafkaReadConfig {
+        consumer_config_updates: properties(&[
+            ("group.id", "g"),
+            ("basic.auth.user.info", "user:secret"),
+            ("basic.auth.credentials.source", "USER_INFO"),
+            ("schema.registry.basic.auth.user.info", "user:secret"),
+        ]),
+        ..config("RAW")
+    }
+    .read_options()
+    .unwrap();
+    let keys: Vec<&str> = options
+        .connection()
+        .properties()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert!(!keys.iter().any(|key| key.contains("auth")), "{keys:?}");
+    assert_eq!(options.connection().group_id(), Some("g"));
+}
+
+/// Writes the file descriptor set of the message `test.Event { string id = 1; }` to a new
+/// file, and returns its path.
+fn event_descriptor_file(name: &str) -> std::path::PathBuf {
+    let set = FileDescriptorSet {
+        file: vec![FileDescriptorProto {
+            name: Some("event.proto".to_string()),
+            package: Some("test".to_string()),
+            syntax: Some("proto3".to_string()),
+            message_type: vec![DescriptorProto {
+                name: Some("Event".to_string()),
+                field: vec![FieldDescriptorProto {
+                    name: Some("id".to_string()),
+                    number: Some(1),
+                    label: Some(Label::Optional as i32),
+                    r#type: Some(Type::String as i32),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    };
+    let path = std::env::temp_dir().join(format!("{name}-{}.pb", std::process::id()));
+    std::fs::write(&path, set.encode_to_vec()).expect("write the descriptor set");
+    path
+}
+
+#[test]
+fn proto_reads_take_a_descriptor_file_and_a_message_name() {
+    let path = event_descriptor_file("kafka-read-proto");
+    let (_, format) = KafkaReadConfig {
+        file_descriptor_path: Some(path.display().to_string()),
+        message_name: Some("test.Event".to_string()),
+        ..config("proto")
+    }
+    .read_options()
+    .unwrap();
+    let Format::Proto(proto) = format else {
+        panic!("the PROTO format, got {format:?}")
+    };
+    let names: Vec<&str> = proto
+        .row_schema()
+        .fields
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect();
+    assert_eq!(names, ["id"]);
+    std::fs::remove_file(path).unwrap();
 }

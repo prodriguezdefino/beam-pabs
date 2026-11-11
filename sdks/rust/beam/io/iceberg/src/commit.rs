@@ -28,7 +28,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use beam::coders::BeamIterable;
-use beam::metrics::{HistogramBuckets, Metrics};
+use beam::metrics::{HistogramBuckets, Lineage, Metrics};
 use beam::schema::BeamRow;
 use beam::transforms::{DoFn, GroupByKey, PTransform, ProcessContext, WithKeys};
 use beam::values::{AnySideInput, IsBounded, PCollection, SingletonView};
@@ -42,7 +42,7 @@ use uuid::Uuid;
 use crate::METRICS;
 use crate::catalog::CatalogClient;
 use crate::data_file::DataFileMeta;
-use crate::options::WriteOptions;
+use crate::options::{Catalog as CatalogOptions, WriteOptions};
 use crate::table::TableInfo;
 
 /// The snapshot summary property that holds the commit id of a pane.
@@ -281,6 +281,7 @@ impl PTransform<PCollection<DataFileMeta>> for CommitTrigger {
 pub struct CommitFn {
     table: SingletonView<TableInfo>,
     client: CatalogClient,
+    catalog: CatalogOptions,
     ident: TableIdent,
     metadata: Option<Arc<TableMetadata>>,
 }
@@ -297,6 +298,7 @@ impl CommitFn {
         Ok(Self {
             table,
             client,
+            catalog: options.catalog.clone(),
             ident: options.table_ident()?,
             metadata: None,
         })
@@ -351,6 +353,7 @@ impl DoFn for CommitFn {
             Ok::<_, beam::Error>(committed)
         })?
         .map_err(|e| e.context(format!("Cannot commit to the Iceberg table '{table}'")))?;
+        Lineage::sinks().add(METRICS, self.catalog.lineage_segments(&self.ident));
         let snapshot = match committed {
             Commit::New(snapshot) => {
                 Metrics::counter(METRICS, "snapshots_committed").inc();

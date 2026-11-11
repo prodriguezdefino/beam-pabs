@@ -52,11 +52,7 @@ import org.apache.beam.sdk.io.kafka.KafkaIO;
 import org.apache.beam.sdk.managed.Managed;
 import org.apache.beam.sdk.metrics.Counter;
 import org.apache.beam.sdk.metrics.Distribution;
-import org.apache.beam.sdk.metrics.MetricNameFilter;
-import org.apache.beam.sdk.metrics.MetricQueryResults;
-import org.apache.beam.sdk.metrics.MetricResult;
 import org.apache.beam.sdk.metrics.Metrics;
-import org.apache.beam.sdk.metrics.MetricsFilter;
 import org.apache.beam.sdk.options.Default;
 import org.apache.beam.sdk.options.Description;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
@@ -272,22 +268,6 @@ public class KafkaBenchmark {
     String getExpansionService();
 
     void setExpansionService(String value);
-
-    @Description("For copy, drain the job once e2e/rows reaches at least this count.")
-    Long getExpectedRows();
-
-    void setExpectedRows(Long value);
-
-    @Description("For copy, drain the job after this many seconds.")
-    Long getDrainAfterSeconds();
-
-    void setDrainAfterSeconds(Long value);
-
-    @Description("For copy, print the job ID and exit once the job is submitted.")
-    @Default.Boolean(false)
-    boolean getDetach();
-
-    void setDetach(boolean value);
 
     @Description("For produce, the records per second that the job writes to --topic.")
     @Default.Long(10_000L)
@@ -832,85 +812,15 @@ public class KafkaBenchmark {
                 .withValueSerializer(ByteArraySerializer.class));
   }
 
-  static long committedRows(PipelineResult result) {
-    try {
-      MetricQueryResults metrics =
-          result
-              .metrics()
-              .queryMetrics(
-                  MetricsFilter.builder()
-                      .addNameFilter(MetricNameFilter.named("e2e", "rows"))
-                      .build());
-      long total = 0;
-      for (MetricResult<Long> counter : metrics.getCounters()) {
-        Long attempted = counter.getAttempted();
-        if (attempted != null) {
-          total += attempted;
-        }
-      }
-      return total;
-    } catch (Exception e) {
-      LOG.warn("Could not query e2e/rows metric", e);
-      return 0;
-    }
-  }
-
-  static void drainDataflowJob(String project, String region, String jobId)
-      throws IOException, InterruptedException {
-    Process proc =
-        new ProcessBuilder(
-                "gcloud",
-                "dataflow",
-                "jobs",
-                "drain",
-                jobId,
-                "--project=" + project,
-                "--region=" + region)
-            .inheritIO()
-            .start();
-    int code = proc.waitFor();
-    if (code != 0) {
-      throw new IOException("gcloud dataflow jobs drain exited with " + code);
-    }
-  }
-
-  static void waitForStreamingJob(PipelineResult result, Options options)
-      throws IOException, InterruptedException {
-    DataflowPipelineJob job = (DataflowPipelineJob) result;
-    String jobId = job.getJobId();
-    System.out.println("JOB_ID=" + jobId);
-    System.out.flush();
-    if (options.getDetach()) {
+  static void submit(Pipeline p) throws IOException {
+    PipelineResult result = p.run();
+    if (result instanceof DataflowPipelineJob) {
+      System.out.println("JOB_ID=" + ((DataflowPipelineJob) result).getJobId());
       return;
     }
-    Long expectedRows = options.getExpectedRows();
-    Long drainAfterSeconds = options.getDrainAfterSeconds();
-    long startMs = System.currentTimeMillis();
-    boolean drained = false;
-    while (true) {
-      PipelineResult.State state = job.getState();
-      long rows = committedRows(job);
-      long elapsedSeconds = (System.currentTimeMillis() - startMs) / 1000;
-      LOG.info("Job {}: state={} e2e/rows={} elapsed={}s", jobId, state, rows, elapsedSeconds);
-      if (state.isTerminal()) {
-        if (state != PipelineResult.State.DONE && !"DRAINED".equals(state.name())) {
-          throw new IllegalStateException("Job " + jobId + " finished in state " + state);
-        }
-        if (expectedRows != null && rows < expectedRows) {
-          throw new IllegalStateException(
-              "Job " + jobId + " finished with " + rows + " rows, expected " + expectedRows);
-        }
-        return;
-      }
-      boolean shouldDrain =
-          (expectedRows != null && rows >= expectedRows)
-              || (drainAfterSeconds != null && elapsedSeconds >= drainAfterSeconds);
-      if (shouldDrain && !drained && state == PipelineResult.State.RUNNING) {
-        LOG.info("Draining job {} at e2e/rows={} ({}s)", jobId, rows, elapsedSeconds);
-        drainDataflowJob(options.getProject(), options.getRegion(), jobId);
-        drained = true;
-      }
-      Thread.sleep(15_000);
+    PipelineResult.State state = result.waitUntilFinish();
+    if (state != PipelineResult.State.DONE) {
+      throw new IllegalStateException("The job finished in state " + state);
     }
   }
 
@@ -945,7 +855,7 @@ public class KafkaBenchmark {
     Pipeline p = Pipeline.create(options);
     if ("produce".equals(shape)) {
       produce(p, options);
-      waitForStreamingJob(p.run(), options);
+      submit(p);
       return;
     }
     if ("load".equals(shape)) {
@@ -962,18 +872,6 @@ public class KafkaBenchmark {
               .apply("Touch", ParDo.of(new TouchLoadFn(rawMapper)))
               .setRowSchema(outputSchema);
       writeRows(touched, options, options.getTopic());
-      PipelineResult result = p.run();
-      PipelineResult.State state = result.waitUntilFinish();
-      if (state != PipelineResult.State.DONE) {
-        throw new IllegalStateException("The job finished in state " + state);
-      }
-      if (options.getExpectedRows() != null) {
-        long rows = committedRows(result);
-        if (rows != options.getExpectedRows()) {
-          throw new IllegalStateException(
-              "The job wrote " + rows + " rows, expected " + options.getExpectedRows());
-        }
-      }
     } else if ("BYTES".equals(format)) {
       if (options.getDestinationTopic() == null || options.getDestinationTopic().isEmpty()) {
         throw new IllegalArgumentException("copy needs --destinationTopic");
@@ -985,8 +883,6 @@ public class KafkaBenchmark {
               .apply("Touch", ParDo.of(new TouchCopyFn<byte[]>()))
               .setCoder(ByteArrayCoder.of());
       writeJavaNativeValues(touched, options, options.getDestinationTopic());
-      PipelineResult result = p.run();
-      waitForStreamingJob(result, options);
     } else {
       if (options.getDestinationTopic() == null || options.getDestinationTopic().isEmpty()) {
         throw new IllegalArgumentException("copy needs --destinationTopic");
@@ -1009,8 +905,7 @@ public class KafkaBenchmark {
       PCollection<Row> touched =
           rows.apply("Touch", ParDo.of(new TouchCopyFn<Row>())).setRowSchema(rows.getSchema());
       writeRows(touched, options, options.getDestinationTopic());
-      PipelineResult result = p.run();
-      waitForStreamingJob(result, options);
     }
+    submit(p);
   }
 }

@@ -30,7 +30,9 @@ name = "beam_benchmark_io"
 path = "src/lib.rs"
 
 [dependencies]
-beam = { workspace = true, features = ["prism", "dataflow"] }
+# Unifies the `beam` feature set across all four I/O benchmark crates so `build/cross-target`
+# compiles `beam`, `beam_harness`, `beam_io_gcp` and Arrow once instead of per benchmark.
+beam = { workspace = true, features = ["prism", "dataflow", "gcp-bigquery", "gcp-bigtable", "gcp-gcs", "kafka", "iceberg"] }
 clap = { workspace = true }
 serde = { workspace = true }
 

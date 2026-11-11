@@ -21,6 +21,7 @@
 
 use std::fmt;
 use std::sync::Arc;
+use std::time::Duration;
 
 use super::{
     ClientError, DataflowApiClient, JobMetricsResponse, JobResponse, JobState,
@@ -32,7 +33,7 @@ use crate::translate::DataflowJob;
 /// How an [`HttpDataflowClient`] authenticates its requests.
 #[derive(Clone)]
 enum ClientAuth {
-    /// The Application Default Credentials of the process ([`beam_io_gcp::auth`]).
+    /// The Application Default Credentials of the process ([`beam_gcp_core::auth`]).
     ApplicationDefault,
     /// An OAuth 2.0 access token.
     Token(String),
@@ -65,14 +66,38 @@ impl fmt::Debug for HttpDataflowClient {
     }
 }
 
+/// Percent-encodes `value` for a URL query. Keeps only the unreserved characters of RFC 3986.
+fn query_value(value: &str) -> String {
+    value.bytes().fold(String::new(), |mut encoded, byte| {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+        encoded
+    })
+}
+
 /// The agent returns non-success statuses as responses, not as errors, so
 /// [`ClientError::Api`] can show the body that the Dataflow API sends with them.
+///
+/// The timeouts stop a stalled connection. They apply to each stage and not to the whole
+/// call, so a slow but live upload of a large job still finishes.
 fn new_agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .http_status_as_error(false)
+        .timeout_connect(Some(CONNECT_TIMEOUT))
+        .timeout_recv_response(Some(RECV_TIMEOUT))
+        .timeout_recv_body(Some(RECV_TIMEOUT))
         .build()
         .into()
 }
+
+/// The longest wait for a connection to the Dataflow API.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The longest wait for the response headers, and for the response body, of one request.
+const RECV_TIMEOUT: Duration = Duration::from_secs(120);
 
 impl HttpDataflowClient {
     /// Creates a client using default configuration and environment credentials.
@@ -101,7 +126,7 @@ impl HttpDataflowClient {
     async fn resolve_auth_header(&self) -> Option<String> {
         match &self.auth {
             ClientAuth::Token(token) => Some(format!("Bearer {token}")),
-            ClientAuth::ApplicationDefault => beam_io_gcp::auth::authorization()
+            ClientAuth::ApplicationDefault => beam_gcp_core::auth::authorization()
                 .await
                 .inspect_err(|e| tracing::warn!("Dataflow requests have no credentials: {e}"))
                 .ok(),
@@ -236,13 +261,20 @@ impl DataflowApiClient for HttpDataflowClient {
         region: &str,
         job_id: &str,
         start_time: Option<&str>,
+        page_token: Option<&str>,
     ) -> Result<ListJobMessagesResponse, ClientError> {
         let jobs = self.jobs_url(project, region);
-        let query = start_time
-            .map(|t| format!("?startTime={t}"))
-            .unwrap_or_default();
-        self.send(format!("{jobs}/{job_id}/messages{query}"), Method::Get)
-            .await
+        let query = [("startTime", start_time), ("pageToken", page_token)]
+            .into_iter()
+            .filter_map(|(name, value)| Some(format!("{name}={}", query_value(value?))))
+            .collect::<Vec<_>>()
+            .join("&");
+        let separator = if query.is_empty() { "" } else { "?" };
+        self.send(
+            format!("{jobs}/{job_id}/messages{separator}{query}"),
+            Method::Get,
+        )
+        .await
     }
 
     async fn get_job_metrics(

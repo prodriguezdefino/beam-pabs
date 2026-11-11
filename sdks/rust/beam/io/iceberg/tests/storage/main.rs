@@ -21,9 +21,9 @@
 
 use std::sync::Arc;
 
+use beam_io_iceberg::storage::{FileSystemStorage, FileSystemStorageFactory, GCS_TOKEN};
 use bytes::Bytes;
 use iceberg::io::{FileIO, FileIOBuilder, StorageConfig, StorageFactory};
-use beam_io_iceberg::storage::{FileSystemStorage, FileSystemStorageFactory, GCS_TOKEN};
 use tempfile::TempDir;
 
 fn file_io() -> FileIO {
@@ -148,4 +148,34 @@ fn the_factory_uses_the_vended_gcs_token_when_the_props_hold_one() {
 #[test]
 fn a_token_that_is_not_a_header_value_is_rejected() {
     FileSystemStorage::new(Some("bad\ntoken")).expect_err("a newline is not allowed");
+}
+
+#[cfg(feature = "gcp")]
+#[test]
+fn identical_vended_tokens_share_one_cached_gcs_client() {
+    let first = FileSystemStorage::new(Some("shared-token")).expect("first storage");
+    let second = FileSystemStorage::new(Some("shared-token")).expect("second storage");
+    let different = FileSystemStorage::new(Some("other-token")).expect("different storage");
+    assert!(first.shares_vended_gcs(&second));
+    assert!(!first.shares_vended_gcs(&different));
+}
+
+#[cfg(feature = "gcp")]
+#[test]
+fn the_gcs_client_cache_counts_hits_and_misses() {
+    use beam::internals::{MetricsContainer, MetricsScope};
+    use beam::metrics::MetricResults;
+    use beam_io_iceberg::METRICS;
+
+    let container = Arc::new(MetricsContainer::new());
+    {
+        let _scope = MetricsScope::enter(Arc::clone(&container), Arc::from("Write"));
+        for token in ["counted-token-a", "counted-token-a", "counted-token-b"] {
+            FileSystemStorage::new(Some(token)).expect("a storage");
+        }
+    }
+    let results = MetricResults::from_container(&container);
+    let count = |name| results.counter_for_transform("Write", METRICS, name);
+    assert_eq!(count("gcs_client_cache_hits"), Some(1));
+    assert_eq!(count("gcs_client_cache_misses"), Some(2));
 }

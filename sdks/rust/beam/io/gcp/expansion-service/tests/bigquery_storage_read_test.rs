@@ -19,7 +19,7 @@
 
 //! Configuration and registration of the GCP providers. No test calls Google Cloud.
 
-use beam::io::gcp::bigquery::storage::read::{ArrowCompression, QueryPriority, ReadOptions};
+use beam::io::gcp::bigquery::read::{ArrowCompression, QueryPriority, ReadOptions};
 use beam::schema::BeamRow;
 use beam_expansion::{SchemaTransformProvider, SchemaTransformRegistration};
 use beam_io_gcp_expansion::{

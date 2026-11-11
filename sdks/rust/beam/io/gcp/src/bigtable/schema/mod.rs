@@ -18,7 +18,7 @@
  */
 
 //! Schemas and row domain types (`BigtableCell`, `BigtableColumn`, `BigtableMutation`,
-//! `BigtableReadShape`) shared by native and cross-language Cloud Bigtable transforms.
+//! `BigtableReadShape`) of the Cloud Bigtable transforms and their providers.
 
 mod types;
 
@@ -136,4 +136,14 @@ pub enum BigtableReadShape {
     Flattened,
     /// Emits [`nested_row_schema`] rows.
     Nested,
+}
+
+impl BigtableReadShape {
+    /// Returns the configuration name: `FLATTENED` or `NESTED`.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Flattened => "FLATTENED",
+            Self::Nested => "NESTED",
+        }
+    }
 }

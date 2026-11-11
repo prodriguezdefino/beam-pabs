@@ -261,7 +261,7 @@ impl RemoteEndpointAdapter<PromptRequest, LLMResponse> for GeminiAdapter {
             let response = remote
                 .auth
                 .authenticate(remote.client.post(&self.endpoint_url))
-                .await
+                .await?
                 .json(&body)
                 .send()
                 .await

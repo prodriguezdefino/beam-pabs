@@ -65,7 +65,7 @@ struct CleanWords;
 impl PTransform<PCollection<String>> for CleanWords {
     type Output = PCollection<String>;
 
-    fn expand(&self, input: &PCollection<String>) -> PCollection<String> {
+    fn expand(self, input: &PCollection<String>) -> PCollection<String> {
         input
             .apply("NotEmpty", Filter::new(|w: &String| !w.is_empty()))
             .apply("Lower", Map::new(|w: String| w.to_lowercase()))
@@ -794,7 +794,7 @@ impl StatefulDoFn for IdleCounter {
         ctx: &mut StatefulContext<'_, Self>,
     ) -> beam::Result {
         let n = state.count.read()?.unwrap_or(0) + 1;
-        state.count.write(n)?;
+        state.count.write(&n)?;
         ctx.timer(IdleTimers::Expiry("idle".to_string()))
             .after(Duration::from_secs(10 * 60))
     }
@@ -851,7 +851,7 @@ impl StatefulDoFn for SumPerWindow {
         state: &mut Self::State,
         _ctx: &mut StatefulContext<'_, Self>,
     ) -> beam::Result {
-        state.values.append(value)
+        state.values.append(&value)
     }
 
     fn on_window_expiration(
@@ -1140,6 +1140,7 @@ pub struct Customer {
     pub balance: Decimal,          // beam:logical_type:decimal:v1
     pub signup: NaiveDate,         // beam:logical_type:date:v1
     pub last_login: DateTime<Utc>, // beam:logical_type:micros_instant:v1
+    pub seen: Instant,             // beam:logical_type:millis_instant:v1
     pub tags: Vec<String>,
     pub phone: Option<String>,     // nullable
 }
@@ -1407,6 +1408,25 @@ examples.apply("WriteExamples", tfrecordio::Write::new("/out/examples").with_suf
 
 `tfrecordio::ReadFiles` reads the files in a `PCollection<String>` of paths.
 
+## Native connectors
+
+The SDK has Rust connectors for BigQuery Storage (`gcp-bigquery`), Bigtable
+(`gcp-bigtable`), Kafka (`kafka`) and Iceberg (`iceberg`). BigQuery `ReadRows` and
+`WriteRows`, and Bigtable `ReadRows` offer `.typed::<T>()` for `#[derive(BeamRow)]` structs.
+Kafka `Typed::new(codec)` adapts any row codec (`Json`, `Avro`, `Proto`, `BeamRow`, `Payload`
+or a codec of your own) to `T`. Iceberg offers `Write<T>`.
+
+A typed transform or codec has no `with_*` methods. Configure the `WriteRows`, `ReadRows` or
+codec first, then make it typed:
+
+```rust
+let codec: Typed<Avro, Event> = Typed::new(Avro::schema(avro_schema)?.with_registry(registry));
+```
+
+The rustdoc of `beam::io::gcp::{bigquery, bigtable}`, `beam::io::kafka` and `beam::io::iceberg`
+gives the API. [rust-native-io-providers.md](rust-native-io-providers.md) gives the status,
+libraries and runtime design of each connector.
+
 ## Cross-language
 
 ### Calling transforms of other SDKs (`beam::external`)
@@ -1453,8 +1473,11 @@ Other SDKs can expand Rust transforms over gRPC:
   container boot program starts it with `--worker`, the same binary runs as the
   SDK worker for the transforms that it expanded.
 - `beam-gcp-expansion-service` (crate `apache-beam-io-gcp-expansion-service`)
-  serves the native GCP connectors (BigQuery Storage Read and Write). See
+  serves the GCP connectors (BigQuery Storage Read and Write, Bigtable). See
   [beam/io/gcp/expansion-service](../beam/io/gcp/expansion-service/src/lib.rs).
+- `beam-kafka-expansion-service` (crate `apache-beam-io-kafka-expansion-service`)
+  serves the Kafka read and write connectors. See
+  [beam/io/kafka/expansion-service](../beam/io/kafka/expansion-service/src/lib.rs).
 
 ### Managed I/O (`beam::io::managed`)
 
@@ -1471,40 +1494,43 @@ use std::collections::BTreeMap;
 use beam::io::managed::{self, ManagedRead, ManagedWrite};
 use beam::prelude::*;
 
-let rows: PCollection<Row> = p.apply("Managed Read(ICEBERG)", ManagedRead::new(managed::ICEBERG)
+let rows: PCollection<Row> = p.try_apply("Managed Read(ICEBERG)", ManagedRead::new(managed::ICEBERG)
         .with_config_entry("table", "db.events")
         .with_config_entry("catalog_name", "local")
         .with_config_entry("catalog_properties", BTreeMap::from([("type", "hadoop"), ("warehouse", "gs://b/w")])),
-);
-rows.apply("Managed Write(POSTGRES)", ManagedWrite::new(managed::POSTGRES).with_config_url("gs://b/postgres.yaml"));
+)?;
+rows.try_apply("Managed Write(POSTGRES)", ManagedWrite::new(managed::POSTGRES).with_config_url("gs://b/postgres.yaml"))?;
 ```
 
 - **Config**: `with_config` takes any `Serialize` map (struct, `BTreeMap`,
   `serde_json::Value`). `with_config_entry` sets one key. `with_yaml_config` and
   `with_config_url` pass YAML through without change. The SDK sends structured
   config as JSON, so Java's YAML 1.1 loader never coerces strings such as
-  `off` or `0123`.
+  `off` or `0123`. `managed::row_to_config` converts a SchemaTransform config
+  `Row` into Managed config.
 - **Expansion service**: the SDK selects it per connector. Iceberg, Kafka and
   Delta use the Java I/O service. BigQuery and JDBC use the GCP service. To
   override, call `with_expansion_service`.
-- **Typed connectors**: `KafkaRead` / `KafkaWrite` (`beam::io::kafka`) and the
-  BigQuery transforms keep typed builders. They expand through Managed with
-  `to_managed()`. `BigQueryWrite::to_managed()` returns `None` for write methods
-  that have no Managed equivalent (only `Auto` and `StorageApiAtLeastOnce` map).
-  `managed::row_to_config` converts a SchemaTransform config `Row` into Managed config.
+- **BigQuery**: the connectors in `beam::io::gcp::bigquery` (feature `gcp-bigquery`) read
+  and write through the Storage APIs. For `WRITE_TRUNCATE`, load jobs, CDC writes or dynamic
+  destinations, use `ManagedWrite::new(managed::BIGQUERY)`.
+- **Kafka**: the connectors in `beam::io::kafka::{read, write}` (feature `kafka`) read and
+  write through librdkafka, with codecs in `beam::io::kafka::codec`. For dynamic topic
+  writes or inline `.proto` schema text, use `ManagedRead::new(managed::KAFKA)`
+  or `ManagedWrite::new(managed::KAFKA)`.
 - **Extra outputs and errors**: `ManagedRead::with_all_outputs()` and
   `ManagedWrite::with_outputs()` return all outputs as `ExternalOutputs`
   (`get` / `try_get` / `tags`). An Iceberg write emits `managed::SNAPSHOTS`.
   `with_error_handling("errors")` sends failed records to an `errors` output.
-  `KafkaRead`, `KafkaWrite` and `BigQueryWrite` also have this method. Output
-  tags are declared at construction, because workers rebuild the pipeline
-  without an expansion service. Expansion fails if Java does not produce a declared tag.
+  Declare the output tags at construction, because workers rebuild the pipeline
+  without an expansion service. Expansion fails if Java does not produce a
+  declared tag.
 
 ```rust
-let written = rows.apply("Managed Write(ICEBERG)", ManagedWrite::new(managed::ICEBERG).with_config(cfg).with_outputs());
+let written = rows.try_apply("Managed Write(ICEBERG)", ManagedWrite::new(managed::ICEBERG).with_config(cfg).with_outputs())?;
 let snapshots = written.try_get(managed::SNAPSHOTS)?;
 
-let read = p.apply("ReadEvents", KafkaRead::new("broker:9092", "t").with_error_handling("errors").to_managed()?.with_all_outputs());
+let read = p.try_apply("ReadEvents", ManagedRead::new(managed::KAFKA).with_config(kafka_cfg).with_error_handling("errors").with_all_outputs())?;
 let (records, errors) = (read.try_get(managed::OUTPUT)?, read.try_get("errors")?);
 ```
 
@@ -1643,7 +1669,7 @@ The prelude contains the items that a usual pipeline uses. Each other item has o
 | `beam::runners` | `JobHandle`, runner registry |
 | `beam::options` | `parse`, `parse_from`, `try_parse_from`, option groups, `Secret` |
 | `beam::logging` | `init_logging` (feature `harness`) |
-| `beam::io::*` | `beam::io::file::textio`, `beam::io::file::fileio`, `beam::io::file::WriteFiles`, `beam::io::parquet::parquetio`, `beam::io::avro::avroio`, `beam::io::tfrecord::tfrecordio`, `beam::io::kafka`, `beam::io::managed` |
+| `beam::io::*` | `beam::io::file::{textio, fileio, WriteFiles}`, `beam::io::parquet::parquetio`, `beam::io::avro::{avroio, datum}`, `beam::io::tfrecord::tfrecordio`, `beam::io::json`, `beam::io::proto`, `beam::io::gcp::{bigquery, bigtable, pubsub}`, `beam::io::kafka`, `beam::io::iceberg`, `beam::io::managed` |
 | `beam::ml` | `RunInference`, `ModelHandler`, ONNX / Candle / remote handlers ([guide](accelerated-workloads.md)) |
 | `beam::external` | `ExternalTransform`, `ExternalSource`, `ExternalSink`, `ExternalOutputs`, expansion service targets |
 | `beam::testing` | `passert`, `TestPipeline`, `TestStream` |

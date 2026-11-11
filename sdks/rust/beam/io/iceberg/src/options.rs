@@ -24,6 +24,7 @@ use std::fmt;
 use std::time::Duration;
 
 use beam::schema::Schema;
+use beam::transforms::display_data::DisplayDataBuilder;
 use iceberg::TableIdent;
 
 use crate::schema::{iceberg_schema, partition_spec};
@@ -122,11 +123,24 @@ impl Catalog {
         self.metrics_reporting = true;
         self
     }
+
+    /// Returns the lineage segments of `ident` in this catalog.
+    pub(crate) fn lineage_segments<'a>(&'a self, ident: &'a TableIdent) -> Vec<&'a str> {
+        let root = self
+            .warehouse
+            .as_deref()
+            .filter(|w| !w.is_empty())
+            .or_else(|| (!self.uri.is_empty()).then_some(self.uri.as_str()));
+        root.into_iter()
+            .chain(ident.namespace().as_ref().iter().map(String::as_str))
+            .chain([ident.name()])
+            .collect()
+    }
 }
 
 /// A partition transform of the Iceberg specification.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Transform {
+pub enum PartitionTransform {
     Identity,
     Year,
     Month,
@@ -138,16 +152,16 @@ pub enum Transform {
     Truncate(u32),
 }
 
-impl From<Transform> for iceberg::spec::Transform {
-    fn from(transform: Transform) -> Self {
+impl From<PartitionTransform> for iceberg::spec::Transform {
+    fn from(transform: PartitionTransform) -> Self {
         match transform {
-            Transform::Identity => Self::Identity,
-            Transform::Year => Self::Year,
-            Transform::Month => Self::Month,
-            Transform::Day => Self::Day,
-            Transform::Hour => Self::Hour,
-            Transform::Bucket(n) => Self::Bucket(n),
-            Transform::Truncate(width) => Self::Truncate(width),
+            PartitionTransform::Identity => Self::Identity,
+            PartitionTransform::Year => Self::Year,
+            PartitionTransform::Month => Self::Month,
+            PartitionTransform::Day => Self::Day,
+            PartitionTransform::Hour => Self::Hour,
+            PartitionTransform::Bucket(n) => Self::Bucket(n),
+            PartitionTransform::Truncate(width) => Self::Truncate(width),
         }
     }
 }
@@ -156,11 +170,11 @@ impl From<Transform> for iceberg::spec::Transform {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PartitionField {
     pub(crate) source: String,
-    pub(crate) transform: Transform,
+    pub(crate) transform: PartitionTransform,
 }
 
 impl PartitionField {
-    pub fn new(source: impl Into<String>, transform: Transform) -> Self {
+    pub fn new(source: impl Into<String>, transform: PartitionTransform) -> Self {
         Self {
             source: source.into(),
             transform,
@@ -212,8 +226,9 @@ impl WriteOptions {
         self
     }
 
-    /// How often an unbounded write commits a snapshot. Default: 60 seconds. A bounded write
-    /// commits once at the end, so it must not set this.
+    /// How often a write of an unbounded input commits a snapshot. Default: 60 seconds. The
+    /// boundedness of the input selects the shape of the write, not this option. A bounded
+    /// input commits once at the end, so the expansion fails if this is set.
     pub fn with_triggering_frequency(mut self, frequency: Duration) -> Self {
         self.triggering_frequency = Some(frequency);
         self
@@ -271,5 +286,25 @@ impl WriteOptions {
         let table_schema = iceberg_schema(schema)?;
         partition_spec(&self.partition_fields, &table_schema)?;
         Ok(())
+    }
+
+    pub(crate) fn populate_display_data(&self, builder: &mut DisplayDataBuilder) {
+        builder.add_text("catalog_uri", &self.catalog.uri);
+        if let Some(warehouse) = &self.catalog.warehouse {
+            builder.add_text("warehouse", warehouse);
+        }
+        builder.add_text("table", &self.table);
+        if let Some(frequency) = self.triggering_frequency {
+            builder.add_text("triggering_frequency", format!("{frequency:?}"));
+        }
+        if let Some(bytes) = self.target_file_bytes {
+            builder.add_integer(
+                "target_file_bytes",
+                i64::try_from(bytes).unwrap_or(i64::MAX),
+            );
+        }
+        if let Some(shards) = self.num_shards {
+            builder.add_integer("num_shards", i64::try_from(shards).unwrap_or(i64::MAX));
+        }
     }
 }

@@ -17,8 +17,8 @@
  * under the License.
  */
 
-//! Kafka benchmark in a Rust pipeline: the streaming `copy` shape with the native Kafka
-//! connector.
+//! Kafka benchmark in a Rust pipeline: the streaming `copy` shape with the Kafka connector of
+//! the Rust SDK.
 //!
 //! The pipeline reads `--topic` with `Read`, sends each element through a Rust step, and
 //! writes the elements to `--destination_topic` with `Write`. All steps run in one Rust SDK
@@ -46,10 +46,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use beam::io::kafka::native::codec::managed::Payload;
-use beam::io::kafka::native::codec::{Decoder, Encoder, Json, Raw};
-use beam::io::kafka::native::read::{ConsumerPool, PoolSize, Read, ReadOptions, StartOffset};
-use beam::io::kafka::native::write::{Write, WriteOptions};
+use beam::io::kafka::codec::Payload;
+use beam::io::kafka::codec::{Decoder, Encoder, Json, Raw};
+use beam::io::kafka::read::{ConsumerPool, PoolSize, Read, ReadOptions, StartOffset};
+use beam::io::kafka::write::{Write, WriteOptions};
 use beam::options::PipelineOptionGroup;
 use beam::prelude::*;
 use beam::schema::Schema;
@@ -258,7 +258,7 @@ pub fn build_pipeline(options: &PipelineOptions, args: &Args) -> Result<Pipeline
             let codec = Json::schema(WIKIPEDIA_JSON_SCHEMA)?;
             let schema = codec
                 .row_schema()
-                .expect("a JSON Schema gives a row schema");
+                .ok_or_else(|| Error::msg("Json::schema always defines a row schema"))?;
             copy_rows(
                 &p,
                 read.with_decoder(codec),

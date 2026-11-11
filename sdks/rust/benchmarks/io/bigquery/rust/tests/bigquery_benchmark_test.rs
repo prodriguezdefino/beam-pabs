@@ -19,8 +19,8 @@
 
 //! Tests of the BigQuery benchmark in a Rust pipeline. They need no BigQuery.
 
-use beam::io::gcp::bigquery::storage::read::{ArrowCompression, ReadOptions};
-use beam::io::gcp::bigquery::storage::write::{self, WriteOptions};
+use beam::io::gcp::bigquery::read::{ArrowCompression, ReadOptions};
+use beam::io::gcp::bigquery::write::{self, WriteOptions};
 use beam::options::{ParseError, PipelineOptions, try_parse_from};
 use beam_benchmark_bigquery::{Args, Semantics, Shape, check_shape, read_options, write_options};
 use beam_benchmark_io::Connector;

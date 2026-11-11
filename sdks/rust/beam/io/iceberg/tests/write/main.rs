@@ -23,17 +23,17 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::sync::Arc;
 
-use beam_io_arrow::{EncodedBatch, SchemaRowCodec, millis_instant_type};
 use beam::schema::{Field, FieldType, FieldValue, Row, RowElement, Schema};
-use iceberg::CatalogBuilder;
-use iceberg::memory::{MEMORY_CATALOG_WAREHOUSE, MemoryCatalog, MemoryCatalogBuilder};
-use iceberg::spec::DataFile;
+use beam_io_arrow::{EncodedBatch, SchemaRowCodec, millis_instant_type};
 use beam_io_iceberg::catalog::file_io;
 use beam_io_iceberg::encode::Encoder;
 use beam_io_iceberg::storage::FileSystemStorageFactory;
 use beam_io_iceberg::table::{TableInfo, prepare};
 use beam_io_iceberg::write::TableWriter;
-use beam_io_iceberg::{Catalog, PartitionField, Transform, WriteOptions};
+use beam_io_iceberg::{Catalog, METRICS, PartitionField, PartitionTransform, WriteOptions};
+use iceberg::CatalogBuilder;
+use iceberg::memory::{MEMORY_CATALOG_WAREHOUSE, MemoryCatalog, MemoryCatalogBuilder};
+use iceberg::spec::DataFile;
 use parquet::basic::Compression;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use tempfile::TempDir;
@@ -135,7 +135,10 @@ impl Fixture {
 }
 
 fn options() -> WriteOptions {
-    WriteOptions::new(Catalog::rest("http://unused"), "ns.metrics")
+    WriteOptions::new(
+        Catalog::rest("http://unused").with_warehouse("bl://projects/p/catalogs/c"),
+        "ns.metrics",
+    )
 }
 
 fn footer_compression(file: &DataFile) -> Compression {
@@ -169,9 +172,10 @@ async fn an_unpartitioned_batch_is_one_zstd_file_under_the_data_location() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn rows_of_three_hours_go_to_three_partition_files() {
-    let fixture = Fixture::new(
-        options().with_partition_fields([PartitionField::new("timestamp_ms", Transform::Hour)]),
-    )
+    let fixture = Fixture::new(options().with_partition_fields([PartitionField::new(
+        "timestamp_ms",
+        PartitionTransform::Hour,
+    )]))
     .await;
     let batch = fixture.batch(&rows(&fixture.schema, 0..30, |id| (id % 3) * HOUR_MILLIS));
 
@@ -219,7 +223,10 @@ async fn a_small_target_size_rolls_to_more_files() {
 async fn object_storage_puts_hash_directories_before_the_partition_path() {
     let fixture = Fixture::new(
         options()
-            .with_partition_fields([PartitionField::new("timestamp_ms", Transform::Hour)])
+            .with_partition_fields([PartitionField::new(
+                "timestamp_ms",
+                PartitionTransform::Hour,
+            )])
             .with_table_property("write.object-storage.enabled", "true"),
     )
     .await;
@@ -248,9 +255,10 @@ async fn object_storage_puts_hash_directories_before_the_partition_path() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_data_file_meta_reads_back_the_same_file() {
-    let fixture = Fixture::new(
-        options().with_partition_fields([PartitionField::new("timestamp_ms", Transform::Hour)]),
-    )
+    let fixture = Fixture::new(options().with_partition_fields([PartitionField::new(
+        "timestamp_ms",
+        PartitionTransform::Hour,
+    )]))
     .await;
     let files = fixture
         .write([fixture.batch(&rows(&fixture.schema, 0..10, |id| id))])
@@ -280,9 +288,10 @@ impl beam::internals::SideInputReader for TableInfoReader {
         tag: &str,
         _window: &[u8],
     ) -> Result<beam::internals::SideInputElements<'a>, beam::internals::SideInputError> {
-        let items = match tag == self.tag {
-            true => vec![Ok(self.encoded.clone())],
-            false => Vec::new(),
+        let items = if tag == self.tag {
+            vec![Ok(self.encoded.clone())]
+        } else {
+            Vec::new()
         };
         Ok(Box::new(items.into_iter()))
     }
@@ -310,15 +319,20 @@ impl beam::internals::SideInputReader for TableInfoReader {
 
 #[test]
 fn write_data_files_fn_streams_multiple_batches_across_partitions() {
+    use std::collections::BTreeSet;
+
     use beam::coders::{DefaultCoder, PaneInfo, ShardedKey, WindowedHeader};
-    use beam::internals::HandlerContext;
+    use beam::internals::{HandlerContext, MetricsContainer, MetricsScope};
+    use beam::metrics::{LINEAGE_NAMESPACE, LINEAGE_SINKS, MetricResults};
     use beam::pipeline::Pipeline;
     use beam::transforms::{Create, DoFn};
     use beam_io_iceberg::data_file::DataFileMeta;
     use beam_io_iceberg::write::WriteDataFilesFn;
 
-    let opts =
-        options().with_partition_fields([PartitionField::new("timestamp_ms", Transform::Hour)]);
+    let opts = options().with_partition_fields([PartitionField::new(
+        "timestamp_ms",
+        PartitionTransform::Hour,
+    )]);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -344,13 +358,45 @@ fn write_data_files_fn_streams_multiple_batches_across_partitions() {
 
     let mut raw: Vec<Vec<u8>> = Vec::new();
     let header = WindowedHeader::global(0, PaneInfo::NO_FIRING);
-    let mut handler_ctx = HandlerContext::new(&mut raw)
-        .with_side_inputs(Some(&reader))
-        .with_header(&header);
-    let mut ctx = handler_ctx.as_process_context::<DataFileMeta>();
-    let key = ShardedKey::new(fixture.info.table.clone(), b"s0".to_vec());
-    step.process_element((key, batches), &mut ctx)
-        .expect("the batches write");
+    let container = Arc::new(MetricsContainer::new());
+    {
+        let _scope = MetricsScope::enter(Arc::clone(&container), Arc::from("WriteDataFiles"));
+        let mut handler_ctx = HandlerContext::new(&mut raw)
+            .with_side_inputs(Some(&reader))
+            .with_header(&header);
+        let mut ctx = handler_ctx.as_process_context::<DataFileMeta>();
+        let key = ShardedKey::new(fixture.info.table.clone(), b"s0".to_vec());
+        step.process_element((key, batches), &mut ctx)
+            .expect("the batches write");
+    }
+
+    assert_eq!(METRICS, "iceberg");
+    let results = MetricResults::from_container(&container);
+    assert_eq!(
+        results.counter_for_transform("WriteDataFiles", "iceberg", "data_files_written"),
+        Some(2)
+    );
+    assert_eq!(
+        results
+            .distribution_for_transform("WriteDataFiles", "iceberg", "data_file_rows")
+            .expect("row distribution")
+            .sum,
+        35
+    );
+    assert!(
+        results
+            .distribution_for_transform("WriteDataFiles", "iceberg", "data_file_bytes")
+            .expect("byte distribution")
+            .sum
+            > 0
+    );
+    assert_eq!(
+        results
+            .string_set_for_transform("WriteDataFiles", LINEAGE_NAMESPACE, LINEAGE_SINKS)
+            .expect("sink lineage")
+            .values(),
+        &BTreeSet::from(["iceberg:`bl://projects/p/catalogs/c`.ns.metrics".to_string()])
+    );
 
     let files: Vec<DataFile> = raw
         .iter()

@@ -33,7 +33,7 @@ name = "beam_io_iceberg"
 [features]
 default = ["gcp"]
 # Google auth for the catalog, `gs://` paths, and vended GCS tokens.
-gcp = ["dep:beam_io_gcp", "beam_io_gcp/gcs", "dep:google-cloud-auth", "dep:http"]
+gcp = ["dep:beam_gcp_core", "dep:beam_io_gcp", "beam_io_gcp/gcs", "dep:google-cloud-auth", "dep:http"]
 
 [dependencies]
 beam = { package = "apache-beam-core", path = "../../core", version = "2.79.0-SNAPSHOT", features = ["derive"] }
@@ -56,6 +56,7 @@ uuid = { workspace = true }
 # The HTTP client of the catalog. `iceberg-catalog-rest` uses reqwest 0.12 with no TLS, so the
 # connection builds the client with rustls and passes it to the catalog.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+beam_gcp_core = { workspace = true, optional = true }
 beam_io_gcp = { workspace = true, optional = true }
 google-cloud-auth = { workspace = true, optional = true }
 http = { workspace = true, optional = true }

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! Native Apache Iceberg write connector for the Apache Beam Rust SDK.
+//! Apache Iceberg write connector for the Apache Beam Rust SDK.
 //!
 //! The connector appends rows to Iceberg tables of a REST catalog. The workers write Parquet
 //! data files through the SDK file systems and commit snapshots to the catalog.
@@ -30,7 +30,7 @@
 //! # use beam::pipeline::Pipeline;
 //! # use beam::schema::BeamRow;
 //! # use beam::transforms::Create;
-//! use beam_io_iceberg::{Catalog, PartitionField, Transform, Write, WriteOptions};
+//! use beam_io_iceberg::{Catalog, PartitionField, PartitionTransform, Write, WriteOptions};
 //!
 //! #[derive(BeamRow, Clone, Debug)]
 //! struct Metric {
@@ -46,7 +46,7 @@
 //!         .with_vended_credentials(),
 //!     "db.metrics",
 //! )
-//! .with_partition_fields([PartitionField::new("device", Transform::Identity)]);
+//! .with_partition_fields([PartitionField::new("device", PartitionTransform::Identity)]);
 //! let pipeline = Pipeline::new();
 //! let written = pipeline
 //!     .apply("Create", Create::new(vec![Metric { id: 1, device: "a".to_string() }]))
@@ -82,8 +82,9 @@ pub mod table;
 pub mod write;
 
 pub use commit::SnapshotInfo;
-pub use options::{Catalog, PartitionField, Transform, WriteOptions};
+pub use options::{Catalog, PartitionField, PartitionTransform, WriteOptions};
 pub use sink::{DEFAULT_TRIGGERING_FREQUENCY, Write, WriteResult, WriteRows};
 
-/// The namespace of the metrics of the write.
-pub(crate) const METRICS: &str = "iceberg_io";
+/// Metric namespace of the Iceberg connector.
+#[doc(hidden)]
+pub const METRICS: &str = "iceberg";

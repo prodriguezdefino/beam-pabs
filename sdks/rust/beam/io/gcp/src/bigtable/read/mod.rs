@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! Native Cloud Bigtable read connector (`SampleRowKeys` + splittable `ReadRows`).
+//! Cloud Bigtable read connector (`SampleRowKeys` + splittable `ReadRows`).
 //!
 //! [`ReadRows`] expands into a two-stage pipeline. First, `Impulse` -> [`SampleKeyRangesFn`] ->
 //! `Reshuffle` streams `SampleRowKeys` and coalesces tablets into at most `max_initial_bundles`
@@ -48,6 +48,7 @@ use std::sync::Arc;
 use beam::coders::DefaultCoder;
 use beam::internals::PipelineInternals;
 use beam::schema::{BeamRow, Row, RowElement};
+use beam::transforms::display_data::{DisplayDataBuilder, HasDisplayData};
 use beam::transforms::sdf::SplittableParDo;
 use beam::transforms::{
     FromRows, Impulse, PTransform, ParDo, Reshuffle, TryPTransform, WithFailures,
@@ -66,7 +67,7 @@ use self::sample::SampleKeyRangesFn;
 
 use crate::bigtable::client::BigtableClient;
 
-/// Native Cloud Bigtable `PTransform` that reads rows from a table, materialized view, or
+/// Cloud Bigtable `PTransform` that reads rows from a table, materialized view, or
 /// authorized view using `SampleRowKeys` and splittable `ReadRows`.
 #[derive(Clone)]
 pub struct ReadRows {
@@ -139,10 +140,16 @@ impl ReadRows {
     }
 }
 
-impl ReadRows {
+impl HasDisplayData for ReadRows {
+    fn populate_display_data(&self, builder: &mut DisplayDataBuilder) {
+        self.options.populate_display_data(builder);
+    }
+}
 
+impl ReadRows {
     fn try_expand_ref(&self, input: &PBegin) -> beam::Result<PCollection<Row>> {
-        self.options.validate().map_err(beam::Error::msg)?;
+        input.pipeline().record_display_data(self);
+        self.options.validate()?;
         let schema = self.options.output_schema();
         let ranges = self.expand_ranges(input);
         let rows = ranges
@@ -163,6 +170,7 @@ impl ReadRows {
 impl TryPTransform<PBegin> for ReadRows {
     type Output = PCollection<Row>;
     type Error = beam::Error;
+
     fn try_expand(self, input: &PBegin) -> beam::Result<PCollection<Row>> {
         self.try_expand_ref(input)
     }
@@ -191,11 +199,17 @@ pub struct ReadRowsWithFailures {
     read: ReadRows,
 }
 
-impl ReadRowsWithFailures {
+impl HasDisplayData for ReadRowsWithFailures {
+    fn populate_display_data(&self, builder: &mut DisplayDataBuilder) {
+        self.read.options.populate_display_data(builder);
+    }
+}
 
+impl ReadRowsWithFailures {
     fn try_expand_ref(&self, input: &PBegin) -> beam::Result<WithFailures<Row, Row>> {
+        input.pipeline().record_display_data(self);
         let read = &self.read;
-        read.options.validate().map_err(beam::Error::msg)?;
+        read.options.validate()?;
         let schema = read.options.output_schema();
         let ranges = read.expand_ranges(input);
         let WithFailures { output, failures } = ranges.apply(
@@ -216,6 +230,7 @@ impl ReadRowsWithFailures {
 impl TryPTransform<PBegin> for ReadRowsWithFailures {
     type Output = WithFailures<Row, Row>;
     type Error = beam::Error;
+
     fn try_expand(self, input: &PBegin) -> beam::Result<WithFailures<Row, Row>> {
         self.try_expand_ref(input)
     }
@@ -256,10 +271,17 @@ impl<T> Clone for ReadTyped<T> {
     }
 }
 
+impl<T> HasDisplayData for ReadTyped<T> {
+    fn populate_display_data(&self, builder: &mut DisplayDataBuilder) {
+        self.rows.options.populate_display_data(builder);
+    }
+}
+
 impl<T: BeamRow + DefaultCoder> PTransform<PBegin> for ReadTyped<T> {
     type Output = PCollection<T>;
 
     fn expand(self, input: &PBegin) -> PCollection<T> {
+        input.pipeline().record_display_data(&self);
         let rows = input.apply("ReadRows", self.rows);
         rows.apply("FromRows", FromRows::new())
     }

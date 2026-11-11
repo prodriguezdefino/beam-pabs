@@ -23,12 +23,12 @@
 use std::sync::Arc;
 
 use beam::schema::{Field, FieldType, Schema};
+use beam_io_iceberg::schema::{check_compatible, iceberg_schema, partition_spec};
+use beam_io_iceberg::{PartitionField, PartitionTransform};
 use iceberg::spec::{
     ListType, MapType, NestedField, PrimitiveType, Schema as TableSchema, StructType,
     Transform as IcebergTransform, Type,
 };
-use beam_io_iceberg::schema::{check_compatible, iceberg_schema, partition_spec};
-use beam_io_iceberg::{PartitionField, Transform};
 
 use crate::common::{date, device_metric, millis_instant};
 
@@ -151,13 +151,13 @@ fn each_transform_gives_its_partition_field() {
     ]);
     let table_schema = iceberg_schema(&schema).expect("a supported schema");
     let fields = [
-        PartitionField::new("hourly", Transform::Hour),
-        PartitionField::new("daily", Transform::Day),
-        PartitionField::new("monthly", Transform::Month),
-        PartitionField::new("yearly", Transform::Year),
-        PartitionField::new("name", Transform::Truncate(4)),
-        PartitionField::new("n", Transform::Bucket(16)),
-        PartitionField::new("name", Transform::Identity),
+        PartitionField::new("hourly", PartitionTransform::Hour),
+        PartitionField::new("daily", PartitionTransform::Day),
+        PartitionField::new("monthly", PartitionTransform::Month),
+        PartitionField::new("yearly", PartitionTransform::Year),
+        PartitionField::new("name", PartitionTransform::Truncate(4)),
+        PartitionField::new("n", PartitionTransform::Bucket(16)),
+        PartitionField::new("name", PartitionTransform::Identity),
     ];
     let spec = partition_spec(&fields, &table_schema).expect("a valid spec");
     let actual: Vec<_> = spec
@@ -191,8 +191,8 @@ fn each_transform_gives_its_partition_field() {
 fn two_time_transforms_of_one_source_are_invalid() {
     let table_schema = iceberg_schema(&device_metric()).expect("a supported schema");
     let fields = [
-        PartitionField::new("timestamp_ms", Transform::Hour),
-        PartitionField::new("timestamp_ms", Transform::Day),
+        PartitionField::new("timestamp_ms", PartitionTransform::Hour),
+        PartitionField::new("timestamp_ms", PartitionTransform::Day),
     ];
     partition_spec(&fields, &table_schema).expect_err("the day partition is redundant");
 }

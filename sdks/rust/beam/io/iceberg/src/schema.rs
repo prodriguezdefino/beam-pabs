@@ -39,7 +39,7 @@ use iceberg::spec::{
     StructType, Type, UnboundPartitionField, UnboundPartitionSpec,
 };
 
-use crate::options::{PartitionField, Transform};
+use crate::options::{PartitionField, PartitionTransform};
 
 /// The Iceberg form of a Beam field type, one level deep.
 enum Shape<'a> {
@@ -170,18 +170,18 @@ pub fn partition_spec(
                     beam::Error::msg(format!("The partition source '{source}' is not a field"))
                 })?;
                 let name = match transform {
-                    Transform::Identity => source.clone(),
-                    Transform::Year => format!("{source}_year"),
-                    Transform::Month => format!("{source}_month"),
-                    Transform::Day => format!("{source}_day"),
-                    Transform::Hour => format!("{source}_hour"),
-                    Transform::Bucket(0) | Transform::Truncate(0) => {
+                    PartitionTransform::Identity => source.clone(),
+                    PartitionTransform::Year => format!("{source}_year"),
+                    PartitionTransform::Month => format!("{source}_month"),
+                    PartitionTransform::Day => format!("{source}_day"),
+                    PartitionTransform::Hour => format!("{source}_hour"),
+                    PartitionTransform::Bucket(0) | PartitionTransform::Truncate(0) => {
                         return Err(beam::Error::msg(format!(
                             "The partition transform of '{source}' needs a value greater than 0"
                         )));
                     }
-                    Transform::Bucket(_) => format!("{source}_bucket"),
-                    Transform::Truncate(_) => format!("{source}_trunc"),
+                    PartitionTransform::Bucket(_) => format!("{source}_bucket"),
+                    PartitionTransform::Truncate(_) => format!("{source}_trunc"),
                 };
                 let transform = iceberg::spec::Transform::from(*transform);
                 transform

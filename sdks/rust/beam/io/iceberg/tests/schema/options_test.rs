@@ -21,14 +21,17 @@
 //! rejects.
 
 use beam::schema::{Field, FieldType, Schema};
-use beam_io_iceberg::{PartitionField, Transform};
+use beam_io_iceberg::{PartitionField, PartitionTransform};
 
 use crate::common::{device_metric, options};
 
 #[test]
 fn the_target_job_options_are_valid() {
     let options = options("iceberg_poc_db.device_metrics")
-        .with_partition_fields([PartitionField::new("timestamp_ms", Transform::Hour)])
+        .with_partition_fields([PartitionField::new(
+            "timestamp_ms",
+            PartitionTransform::Hour,
+        )])
         .with_table_property("write.parquet.compression-codec", "zstd");
     options
         .validate(&device_metric())
@@ -69,7 +72,7 @@ fn a_table_without_a_namespace_or_with_an_empty_part_is_invalid() {
 #[test]
 fn a_partition_source_must_be_a_field() {
     let error = options("ns.t")
-        .with_partition_fields([PartitionField::new("missing", Transform::Identity)])
+        .with_partition_fields([PartitionField::new("missing", PartitionTransform::Identity)])
         .validate(&device_metric())
         .expect_err("the source is not a field");
     assert!(
@@ -80,7 +83,10 @@ fn a_partition_source_must_be_a_field() {
 
 #[test]
 fn a_bucket_count_or_truncate_width_of_zero_is_invalid() {
-    for transform in [Transform::Bucket(0), Transform::Truncate(0)] {
+    for transform in [
+        PartitionTransform::Bucket(0),
+        PartitionTransform::Truncate(0),
+    ] {
         let error = options("ns.t")
             .with_partition_fields([PartitionField::new("device_id", transform)])
             .validate(&device_metric())
@@ -92,7 +98,7 @@ fn a_bucket_count_or_truncate_width_of_zero_is_invalid() {
 #[test]
 fn a_transform_must_accept_the_source_type() {
     let error = options("ns.t")
-        .with_partition_fields([PartitionField::new("device_id", Transform::Hour)])
+        .with_partition_fields([PartitionField::new("device_id", PartitionTransform::Hour)])
         .validate(&device_metric())
         .expect_err("hour does not take a string");
     assert!(error.to_string().contains("device_id_hour"), "{error}");

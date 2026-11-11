@@ -203,7 +203,7 @@ dependencies = [
  "strum_macros 0.27.2",
  "thiserror 2.0.21",
  "uuid",
- "zstd 0.13.4",
+ "zstd",
 ]
 
 [[package]]
@@ -224,6 +224,7 @@ dependencies = [
  "apache-beam-io-kafka",
  "apache-beam-io-managed",
  "apache-beam-io-parquet",
+ "apache-beam-io-proto",
  "apache-beam-io-tfrecord",
  "apache-beam-ml",
  "apache-beam-model",
@@ -374,6 +375,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "apache-beam-gcp-core"
+version = "2.79.0-SNAPSHOT"
+dependencies = [
+ "apache-beam-core",
+ "google-cloud-auth",
+ "google-cloud-gax",
+ "google-cloud-gax-internal",
+ "rustls",
+ "tokio",
+]
+
+[[package]]
 name = "apache-beam-harness"
 version = "2.79.0-SNAPSHOT"
 dependencies = [
@@ -423,8 +436,10 @@ dependencies = [
  "apache-beam-io-arrow",
  "apache-beam-io-file",
  "arrow-avro",
+ "arrow-cast",
  "arrow-schema",
  "chrono",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
@@ -445,7 +460,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
- "zstd 0.14.0",
+ "zstd",
 ]
 
 [[package]]
@@ -454,14 +469,14 @@ version = "2.79.0-SNAPSHOT"
 dependencies = [
  "apache-beam-core",
  "apache-beam-external",
+ "apache-beam-gcp-core",
  "apache-beam-io-arrow",
  "apache-beam-io-file",
- "apache-beam-io-gcp",
  "apache-beam-io-gcp-googleapis",
- "apache-beam-io-managed",
  "apache-beam-model",
  "apache-beam-test-utils",
  "arrow-ipc",
+ "base64 0.23.1",
  "bytes",
  "chrono",
  "clap",
@@ -476,7 +491,6 @@ dependencies = [
  "google-cloud-wkt",
  "inventory",
  "prost",
- "rustls",
  "serde",
  "tokio",
  "tokio-stream",
@@ -509,6 +523,7 @@ name = "apache-beam-io-iceberg"
 version = "2.79.0-SNAPSHOT"
 dependencies = [
  "apache-beam-core",
+ "apache-beam-gcp-core",
  "apache-beam-io-arrow",
  "apache-beam-io-file",
  "apache-beam-io-gcp",
@@ -537,7 +552,7 @@ name = "apache-beam-io-json"
 version = "2.79.0-SNAPSHOT"
 dependencies = [
  "apache-beam-core",
- "base64 0.22.1",
+ "base64 0.23.1",
  "serde",
  "serde_json",
 ]
@@ -548,23 +563,24 @@ version = "2.79.0-SNAPSHOT"
 dependencies = [
  "apache-beam",
  "apache-beam-core",
- "apache-beam-external",
- "apache-beam-io-gcp",
+ "apache-beam-gcp-core",
+ "apache-beam-io-avro",
  "apache-beam-io-json",
- "apache-beam-io-kafka",
- "apache-beam-io-managed",
+ "apache-beam-io-proto",
  "apache-beam-model",
  "apache-beam-test-utils",
- "base64 0.22.1",
+ "base64 0.23.1",
  "clap",
- "libc",
+ "criterion",
  "prost",
+ "prost-types",
  "rdkafka",
  "serde",
  "serde_json",
  "tokio",
  "tokio-stream",
  "tracing",
+ "ureq",
 ]
 
 [[package]]
@@ -573,6 +589,8 @@ version = "2.79.0-SNAPSHOT"
 dependencies = [
  "apache-beam",
  "apache-beam-expansion",
+ "prost",
+ "prost-types",
  "tokio",
 ]
 
@@ -584,7 +602,7 @@ dependencies = [
  "apache-beam-external",
  "apache-beam-model",
  "apache-beam-test-utils",
- "base64 0.22.1",
+ "base64 0.23.1",
  "prost",
  "serde",
  "serde-saphyr",
@@ -609,6 +627,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "apache-beam-io-proto"
+version = "2.79.0-SNAPSHOT"
+dependencies = [
+ "apache-beam-core",
+ "prost",
+ "prost-reflect",
+ "prost-types",
+]
+
+[[package]]
 name = "apache-beam-io-tfrecord"
 version = "2.79.0-SNAPSHOT"
 dependencies = [
@@ -628,8 +656,8 @@ version = "2.79.0-SNAPSHOT"
 dependencies = [
  "apache-beam-core",
  "apache-beam-fluent",
+ "apache-beam-gcp-core",
  "apache-beam-io-file",
- "apache-beam-io-gcp",
  "apache-beam-testing",
  "arc-swap",
  "candle-core",
@@ -683,6 +711,7 @@ version = "2.79.0-SNAPSHOT"
 dependencies = [
  "apache-beam-core",
  "apache-beam-fluent",
+ "apache-beam-gcp-core",
  "apache-beam-io-file",
  "apache-beam-io-gcp",
  "apache-beam-model",
@@ -734,7 +763,6 @@ dependencies = [
  "apache-beam-external",
  "apache-beam-fluent",
  "apache-beam-harness",
- "apache-beam-io-file",
  "apache-beam-io-gcp",
  "apache-beam-model",
  "apache-beam-runner-prism",
@@ -860,7 +888,7 @@ dependencies = [
  "snap",
  "strum_macros 0.28.0",
  "uuid",
- "zstd 0.13.4",
+ "zstd",
 ]
 
 [[package]]
@@ -922,7 +950,7 @@ dependencies = [
  "arrow-select",
  "flatbuffers",
  "lz4_flex",
- "zstd 0.13.4",
+ "zstd",
 ]
 
 [[package]]
@@ -3555,7 +3583,7 @@ dependencies = [
  "url",
  "uuid",
  "zeroize",
- "zstd 0.13.4",
+ "zstd",
 ]
 
 [[package]]
@@ -4838,7 +4866,7 @@ dependencies = [
  "thrift",
  "tokio",
  "twox-hash",
- "zstd 0.13.4",
+ "zstd",
 ]
 
 [[package]]
@@ -5075,6 +5103,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "prost-reflect"
+version = "0.16.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01b80ea363c31af2de2b92e3c07ed1156628f7838c4afb4df75ee78a37fedbd1"
+dependencies = [
+ "prost",
+ "prost-types",
 ]
 
 [[package]]
@@ -7673,16 +7711,7 @@ version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdb02c3132d251ab1606e9fc913a7da6c6ed08cc263df15edf082e1dc497d157"
 dependencies = [
- "zstd-safe 7.4.0",
-]
-
-[[package]]
-name = "zstd"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf06bd8162af0734b344780deb55b42a2429ae430870d13fcc12f238e880fe6e"
-dependencies = [
- "zstd-safe 8.0.0",
+ "zstd-safe",
 ]
 
 [[package]]
@@ -7690,15 +7719,6 @@ name = "zstd-safe"
 version = "7.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c8ea04668f5de8d8d51051714ba560c9536519cadcdb8829bba4fe2ad159b03"
-dependencies = [
- "zstd-sys",
-]
-
-[[package]]
-name = "zstd-safe"
-version = "8.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae42c0555055784c70058d19ba8e275528e8a99a706684868ace5da4e716a4ab"
 dependencies = [
  "zstd-sys",
 ]

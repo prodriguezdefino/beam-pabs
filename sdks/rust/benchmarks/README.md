@@ -29,7 +29,12 @@ the repository root. [docs/build.md](../docs/build.md) gives the build and test 
 ./gradlew :sdks:rust:nexmarkPrism      # Launch Nexmark on PrismRunner ([-Psuite=SMOKE] [-Pquery=0] [-Pstreaming])
 ./gradlew :sdks:rust:nexmarkDataflow   # Launch Nexmark on Dataflow ([-Psuite=DEFAULT] [-Pquery=0] [-Pstreaming])
 ./gradlew :sdks:rust:profilePrism      # Profile locally on Prism (-Pexample=wordcount [-Pmode=cpu|memory|both] ...)
+./gradlew :sdks:rust:kafkaCopyBenchmark          # Local Kafka copy bench on Prism against a broker (`-Precords=100000 -Pruns=3`)
 ./gradlew :sdks:rust:bigQueryBenchmark           # BigQuery benchmark on Dataflow ([-Ppipeline=python|java|rust] [-Pshape=count|per_key|copy] -Preader=...|-Preaders=a,b [-Pwriter=...] [-PnumWorkers=4] [-PmaxNumWorkers=10] [-Pruns=1] [-PdryRun])
+./gradlew :sdks:rust:bigtableBenchmark           # Bigtable benchmark on Dataflow ([-Ppipeline=python|java|rust] [-Pshape=bt_to_gcs|gcs_to_bt] -Preader=...|-Pwriter=... [-Pruns=1] [-PdryRun])
+./gradlew :sdks:rust:kafkaBenchmark              # Kafka benchmark on Dataflow ([-Ppipeline=python|java|rust] [-Pshape=load|copy] [-Pformat=BYTES|RAW|JSON|AVRO] [-Pruns=1] [-PdryRun])
+./gradlew :sdks:rust:icebergBenchmark            # Iceberg streaming ingest benchmark on Dataflow ([-Ppipeline=python|java|rust] [-Pwriter=...] [-Pruns=1] [-PdryRun])
+./gradlew :sdks:rust:setupBenchmarkPythonEnv   # Python virtualenv with a released SDK for Dataflow I/O benchmarks
 ```
 
 ## Profiling
@@ -51,8 +56,8 @@ the `time` output and a summary to `build/reports/profile/<binary>-<timestamp>/`
   example `-Ppkg=apache-beam-harness -PcargoBench=chain_throughput`. A criterion bench gets
   `--bench --profile-time 10` and `-PextraArgs`, not the pipeline flags. It runs for a fixed
   time, so compare its hot frames, not its CPU seconds.
-  For the Kafka copy bench, use `-Ppkg=apache-beam-io-kafka -PcargoBench=copy_throughput
-  -PexampleFeatures=native`, and `-PextraArgs="--runs=1 --formats=bytes"` for one copy.
+  For the Kafka copy bench, use `-Ppkg=apache-beam-io-kafka -PcargoBench=copy_throughput`,
+  and `-PextraArgs="--runs=1 --formats=bytes"` for one copy.
 - `-Pmode=cpu` records with samply, `memory` runs `/usr/bin/time` (`-l` on macOS, `-v` on
   Linux), and `both` (the default) does both. With `both`, the pipeline runs two times.
 - `-PextraArgs="<pipeline flags>"` passes flags to the pipeline.
@@ -75,7 +80,9 @@ directory: it holds the function names.
 ## Benchmarks
 
 [gradle/benchmarks.gradle](../gradle/benchmarks.gradle) defines the benchmarks.
-[gradle/benchmarks/nexmark.gradle](../gradle/benchmarks/nexmark.gradle) defines the Nexmark tasks. Each benchmark runs
+[gradle/benchmarks/nexmark.gradle](../gradle/benchmarks/nexmark.gradle) defines the Nexmark
+tasks. [gradle/benchmarks/io.gradle](../gradle/benchmarks/io.gradle) (with
+`gradle/benchmarks/io/*.gradle`) defines the I/O benchmarks. Each benchmark runs
 some rounds (`-Pruns`, default 3), one after the other. It writes `results.json` and
 `report.md` to `build/reports/benchmarks/<task>-<timestamp>/`. The report gives each run and
 the medians. The scripts are in [benchmarks/tools/](tools/).
@@ -114,7 +121,8 @@ gsutil cp gs://apache-beam-samples/wikipedia_edits/wiki_data-000000000000.json b
   `events.elements` throughput.
 - `harnessBenchmark` runs the criterion benches in
   [harness/benches/](../beam/harness/benches/). `-Ppkg=<crate> -Pbench=<name>` runs a bench
-  of another crate: `row_bridge` of `apache-beam-io-arrow`. `process_bundle` runs bundles through a worker and an in-process runner over gRPC. It uses the pipelines and the 16 concurrent
+  of another crate: `row_bridge` of `apache-beam-io-arrow`, or `typed_encode` of
+  `apache-beam-io-kafka`. `process_bundle` runs bundles through a worker and an in-process runner over gRPC. It uses the pipelines and the 16 concurrent
   callers of Java's `ProcessBundleBenchmark` (`sdks/java/harness/jmh`). Its times are per
   operation, so 1 / time compares with the ops/s of JMH. `data_plane` measures inbound
   routing, outbound buffering and the wait one slow bundle causes another on the same
@@ -147,14 +155,27 @@ gsutil cp gs://apache-beam-samples/wikipedia_edits/wiki_data-000000000000.json b
 - To add a Dataflow benchmark of a Rust example, call `registerRustBenchmark` (see
   `wordcountBenchmark`). For other launchers, give launch commands to `runDataflowBenchmark`
   (see `nexmarkBenchmark`).
-- The I/O benchmarks (`bigQueryBenchmark`, `bigtableBenchmark`, `kafkaBenchmark`, see
-  [gradle/io-benchmarks.gradle](../gradle/io-benchmarks.gradle)) give one variant for each
-  reader of `-Preaders=a,b` (or `-Preader`) and each writer of `-Pwriters` (or `-Pwriter`) in
-  the pipeline of `-Ppipeline`. They run 1 round by default. The report compares the last
-  variant with the others, and also gives the processing time, the rows per vCPU·s, the
-  latency and the backlog of a streaming job (`io_report.py`). For a Rust pipeline, the script
-  polls the job and drains a streaming job at `-PexpectedRows` or `-PdrainAfterSeconds`
-  (`job_wait.py`). See [rust-native-io-providers.md](../docs/rust-native-io-providers.md#9-benchmarks).
+- The I/O benchmarks are `bigQueryBenchmark`, `bigtableBenchmark`, `kafkaBenchmark` and
+  `icebergBenchmark` (see [gradle/benchmarks/io.gradle](../gradle/benchmarks/io.gradle)). They
+  run one variant for each reader of `-Preaders=a,b` (or `-Preader`). They also run one
+  variant for each writer of `-Pwriters` (or `-Pwriter`). All variants use the pipeline of
+  `-Ppipeline`. `buildIoBenchmarkWorkers`
+  builds all four Linux worker binaries over one shared `.rlib` cache. `-Ppipeline=rust` supports
+  `-Pbaseline=<git ref>`. They run 1 round by default. Every Python, Java and Rust launcher
+  submits its job, prints `JOB_ID=<id>` and exits. Then `job_wait.py` polls and drains the
+  jobs of all SDKs in the same way. It uses `-PexpectedRows`, `-PdrainAfterSeconds`, or
+  `-PidleAfterLoadSeconds` with a companion producer job. The report (`io_report.py`)
+  compares the last variant with the others. It gives processing time, rows per vCPU·s,
+  latency and streaming backlog. See [rust-native-io-providers.md](../docs/rust-native-io-providers.md#4-benchmarks).
+- The companion producer of `kafkaBenchmark -Pshape=copy` and `icebergBenchmark` starts with
+  `-PsamplePath`, `-Prate`, `-PloadSeconds` or `-PsharedProducer`. Each benchmark has its own
+  sample key: `example.benchmark.kafkaSamplePath` or `example.benchmark.icebergSamplePath`.
+  `icebergBenchmark` defaults to 100000 records/s for 1800 s and 270 s idle, and needs
+  `example.benchmark.kafkaCluster`. The producer takes `-PproducerExtraArgs`, not `-PextraArgs`.
+  `results.json` holds its job, state and rows. The medians do not include a round whose
+  producer fails. Tasks that run at the same time with the same `-PsharedProducer=<id>` share
+  one producer per round. An example is a Rust and a Java copy of one topic.
+  `-PsharedProducerTasks` (default 2) sets the number of these tasks.
 - `profileCompare` takes `-Pexample` (`wordcount`) or the target properties of `profilePrism`.
   It alternates the order of the variants in each round. `profilePrism` builds before it
   records, so the profile does not include the build. The report gives the Rust and Prism
@@ -185,5 +206,5 @@ counter, and the script checks `-PexpectedRows` against it.
 `-ProwRestriction` limits the
 rows for a smoke run. Every shape runs on fixed workers (`-PnumWorkers=4`) or
 with autoscaling (`-PnumWorkers=1 -PmaxNumWorkers=10`). See
-[`io-bigquery.gradle`](../gradle/benchmarks/io-bigquery.gradle) for the
+[`bigquery.gradle`](../gradle/benchmarks/io/bigquery.gradle) for the
 other properties.

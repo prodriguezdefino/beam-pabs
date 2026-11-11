@@ -53,9 +53,8 @@ harness = false
 test = false
 
 [dependencies]
-beam = { workspace = true, features = ["fluent", "io-file", "gcp-gcs", "gcp-bigquery", "gcp-bigquery-storage", "gcp-bigtable", "gcp-pubsub", "derive", "external", "prism", "dataflow", "testing", "parquet", "avro", "tfrecord", "iceberg"] }
+beam = { workspace = true, features = ["fluent", "io-file", "gcp-gcs", "gcp-bigquery", "gcp-bigtable", "gcp-pubsub", "derive", "external", "prism", "dataflow", "testing", "parquet", "avro", "tfrecord", "iceberg"] }
 beam_runner_prism = { workspace = true }
-beam_io_file = { workspace = true }
 beam_io_gcp = { workspace = true, features = ["gcs"] }
 beam_fluent = { workspace = true }
 beam_external = { workspace = true }

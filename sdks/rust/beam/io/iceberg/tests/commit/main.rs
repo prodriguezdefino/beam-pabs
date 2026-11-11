@@ -21,11 +21,11 @@
 
 mod common;
 
-use iceberg::transaction::{ApplyTransactionAction, Transaction};
-use iceberg::{Catalog as _, TableIdent};
 use beam_io_iceberg::commit::{
     Added, COMMIT_ID, Commit, SnapshotInfo, commit, commit_id, commit_report, find_commit,
 };
+use iceberg::transaction::{ApplyTransactionAction, Transaction};
+use iceberg::{Catalog as _, TableIdent};
 use tempfile::TempDir;
 
 use common::{Fault, Faulty, data_file, memory_catalog, table};

@@ -1,0 +1,187 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+//! One classification of append failures for all writers, and the append at an offset that
+//! the pending and buffered writers share.
+
+use std::future::Future;
+use std::time::Duration;
+
+use beam::metrics::Metrics;
+use beam::retry::{Decision, RetryWaits};
+use google_cloud_bigquery::error::AppendError;
+use google_cloud_bigquery::model::ArrowRecordBatch;
+use google_cloud_gax::error::rpc::Code;
+
+use super::client::{APPEND_RETRY, transient_decision};
+use crate::bigquery::METRICS;
+
+/// Retry counts and waits from one [`append_at_stats`] call.
+#[derive(Debug, Default)]
+pub struct AppendStats {
+    pub retries: u64,
+    pub waits: RetryWaits,
+}
+
+impl AppendStats {
+    /// Reports `append_retries` and the retry waits on the current thread.
+    pub fn record(self) {
+        if self.retries > 0 {
+            Metrics::counter(METRICS, "append_retries")
+                .inc_by(i64::try_from(self.retries).unwrap_or(i64::MAX));
+        }
+        self.waits.record(METRICS);
+    }
+}
+
+/// What a failed append means for the writer.
+#[derive(Debug)]
+pub enum Failure {
+    /// BigQuery rejected these rows, by index in the request with the reason, and appended no
+    /// row of the request.
+    Rows(Vec<(usize, String)>),
+    /// The offset of the request is already written.
+    Exists(String),
+    /// The offset of the request is after the end of the stream.
+    OutOfRange(String),
+    /// The stream is finalized or does not exist.
+    Stream(String),
+    /// The connection of the writer gave no answer in time or closed. A call on a new
+    /// connection can succeed.
+    Connection(String),
+    /// A later call can succeed after the wait of the [`Decision`].
+    Transient(String, Decision),
+    /// No later call can succeed.
+    Fatal(String),
+}
+
+impl Failure {
+    pub fn message(&self) -> String {
+        match self {
+            Self::Rows(rows) => format!("BigQuery rejected {} rows", rows.len()),
+            Self::Exists(message)
+            | Self::OutOfRange(message)
+            | Self::Stream(message)
+            | Self::Connection(message)
+            | Self::Transient(message, _)
+            | Self::Fatal(message) => message.clone(),
+        }
+    }
+
+    /// Whether a call on a new connection of the writer can succeed.
+    pub fn needs_new_connection(&self) -> bool {
+        matches!(self, Self::Connection(_) | Self::Transient(..))
+    }
+}
+
+impl From<AppendError> for Failure {
+    fn from(error: AppendError) -> Self {
+        let message = error.to_string();
+        match error {
+            AppendError::RowErrors { row_errors, .. } => Self::Rows(
+                row_errors
+                    .into_iter()
+                    .map(|row| {
+                        (
+                            usize::try_from(row.index).unwrap_or(usize::MAX),
+                            row.message,
+                        )
+                    })
+                    .collect(),
+            ),
+            AppendError::UnexpectedEndOfStream => Self::Connection(message),
+            AppendError::Rpc { source, .. } => match source.status().map(|status| status.code) {
+                Some(Code::AlreadyExists) => Self::Exists(message),
+                Some(Code::OutOfRange) => Self::OutOfRange(message),
+                Some(Code::NotFound | Code::FailedPrecondition) => Self::Stream(message),
+                _ => match transient_decision(&source) {
+                    Decision::Stop => Self::Fatal(message),
+                    retry @ (Decision::Backoff | Decision::Throttled | Decision::Wait(_)) => {
+                        Self::Transient(message, retry)
+                    }
+                },
+            },
+            _ => Self::Fatal(message),
+        }
+    }
+}
+
+/// Appends `rows` at `offset` through `send` and returns retry and backoff statistics for
+/// callers that run on a background runtime thread.
+pub async fn append_at_stats<Call, Fut, Response>(
+    send: Call,
+    rows: &ArrowRecordBatch,
+    offset: i64,
+    mut retried: bool,
+    timeout: Duration,
+) -> (Result<(), Failure>, AppendStats)
+where
+    Call: Fn(ArrowRecordBatch, i64) -> Fut,
+    Fut: Future<Output = Result<Response, AppendError>>,
+{
+    let mut attempt = 0;
+    let mut stats = AppendStats::default();
+    loop {
+        // A clone of the request shares its bytes.
+        let result = match tokio::time::timeout(timeout, send(rows.clone(), offset)).await {
+            Ok(result) => result.map_err(Failure::from),
+            Err(_) => Err(Failure::Connection(format!(
+                "no answer to the append at offset {offset} in {} s",
+                timeout.as_secs()
+            ))),
+        };
+        match result {
+            Ok(_) => return (Ok(()), stats),
+            Err(Failure::Exists(_)) if retried => return (Ok(()), stats),
+            Err(Failure::Transient(message, retry)) if APPEND_RETRY.allows_retry(attempt) => {
+                let Some(wait) = retry.wait(APPEND_RETRY, attempt) else {
+                    return (Err(Failure::Transient(message, retry)), stats);
+                };
+                retried = true;
+                stats.retries += 1;
+                tokio::time::sleep(wait).await;
+                stats.waits.add(retry, wait);
+                attempt += 1;
+            }
+            Err(failure) => return (Err(failure), stats),
+        }
+    }
+}
+
+/// Appends `rows` at `offset` through `send`, and calls again after a transient failure. An
+/// `Exists` failure after a transient one means that the first call wrote the rows, so it
+/// counts as success. Set `retried` if an earlier call for the same rows failed as transient.
+///
+/// A call that has no answer after `timeout`, or a closed connection, returns
+/// [`Failure::Connection`] at once: a call on the same connection cannot succeed.
+pub async fn append_at<Call, Fut, Response>(
+    send: Call,
+    rows: &ArrowRecordBatch,
+    offset: i64,
+    retried: bool,
+    timeout: Duration,
+) -> Result<(), Failure>
+where
+    Call: Fn(ArrowRecordBatch, i64) -> Fut,
+    Fut: Future<Output = Result<Response, AppendError>>,
+{
+    let (result, stats) = append_at_stats(send, rows, offset, retried, timeout).await;
+    stats.record();
+    result
+}

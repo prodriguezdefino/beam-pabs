@@ -19,7 +19,6 @@
 
 //! Native Iceberg writes on PrismRunner, to an `iceberg` memory catalog on a temp directory.
 //! Prism runs the workers in this process, so the steps share the catalog.
-#![expect(clippy::unwrap_used, reason = "test fixtures panic on setup failure")]
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -28,17 +27,17 @@ use std::time::Duration;
 use beam::Instant;
 use beam::io::iceberg::storage::FileSystemStorageFactory;
 use beam::io::iceberg::{
-    Catalog, PartitionField, SnapshotInfo, Transform, Write, WriteOptions, WriteRows,
+    Catalog, PartitionField, PartitionTransform, SnapshotInfo, Write, WriteOptions, WriteRows,
 };
 use beam::pipeline::Pipeline;
 use beam::schema::{BeamRow, Field, FieldType, FieldValue, Row, Schema, URN_MILLIS_INSTANT};
 use beam::testing::TestStream;
 use beam::transforms::Create;
 use beam_fluent::prelude::PCollectionExt;
-use iceberg::memory::{MEMORY_CATALOG_WAREHOUSE, MemoryCatalogBuilder};
-use iceberg::{CatalogBuilder, TableIdent};
 use beam_runner_prism::PrismRunner;
 use beam_runner_tests::TempDir;
+use iceberg::memory::{MEMORY_CATALOG_WAREHOUSE, MemoryCatalogBuilder};
+use iceberg::{CatalogBuilder, TableIdent};
 
 #[derive(Debug, Clone, PartialEq, BeamRow)]
 struct Metric {
@@ -109,14 +108,14 @@ async fn a_bounded_write_appends_all_rows_in_one_snapshot() {
     let warehouse = TempDir::new("iceberg_bounded");
     let catalog = memory_catalog(&warehouse).await;
     let p = Pipeline::new();
-    let written = p.apply("Create", Create::new(metrics(0..200))).apply(
-        "Write",
-        Write::<Metric>::new(
-            options("db.metrics")
-                .with_partition_fields([PartitionField::new("device", Transform::Identity)]),
-        )
-        .with_catalog_client(Arc::clone(&catalog)),
-    );
+    let written =
+        p.apply("Create", Create::new(metrics(0..200))).apply(
+            "Write",
+            Write::<Metric>::new(options("db.metrics").with_partition_fields([
+                PartitionField::new("device", PartitionTransform::Identity),
+            ]))
+            .with_catalog_client(Arc::clone(&catalog)),
+        );
     let snapshots = capture(&written.snapshots);
 
     p.run_with_runner(&PrismRunner::new()).await.unwrap();

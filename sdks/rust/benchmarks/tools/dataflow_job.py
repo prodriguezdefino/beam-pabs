@@ -32,6 +32,11 @@ does not wait for its job, see job_wait.py) and "after" (a command that runs aft
 with the same placeholders, for example a check of the output). With --io, the report also
 has the metrics of the I/O benchmarks (see io_report.py).
 
+With --producer, each round starts a companion load job when the measured jobs run. With
+--shared-producer, the runs of several tasks on this host share one companion. results.json
+holds the record of each companion. When the companion fails, the round fails and the medians
+leave it out.
+
 `fetch` prints the same record of jobs that ran before, without the CPU platform.
 
 The total vCPU time includes worker startup and idle autoscaled workers. The used vCPU time
@@ -44,12 +49,14 @@ import datetime
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import io_report
 import job_wait
@@ -57,7 +64,10 @@ import monitoring
 import report
 
 API = "https://dataflow.googleapis.com/v1b3/projects/{project}/locations/{region}/jobs"
-JOB_ID = re.compile(r"Dataflow Console: \S+/dataflow/jobs/[^/\s]+/([^?\s/]+)")
+JOB_ID = re.compile(
+    r"(?:^JOB_ID=(\S+)|Dataflow Console: \S+/dataflow/jobs/[^/\s]+/([^?\s/]+))",
+    re.MULTILINE,
+)
 WORKERS = re.compile(r"Starting (\d+) workers|number of workers to (\d+)|"
                      r"worker pool from \d+ to (\d+)")
 STOCKOUT = re.compile(r"(?i)stockout|resource.pool.exhausted|does not have enough resources")
@@ -151,12 +161,19 @@ def fetch(project: str, region: str, job_id: str) -> Dict[str, Any]:
   }
 
 
+def io_namespace(io: Optional[io_report.Config]) -> Optional[str]:
+  """The namespace of the user metrics of an I/O benchmark, or None."""
+  return io.get("namespace") if io else None
+
+
 def collect_monitoring(project: str, details: Dict[str, Any], counter: Optional[str],
-                       wait_seconds: float) -> Dict[str, monitoring.Series]:
+                       wait_seconds: float, namespace: Optional[str] = None
+                       ) -> Dict[str, monitoring.Series]:
   """The Monitoring series of a job from `fetch`. The counter total from the Dataflow API
   tells when the counter series is complete."""
   job, token = details["job"], access_token()
-  expected = parse_metrics(details["metrics"], "", counter)["metrics"].get("counter_total")
+  expected = parse_metrics(details["metrics"], "", counter,
+                           namespace)["metrics"].get("counter_total")
   return monitoring.collect(lambda query: monitoring.time_series(project, token, query),
                             job["id"], job["createTime"], job["currentStateTime"], counter,
                             wait_seconds, expected)
@@ -189,15 +206,17 @@ def known_platforms(lines: Iterable[str]) -> Set[str]:
 
 def job_id_from_log(text: str) -> Optional[str]:
   match = JOB_ID.search(text)
-  return match.group(1) if match else None
+  return (match.group(1) or match.group(2)) if match else None
 
 
 def parse_metrics(metrics: Iterable[Dict[str, Any]], count_output: str,
-                  counter: Optional[str] = None) -> Dict[str, Any]:
+                  counter: Optional[str] = None,
+                  namespace: Optional[str] = None) -> Dict[str, Any]:
   """The job totals, the counted elements and the ProcessElement seconds of each step.
 
   The counted elements are the elements of the first output whose name holds `count_output`.
-  The total of the user counter `counter` adds the values of all steps.
+  The total of the user counter `counter` adds the values of all steps. With `namespace`, it
+  adds only the counters of that namespace.
   """
   totals: Dict[str, float] = {}
   steps: Dict[str, float] = {}
@@ -216,7 +235,8 @@ def parse_metrics(metrics: Iterable[Dict[str, Any]], count_output: str,
     elif (count_output and name == "ElementCount"
           and count_output in context.get("output_user_name", "")):
       elements = max(elements, float(scalar))
-    elif counter and metric["name"].get("origin") == "user" and name == counter:
+    elif (counter and metric["name"].get("origin") == "user" and name == counter
+          and (not namespace or context.get("namespace") == namespace)):
       counter_total += float(scalar)
   vcpu, step_cpu = totals.get("TotalVcpuTime"), sum(steps.values())
   values = {
@@ -264,7 +284,7 @@ def summarize(details: Dict[str, Any], count_output: str, counter: Optional[str]
   """The record of one job from the reply of `fetch` and its "monitoring" series, if any.
   With `io`, the record also has the metrics of io_report.py."""
   job = details["job"]
-  parsed = parse_metrics(details["metrics"], count_output, counter)
+  parsed = parse_metrics(details["metrics"], count_output, counter, io_namespace(io))
   events = parse_messages(details["messages"])
   watched = monitoring.summarize(details.get("monitoring", {}), machine_type(job),
                                  parsed["metrics"].get("total_vcpu_s"),
@@ -320,7 +340,14 @@ def flags(runs: Sequence[Dict[str, Any]], workers: int = 1) -> List[str]:
     apart = (max(starts) - min(starts)).total_seconds() if starts else 0.0
     if apart > MAX_START_SPREAD_SECONDS:
       out.append(f"Round {round_number}: jobs started {apart:.0f} s apart")
+    if any(run.get("round_failed") for run in runs if run["round"] == round_number):
+      out.append(f"Round {round_number}: failed, not in the medians")
   return out
+
+
+def measured(runs: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+  """The runs that the medians use: a round with no valid load is left out."""
+  return [run for run in runs if not run.get("round_failed")]
 
 
 def ranked_columns(all_medians: report.Medians, section: str, minimum: float,
@@ -347,6 +374,7 @@ def render(results: Dict[str, Any], saved: Optional[Dict[str, Any]]) -> List[str
            ("End", lambda r: (r.get("end") or "?")[:19]),
            ("Job", lambda r: r.get("job_id") or "?")]
   warnings = [f"- Round {r['round']} {r['variant']}: {w}" for r in runs for w in r.get("warnings", [])]
+  companions = [companion_line(c) for c in results.get("companions", [])]
   return [
       f"# {results['task']} ({results['created']})", "",
       config["description"], "",
@@ -354,12 +382,22 @@ def render(results: Dict[str, Any], saved: Optional[Dict[str, Any]]) -> List[str
       "## Flags", "", *([f"- {f}" for f in results["flags"]] or ["None."]), "",
       "## Medians", "", *compare("metrics", metrics), "",
       "## Runs", "", *report.runs_table(runs, "metrics", metrics, extra), "",
+      *(["## Companion producer", "", *companions, ""] if companions else []),
       "## ProcessElement time of each step (s, all workers)", "",
       *compare("steps", ranked_columns(all_medians, "steps", 1.0, ",.1f")),
       "", "## Peak memory of each container (MiB, any worker)", "",
       *compare("memory", ranked_columns(all_medians, "memory", 0.0, ",.0f")),
       "", "## Warnings and errors", "", *(warnings or ["None."]),
   ]
+
+
+def companion_line(companion: Dict[str, Any]) -> str:
+  rows = companion.get("rows")
+  return (f"- Round {companion['round']}: job {companion.get('job_id') or '?'}, "
+          f"state {companion.get('state') or '?'}, "
+          f"{report.fmt(rows, ',.0f')} rows, {(companion.get('start') or '?')[:19]} to "
+          f"{(companion.get('end') or '?')[:19]}" +
+          (f", error: {companion['error']}" if companion.get("error") else ""))
 
 
 def label_value(text: str) -> str:
@@ -408,12 +446,15 @@ def get_job(project: str, region: str, job_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def counter_value(project: str, region: str, job_id: str, counter: str) -> Optional[float]:
+def counter_value(project: str, region: str, job_id: str, counter: str,
+                  namespace: Optional[str] = None) -> Optional[float]:
+  """The total of a user counter: None on an API error, 0 when the job has no such counter."""
   try:
     reply = get(f"{API.format(project=project, region=region)}/{job_id}/metrics", access_token())
-  except (urllib.error.URLError, OSError, subprocess.CalledProcessError):
+  except (urllib.error.URLError, OSError, subprocess.CalledProcessError, ValueError):
     return None
-  return parse_metrics(reply.get("metrics", []), "", counter)["metrics"].get("counter_total")
+  return parse_metrics(reply.get("metrics", []), "", counter,
+                       namespace)["metrics"].get("counter_total", 0.0)
 
 
 def drain(project: str, region: str, job_id: str) -> None:
@@ -449,9 +490,10 @@ def after(variant: report.Variant, values: Dict[str, Any], base: str) -> Optiona
 
 
 def launch(args: argparse.Namespace, variant: report.Variant, round_number: int,
-           run_id: int) -> Dict[str, Any]:
+           run_id: int, on_running: Callable[[], None] = lambda: None,
+           producer_done_at: Callable[[], Optional[float]] = lambda: None) -> Dict[str, Any]:
   """Runs one job to its end and returns its record. See job_wait.py for the "wait" field."""
-  label, spec = variant["label"], variant.get("wait", {})
+  label, spec = variant["label"], variant.get("wait")
   values = values_of(args, variant, round_number, run_id)
   name = values["job_name"]
   base = os.path.join(args.out_dir, f"{label}-r{round_number}")
@@ -472,9 +514,11 @@ def launch(args: argparse.Namespace, variant: report.Variant, round_number: int,
         pass
   record = {"round": round_number, "variant": label, "job_name": name,
             "launcher_exit": process.returncode, "platforms": sorted(platforms)}
-  job = job or lookup()
+  with open(f"{base}.log") as f:
+    logged_id = job_id_from_log(f.read())
+  job = job or (get_job(args.project, args.region, logged_id) if logged_id else None) or lookup()
   waited: Dict[str, Any] = {}
-  if spec.get("async") and not spec.get("detach") and process.returncode == 0:
+  if spec is not None and not spec.get("detach") and process.returncode == 0:
     found = {"job": job}
     def poll() -> Optional[Dict[str, Any]]:
       platforms.update(cpu_platforms(args.project, name))
@@ -483,22 +527,27 @@ def launch(args: argparse.Namespace, variant: report.Variant, round_number: int,
           or known
       return found["job"]
     counter = spec.get("counter", "")
+    namespace = spec.get("namespace") or io_namespace(args.io)
     waited = job_wait.wait(spec, poll,
-                           lambda j: counter_value(args.project, args.region, j["id"], counter),
+                           lambda j: counter_value(args.project, args.region, j["id"], counter,
+                                                   namespace),
                            lambda j: drain(args.project, args.region, j["id"]),
+                           on_running=on_running,
+                           producer_done_at=producer_done_at,
                            kill=lambda j: kill_worker(args.project, j["id"]))
     job = waited["job"] or job
     record["platforms"] = sorted(platforms)
-  with open(f"{base}.log") as f:
-    job_id = job["id"] if job else job_id_from_log(f.read())
+  else:
+    on_running()
+  job_id = job["id"] if job else logged_id
   if not job_id:
     return {**record, "error": f"no job named {name}, see {base}.log", "metrics": {}}
-  if spec.get("detach"):
+  if spec is not None and spec.get("detach"):
     return {**record, "job_id": job_id, "state": "RUNNING", "error": "detached, no metrics",
             "metrics": {}}
   details = fetch(args.project, args.region, job_id)
   details["monitoring"] = collect_monitoring(args.project, details, args.counter,
-                                             args.monitoring_wait)
+                                             args.monitoring_wait, io_namespace(args.io))
   if args.io:
     details["io"] = collect_io(args, details)
   with open(f"{base}-job.json", "w") as f:
@@ -508,6 +557,113 @@ def launch(args: argparse.Namespace, variant: report.Variant, round_number: int,
           **({"error": "; ".join(errors)} if errors else {})}
 
 
+def launch_companion(args: argparse.Namespace, producer: report.Variant, round_number: int,
+                     run_id: int) -> Dict[str, Any]:
+  """Starts the companion load job, waits for it to end and returns its record.
+
+  The record has the job, its state, its start and end, and the `rows` of its counter. It has
+  no metrics: the medians do not use it. "ended" is the time.time() of its end.
+  """
+  label = producer["label"]
+  values = values_of(args, producer, round_number, run_id)
+  name = values["job_name"]
+  record: Dict[str, Any] = {"round": round_number, "variant": label, "job_name": name}
+  base = os.path.join(args.out_dir, f"{label}-r{round_number}")
+  launched = datetime.datetime.now(datetime.timezone.utc)
+  lookup = lambda: find_job(list_jobs(args.project, args.region, name), name, launched)
+  with open(f"{base}.log", "w") as out:
+    code = subprocess.run(report.expand(producer, values), cwd=producer["cwd"],
+                          env=report.environment(producer), stdout=out,
+                          stderr=subprocess.STDOUT).returncode
+  if code:
+    return {**record, "ended": time.time(),
+            "error": f"companion {label} failed to launch, see {base}.log"}
+  with open(f"{base}.log") as f:
+    logged_id = job_id_from_log(f.read())
+  found = {"job": (get_job(args.project, args.region, logged_id) if logged_id else None) or lookup()}
+  spec = producer.get("wait") or {}
+  counter, namespace = spec.get("counter", ""), spec.get("namespace")
+
+  def poll() -> Optional[Dict[str, Any]]:
+    known = found["job"]
+    found["job"] = (get_job(args.project, args.region, known["id"]) if known else lookup()) or known
+    return found["job"]
+
+  waited = job_wait.wait(spec, poll,
+                         lambda j: counter_value(args.project, args.region, j["id"], counter,
+                                                 namespace),
+                         lambda j: drain(args.project, args.region, j["id"]))
+  job = waited["job"] or found["job"]
+  if job:
+    record.update(job_id=job.get("id"), state=job.get("currentState", "").replace("JOB_STATE_", ""),
+                  start=job.get("startTime") or job.get("createTime"),
+                  end=job.get("currentStateTime"),
+                  rows=counter_value(args.project, args.region, job["id"], counter, namespace))
+  return {**record, "ended": time.time(),
+          **({"error": f"companion {label}: {waited['error']}"} if waited.get("error") else {})}
+
+
+# A task that shares a producer waits this long for the other tasks to join.
+SHARED_JOIN_SECONDS = 1800
+SHARED_POLL_SECONDS = 5
+
+
+def shared_companion(args: argparse.Namespace, producer: report.Variant, round_number: int,
+                     run_id: int, sleep: Callable[[float], None] = time.sleep,
+                     clock: Callable[[], float] = time.time) -> Dict[str, Any]:
+  """Joins the companion producer that the tasks of --shared-producer share in this round.
+
+  Each task adds a member file when its jobs run. The first task launches the producer when
+  --shared-tasks members are there, and writes done.json with its record when it ends. The
+  other tasks read done.json. Each task then drains its jobs after its own idle time.
+  """
+  root = os.path.join(args.shared_producer, f"r{round_number}")
+  members, done = os.path.join(root, "members"), os.path.join(root, "done.json")
+  failed = lambda error: {"round": round_number, "variant": producer["label"], "ended": clock(),
+                          "error": error}
+  os.makedirs(members, exist_ok=True)
+  if os.path.exists(done):
+    return failed(f"shared producer {root} ran before: use a new -PsharedProducer")
+  open(os.path.join(members, str(os.getpid())), "w").close()
+  try:
+    os.mkdir(os.path.join(root, "owner"))
+  except FileExistsError:
+    load = float((producer.get("wait") or {}).get("drain_after_seconds") or 0)
+    deadline = clock() + 2 * SHARED_JOIN_SECONDS + load
+    while not os.path.exists(done) and clock() < deadline:
+      sleep(SHARED_POLL_SECONDS)
+    if not os.path.exists(done):
+      return failed(f"the shared producer did not end, see {root}")
+    with open(done) as f:
+      return json.load(f)
+  record = failed("the shared producer stopped")
+  try:
+    deadline = clock() + SHARED_JOIN_SECONDS
+    while len(os.listdir(members)) < args.shared_tasks and clock() < deadline:
+      sleep(SHARED_POLL_SECONDS)
+    joined = len(os.listdir(members))
+    record = launch_companion(args, producer, round_number, run_id) \
+        if joined >= args.shared_tasks else \
+        failed(f"{joined} of {args.shared_tasks} tasks joined the shared producer")
+  finally:
+    with open(f"{done}.tmp", "w") as f:
+      json.dump({**record, "ended": record.get("ended", clock())}, f)
+    os.replace(f"{done}.tmp", done)
+  return record
+
+
+def leave_shared(shared_dir: str, round_number: int) -> None:
+  """Removes the member file of this task. The last task to leave removes the round."""
+  root = os.path.join(shared_dir, f"r{round_number}")
+  members = os.path.join(root, "members")
+  try:
+    os.remove(os.path.join(members, str(os.getpid())))
+    if not os.listdir(members):
+      shutil.rmtree(root, ignore_errors=True)
+  except FileNotFoundError:
+    pass
+
+
 def prepare(args: argparse.Namespace, variants: Sequence[report.Variant]) -> None:
   """Runs the "prepare" command of each variant, one after the other, before the rounds.
 
@@ -515,7 +671,12 @@ def prepare(args: argparse.Namespace, variants: Sequence[report.Variant]) -> Non
   their jobs and start together. The {out_dir} placeholder is the output directory.
   """
   for variant in (v for v in variants if v.get("prepare")):
-    command = report.expand({"argv": variant["prepare"]}, {"out_dir": args.out_dir})
+    values = {
+        **run_values(getattr(args, "task", "bench"), variant["label"], 0, 0,
+                     variant.get("labels"), getattr(args, "name_prefix", None)),
+        "out_dir": args.out_dir,
+    }
+    command = report.expand({"argv": variant["prepare"]}, values)
     print(f"Prepare {variant['label']}: {report.show(command, variant['cwd'], variant.get('env'))}",
           flush=True)
     if args.dry_run:
@@ -528,12 +689,78 @@ def prepare(args: argparse.Namespace, variants: Sequence[report.Variant]) -> Non
         raise RuntimeError(f"The prepare command of {variant['label']} failed. See {log}.")
 
 
+def load_producer(path: Optional[str]) -> Optional[report.Variant]:
+  if not path:
+    return None
+  with open(path) as f:
+    return json.load(f)
+
+
+def wait_running(ready: Sequence[threading.Event],
+                 jobs: Sequence[concurrent.futures.Future]) -> None:
+  """Waits until each measured job runs, or its launch ends (for example on an error)."""
+  for event, job in zip(ready, jobs):
+    while not event.wait(SHARED_POLL_SECONDS) and not job.done():
+      pass
+
+
+def start_companion(args: argparse.Namespace, producer: report.Variant,
+                    jobs: Sequence[concurrent.futures.Future], round_number: int,
+                    run_id: int) -> Optional[Dict[str, Any]]:
+  """The record of the companion of this round, or None when no measured job still runs."""
+  try:
+    if getattr(args, "shared_producer", None):
+      return shared_companion(args, producer, round_number, run_id)
+    if any(not job.done() for job in jobs):
+      return launch_companion(args, producer, round_number, run_id)
+    return None
+  except Exception as error:  # pylint: disable=broad-except
+    # The measured jobs wait for the end of the companion, so an error must end it too.
+    return {"round": round_number, "variant": producer["label"], "ended": time.time(),
+            "error": f"companion {producer['label']} failed: {error}"}
+
+
+def run_round(args: argparse.Namespace, variants: Sequence[report.Variant],
+              producer: Optional[report.Variant], round_number: int,
+              run_id: int) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+  """Runs all measured variants of one round, plus the optional companion load job.
+
+  Returns the records of the measured jobs and the record of the companion. When the
+  companion fails, the round fails and the medians leave it out.
+  """
+  ready = [threading.Event() for _ in variants]
+  producer_done: Dict[str, Optional[float]] = {"at": None}
+  companion = None
+  with concurrent.futures.ThreadPoolExecutor(len(variants)) as pool:
+    jobs = [
+        pool.submit(launch, args, variant, round_number, run_id, ready[index].set,
+                    lambda: producer_done["at"])
+        for index, variant in enumerate(variants)
+    ]
+    if producer:
+      wait_running(ready, jobs)
+      companion = start_companion(args, producer, jobs, round_number, run_id)
+      # "ended" can come from another task of a shared producer.
+      ended = (companion or {}).get("ended", time.time())
+      producer_done["at"] = time.monotonic() - max(0.0, time.time() - ended)
+    records = [job.result() for job in jobs]
+  if producer and getattr(args, "shared_producer", None):
+    leave_shared(args.shared_producer, round_number)
+  companion_error = (companion or {}).get("error")
+  if companion_error:
+    for record in records:
+      record["error"] = "; ".join(e for e in (record.get("error"), companion_error) if e)
+      record["round_failed"] = True
+  return records, companion
+
+
 def run(args: argparse.Namespace) -> None:
   variants = report.load_variants(args.variants)
-  prepare(args, variants)
+  producer = load_producer(getattr(args, "producer", None))
+  prepare(args, list(variants) + ([producer] if producer else []))
   if args.prepare_only:
     return
-  runs = []
+  runs, companions = [], []
   for round_number in range(1, args.runs + 1):
     run_id = int(time.time())
     for variant in variants:
@@ -544,15 +771,22 @@ def run(args: argparse.Namespace) -> None:
       print(f"Round {round_number}, {variant['label']}: "
             f"{report.show(command, variant['cwd'], variant.get('env'))}\n"
             f"  while it runs: {' '.join(platform_command(args.project, values['job_name']))}" +
-            (f"\n  wait: {json.dumps(variant['wait'])}" if variant.get("wait") else "") +
+            (f"\n  wait: {json.dumps(variant['wait'])}" if variant.get("wait") is not None else "") +
             (f"\n  after: {report.show(after_command, variant['cwd'])}" if after_command else ""),
+            flush=True)
+    if producer:
+      p_values = values_of(args, producer, round_number, run_id)
+      p_cmd = report.expand(producer, p_values)
+      print(f"Round {round_number}, companion {producer['label']}: "
+            f"{report.show(p_cmd, producer['cwd'], producer.get('env'))}" +
+            (f"\n  wait: {json.dumps(producer['wait'])}" if producer.get("wait") is not None else ""),
             flush=True)
     if args.dry_run:
       continue
     os.makedirs(args.out_dir, exist_ok=True)
-    with concurrent.futures.ThreadPoolExecutor(len(variants)) as pool:
-      jobs = [pool.submit(launch, args, variant, round_number, run_id) for variant in variants]
-      runs += [job.result() for job in jobs]
+    records, companion = run_round(args, variants, producer, round_number, run_id)
+    runs += records
+    companions += [companion] if companion else []
   if args.dry_run:
     return
   results = {
@@ -563,7 +797,8 @@ def run(args: argparse.Namespace) -> None:
                  "current": args.current, "io": args.io,
                  "variants": {v["label"]: v.get("describe", v["cwd"]) for v in variants}},
       "runs": runs,
-      "medians": report.medians(runs, SECTIONS),
+      "companions": companions,
+      "medians": report.medians(measured(runs), SECTIONS),
       "flags": flags(runs, args.workers),
   }
   report.write(args.out_dir, results, render(results, report.load(args.compare_to)))
@@ -588,6 +823,12 @@ def main(argv: Sequence[str]) -> None:
   run_parser.add_argument("--out-dir", required=True)
   run_parser.add_argument("--variants", required=True,
                           help="JSON file of the variants. The jobs of a round start together.")
+  run_parser.add_argument("--producer",
+                          help="JSON file of an optional companion load job started per round.")
+  run_parser.add_argument("--shared-producer",
+                          help="Directory of a companion producer that several runs share.")
+  run_parser.add_argument("--shared-tasks", type=int, default=2,
+                          help="The runs that share --shared-producer.")
   run_parser.add_argument("--runs", type=int, default=3)
   run_parser.add_argument("--current", default=report.CURRENT,
                           help="The variant that the report compares with the others.")
@@ -607,7 +848,8 @@ def main(argv: Sequence[str]) -> None:
   records = []
   for job_id in args.jobs:
     details = fetch(args.project, args.region, job_id)
-    details["monitoring"] = collect_monitoring(args.project, details, args.counter, 0)
+    details["monitoring"] = collect_monitoring(args.project, details, args.counter, 0,
+                                               io_namespace(args.io))
     if args.io:
       details["io"] = collect_io(args, details)
     records.append(summarize(details, args.count_output, args.counter, args.io))

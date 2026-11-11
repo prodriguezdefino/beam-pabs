@@ -37,6 +37,8 @@ beam_io_file = { workspace = true }
 beam_io_arrow = { workspace = true }
 arrow-schema = { workspace = true }
 arrow-avro = { workspace = true }
+arrow-cast = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

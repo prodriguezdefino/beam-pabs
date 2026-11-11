@@ -17,11 +17,12 @@
  * under the License.
  */
 
-//! Configuration options for native Cloud Bigtable [`WriteMutations`](super::WriteMutations)
+//! Configuration options for Cloud Bigtable [`WriteMutations`](super::WriteMutations)
 //! transforms.
 
 use std::time::Duration;
 
+use beam::transforms::display_data::DisplayDataBuilder;
 use serde::{Deserialize, Serialize};
 
 use super::batch::{
@@ -33,27 +34,18 @@ use crate::bigtable::target::WriteTarget;
 /// Default per-attempt timeout (`60s`) for `MutateRows` RPCs.
 pub const DEFAULT_WRITE_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Configuration for a native Cloud Bigtable [`WriteMutations`](super::WriteMutations) transform.
+/// Configuration for a Cloud Bigtable [`WriteMutations`](super::WriteMutations) transform.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WriteOptions {
-    /// Target table or authorized view.
-    pub target: WriteTarget,
-    /// Optional Bigtable App Profile ID.
-    pub app_profile_id: Option<String>,
-    /// Maximum number of row entries per `MutateRows` RPC (default `500`, max `100_000`).
-    pub max_elements_per_batch: usize,
-    /// Maximum byte size per `MutateRows` RPC (default `4 MiB`).
-    pub max_bytes_per_batch: usize,
-    /// Maximum number of concurrent in-flight `MutateRows` RPCs per worker bundle (default `8`).
-    pub max_in_flight_requests: usize,
-    /// Maximum total in-flight bytes per worker bundle (default `32 MiB`).
-    pub max_in_flight_bytes: usize,
-    /// Per-attempt timeout for `MutateRows` stream messages.
-    pub attempt_timeout: Duration,
-    /// Whether to honor server-side `RateLimitInfo` flow-control signals.
-    pub enable_flow_control: bool,
-    /// Optional custom gRPC endpoint override (or `BIGTABLE_EMULATOR_HOST`).
-    pub endpoint: Option<String>,
+    pub(crate) target: WriteTarget,
+    pub(crate) app_profile_id: Option<String>,
+    pub(crate) max_elements_per_batch: usize,
+    pub(crate) max_bytes_per_batch: usize,
+    pub(crate) max_in_flight_requests: usize,
+    pub(crate) max_in_flight_bytes: usize,
+    pub(crate) attempt_timeout: Duration,
+    pub(crate) enable_flow_control: bool,
+    pub(crate) endpoint: Option<String>,
 }
 
 impl WriteOptions {
@@ -135,21 +127,41 @@ impl WriteOptions {
         self
     }
 
-    /// Validates the write configuration.
-    pub fn validate(&self) -> Result<(), String> {
+    /// Checks the write configuration without calling Bigtable.
+    pub fn validate(&self) -> beam::Result {
         self.target.validate()?;
         if self.max_elements_per_batch == 0 || self.max_elements_per_batch > 100_000 {
-            return Err(format!(
+            return Err(beam::Error::msg(format!(
                 "max_elements_per_batch ({}) must be in 1..=100_000",
                 self.max_elements_per_batch
-            ));
+            )));
         }
         if self.max_bytes_per_batch == 0 {
-            return Err("max_bytes_per_batch must be greater than 0".to_string());
+            return Err(beam::Error::msg(
+                "max_bytes_per_batch must be greater than 0",
+            ));
         }
         if self.max_in_flight_requests == 0 {
-            return Err("max_in_flight_requests must be greater than 0".to_string());
+            return Err(beam::Error::msg(
+                "max_in_flight_requests must be greater than 0",
+            ));
         }
         Ok(())
+    }
+
+    pub(super) fn populate_display_data(&self, builder: &mut DisplayDataBuilder) {
+        builder.add_text("target", self.target.resource_name());
+        if let Some(profile) = &self.app_profile_id {
+            builder.add_text("app_profile_id", profile);
+        }
+        builder.add_integer(
+            "max_elements_per_batch",
+            i64::try_from(self.max_elements_per_batch).unwrap_or(i64::MAX),
+        );
+        builder.add_integer(
+            "max_bytes_per_batch",
+            i64::try_from(self.max_bytes_per_batch).unwrap_or(i64::MAX),
+        );
+        builder.add_boolean("flow_control", self.enable_flow_control);
     }
 }

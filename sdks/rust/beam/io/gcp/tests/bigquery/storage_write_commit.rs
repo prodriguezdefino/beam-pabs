@@ -25,7 +25,7 @@ use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
-use beam_io_gcp::bigquery::storage::write::commit::CommitClient;
+use beam_io_gcp::bigquery::write::commit::CommitClient;
 use beam_io_gcp::runtime::{block_on_async, client_runtime};
 use tonic::codegen::{BoxFuture, http};
 use tonic::server::{Grpc, NamedService, UnaryService};

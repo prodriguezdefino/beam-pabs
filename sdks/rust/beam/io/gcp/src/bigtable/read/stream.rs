@@ -20,9 +20,10 @@
 //! Background `ReadRows` stream task of one key range, with retries from the last committed
 //! key.
 
-use std::io;
 use std::sync::Arc;
 
+use beam::internals::AbortOnDrop;
+use beam::retry::{Decision, RetryWaits};
 use bytes::Bytes;
 use tokio::sync::{Notify, mpsc};
 
@@ -31,21 +32,11 @@ use super::options::ReadOptions;
 use crate::bigtable::client::{BigtableClient, RoutingCookies};
 use crate::bigtable::key::{is_valid_range, next_key};
 use crate::bigtable::proto::{ReadRowsRequest, RowFilter, RowRange, RowRangeExt as _, RowSet};
-use crate::bigtable::retry::wait_before_retry;
-use crate::bigtable::retry::{DEFAULT_RETRY, is_transient};
+use crate::bigtable::retry::{DEFAULT_RETRY, decision, wait_before_retry};
 use crate::bigtable::target::ReadTarget;
 use crate::runtime::client_runtime;
 
 const PREFETCH_BATCHES: usize = 4;
-
-/// Aborts the stream task when the reader drops it.
-pub(super) struct AbortOnDrop(tokio::task::JoinHandle<()>);
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
 
 /// One message from the stream task to the reader.
 pub(super) enum StreamBatch {
@@ -87,8 +78,9 @@ pub(super) fn spawn_range_reader(
     initial_start: Vec<u8>,
     initial_end: Vec<u8>,
     split_notify: Arc<Notify>,
-) -> io::Result<(mpsc::Receiver<StreamBatch>, AbortOnDrop)> {
-    let filter = options.decoded_filter().map_err(io::Error::other)?;
+    waits: Arc<RetryWaits>,
+) -> beam::Result<(mpsc::Receiver<StreamBatch>, AbortOnDrop)> {
+    let filter = options.decoded_filter()?;
     let (tx, rx) = mpsc::channel(PREFETCH_BATCHES);
     let task = client_runtime()?.spawn(async move {
         let client = match existing_client {
@@ -138,11 +130,20 @@ pub(super) fn spawn_range_reader(
             let mut stream = match connect_res {
                 Ok(Ok(stream)) => stream,
                 Ok(Err(status))
-                    if retry_policy.allows_retry(attempt) && is_transient(status.code()) =>
+                    if retry_policy.allows_retry(attempt)
+                        && decision(&status) != Decision::Stop =>
                 {
                     let cause = status.to_string();
-                    wait_before_retry(retry_policy, attempt, "ReadRows", &resource, &cause, Some(&status))
-                        .await;
+                    wait_before_retry(
+                        retry_policy,
+                        attempt,
+                        decision(&status),
+                        &waits,
+                        "ReadRows",
+                        &resource,
+                        &cause,
+                    )
+                    .await;
                     attempt += 1;
                     continue;
                 }
@@ -157,7 +158,16 @@ pub(super) fn spawn_range_reader(
                 }
                 Err(_) if retry_policy.allows_retry(attempt) => {
                     let cause = "connect timed out";
-                    wait_before_retry(retry_policy, attempt, "ReadRows", &resource, cause, None).await;
+                    wait_before_retry(
+                        retry_policy,
+                        attempt,
+                        Decision::Backoff,
+                        &waits,
+                        "ReadRows",
+                        &resource,
+                        cause,
+                    )
+                    .await;
                     attempt += 1;
                     continue;
                 }
@@ -173,7 +183,7 @@ pub(super) fn spawn_range_reader(
             };
 
             let mut assembler = RowAssembler::new();
-            let stream_err: Option<(bool, String, Option<tonic::Status>)> = loop {
+            let stream_err: Option<(Decision, String)> = loop {
                 tokio::select! {
                     biased;
                     _ = split_notify.notified() => {
@@ -200,33 +210,40 @@ pub(super) fn spawn_range_reader(
                                             return;
                                         }
                                     }
-                                    Err(err) => break Some((false, err, None)),
+                                    Err(err) => break Some((Decision::Stop, err)),
                                 }
                             }
                             Ok(Ok(None)) => {
                                 if let Err(err) = assembler.finish_stream() {
-                                    break Some((false, err, None));
+                                    break Some((Decision::Stop, err));
                                 }
                                 return;
                             }
                             Ok(Err(status)) => {
                                 cookies.extract(status.metadata());
-                                let message = status.to_string();
-                                break Some((is_transient(status.code()), message, Some(status)));
+                                break Some((decision(&status), status.to_string()));
                             }
                             Err(_) => {
-                                break Some((true, "ReadRows stream message timed out".to_string(), None));
+                                let message = "ReadRows stream message timed out".to_string();
+                                break Some((Decision::Backoff, message));
                             }
                         }
                     }
                 }
             };
 
-            if let Some((retryable, message, status)) = stream_err {
-                if retryable && retry_policy.allows_retry(attempt) {
-                    let status = status.as_ref();
-                    wait_before_retry(retry_policy, attempt, "ReadRows", &resource, &message, status)
-                        .await;
+            if let Some((retry, message)) = stream_err {
+                if retry != Decision::Stop && retry_policy.allows_retry(attempt) {
+                    wait_before_retry(
+                        retry_policy,
+                        attempt,
+                        retry,
+                        &waits,
+                        "ReadRows",
+                        &resource,
+                        &message,
+                    )
+                    .await;
                     attempt += 1;
                     continue;
                 }

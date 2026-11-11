@@ -136,6 +136,9 @@ impl TestDataflowRunner {
         let mut poller = JobPoller::new(client, job, self.runner.poll_interval());
         loop {
             let state = JobState::parse(&poller.next_status().await?.current_state);
+            if state.is_terminal() {
+                poller.drain_messages().await;
+            }
             // Assertions report through metrics once workers run, and the final counts
             // decide a job that stopped.
             let metrics = if state == JobState::Running || state.is_terminal() {

@@ -33,7 +33,7 @@ test = false
 
 [features]
 default = []
-remote = ["dep:reqwest", "dep:tokio", "dep:futures", "dep:beam_io_gcp"]
+remote = ["dep:reqwest", "dep:tokio", "dep:futures", "dep:beam_gcp_core"]
 
 # Hugging Face Candle (Pure Rust)
 candle = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers", "dep:beam_io_file"]
@@ -58,7 +58,7 @@ tracing = { workspace = true }
 arc-swap = { workspace = true }
 once_cell = { workspace = true }
 # The Application Default Credentials of RemoteAuth::ApplicationDefault.
-beam_io_gcp = { workspace = true, optional = true }
+beam_gcp_core = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
@@ -78,6 +78,11 @@ wiremock = { workspace = true }
 [[test]]
 name = "remote"
 path = "tests/remote/main.rs"
+required-features = ["remote"]
+
+[[test]]
+name = "remote_adc"
+path = "tests/remote_adc/main.rs"
 required-features = ["remote"]
 
 [[test]]

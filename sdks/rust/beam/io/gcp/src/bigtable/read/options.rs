@@ -17,12 +17,13 @@
  * under the License.
  */
 
-//! Configuration options for native Cloud Bigtable [`ReadRows`](super::ReadRows) transforms.
+//! Configuration options for Cloud Bigtable [`ReadRows`](super::ReadRows) transforms.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use beam::schema::Schema;
+use beam::transforms::display_data::DisplayDataBuilder;
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
 
@@ -40,31 +41,20 @@ pub const DEFAULT_MAX_SILENT_SCAN_DURATION: Duration = Duration::from_secs(60);
 /// Default per-attempt gRPC timeout (`60s`) for `SampleRowKeys` and `ReadRows` stream messages.
 pub const DEFAULT_READ_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Configuration for a native Cloud Bigtable [`ReadRows`](super::ReadRows) transform.
+/// Configuration for a Cloud Bigtable [`ReadRows`](super::ReadRows) transform.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadOptions {
-    /// Target table, materialized view, or authorized view.
-    pub target: ReadTarget,
-    /// Optional Bigtable App Profile ID (such as a serverless Data Boost read profile).
-    pub app_profile_id: Option<String>,
-    /// Output schema shape (`Flattened` columns or `Nested` rows).
-    pub shape: BigtableReadShape,
-    /// Inclusive lower bound row key (empty means start of table).
-    pub start_key: Vec<u8>,
-    /// Exclusive upper bound row key (empty means end of table).
-    pub end_key: Vec<u8>,
-    /// Protobuf-encoded `google.bigtable.v2.RowFilter` pushed down to Bigtable.
-    pub filter_bytes: Vec<u8>,
-    /// Maximum number of super-range bundles emitted by `SampleKeyRangesFn`.
-    pub max_initial_bundles: usize,
-    /// Whether `split_restriction` expands coalesced super-ranges along tablet boundaries.
-    pub sub_split_tablets: bool,
-    /// Maximum silent scan duration before proactive SDF self-checkpointing.
-    pub max_silent_scan_duration: Duration,
-    /// Per-attempt timeout for `SampleRowKeys` and `ReadRows` messages.
-    pub attempt_timeout: Duration,
-    /// Optional custom gRPC endpoint override (or `BIGTABLE_EMULATOR_HOST`).
-    pub endpoint: Option<String>,
+    pub(crate) target: ReadTarget,
+    pub(crate) app_profile_id: Option<String>,
+    pub(crate) shape: BigtableReadShape,
+    pub(crate) start_key: Vec<u8>,
+    pub(crate) end_key: Vec<u8>,
+    pub(crate) filter_bytes: Vec<u8>,
+    pub(crate) max_initial_bundles: usize,
+    pub(crate) sub_split_tablets: bool,
+    pub(crate) max_silent_scan_duration: Duration,
+    pub(crate) attempt_timeout: Duration,
+    pub(crate) endpoint: Option<String>,
 }
 
 impl ReadOptions {
@@ -126,16 +116,6 @@ impl ReadOptions {
         self
     }
 
-    /// Sets whether output rows are flattened (`true`) or nested (`false`).
-    pub fn with_flattened(mut self, flattened: bool) -> Self {
-        self.shape = if flattened {
-            BigtableReadShape::Flattened
-        } else {
-            BigtableReadShape::Nested
-        };
-        self
-    }
-
     /// Restricts the scan to the half-open key range `[start_key, end_key)`.
     pub fn with_key_range(
         mut self,
@@ -191,6 +171,31 @@ impl ReadOptions {
         self
     }
 
+    /// Returns the Bigtable read target.
+    pub fn target(&self) -> &ReadTarget {
+        &self.target
+    }
+
+    /// Returns the configured application profile ID, if any.
+    pub fn app_profile_id(&self) -> Option<&str> {
+        self.app_profile_id.as_deref()
+    }
+
+    /// Returns the output row shape.
+    pub fn shape(&self) -> BigtableReadShape {
+        self.shape
+    }
+
+    /// Returns the maximum number of initial key-range bundles.
+    pub fn max_initial_bundles(&self) -> usize {
+        self.max_initial_bundles
+    }
+
+    /// Returns whether sampled tablets are split further.
+    pub fn sub_split_tablets(&self) -> bool {
+        self.sub_split_tablets
+    }
+
     /// Returns the output [`Schema`] for this read configuration.
     pub fn output_schema(&self) -> Arc<Schema> {
         match self.shape {
@@ -200,28 +205,44 @@ impl ReadOptions {
     }
 
     /// Decodes the configured [`RowFilter`], if any.
-    pub fn decoded_filter(&self) -> Result<Option<RowFilter>, String> {
+    pub fn decoded_filter(&self) -> beam::Result<Option<RowFilter>> {
         if self.filter_bytes.is_empty() {
             return Ok(None);
         }
         RowFilter::decode(self.filter_bytes.as_slice())
             .map(Some)
-            .map_err(|e| format!("Invalid Bigtable RowFilter protobuf bytes: {e}"))
+            .map_err(|e| {
+                beam::Error::msg(format!("Invalid Bigtable RowFilter protobuf bytes: {e}"))
+            })
     }
 
-    /// Validates the read configuration.
-    pub fn validate(&self) -> Result<(), String> {
+    /// Checks the read configuration without calling Bigtable.
+    pub fn validate(&self) -> beam::Result {
         self.target.validate()?;
         if !is_valid_range(&self.start_key, &self.end_key) {
-            return Err(format!(
+            return Err(beam::Error::msg(format!(
                 "Invalid Bigtable key range: start_key ({:?}) >= end_key ({:?})",
                 self.start_key, self.end_key
-            ));
+            )));
         }
         if self.max_initial_bundles == 0 {
-            return Err("max_initial_bundles must be greater than 0".to_string());
+            return Err(beam::Error::msg(
+                "max_initial_bundles must be greater than 0",
+            ));
         }
         let _ = self.decoded_filter()?;
         Ok(())
+    }
+
+    pub(super) fn populate_display_data(&self, builder: &mut DisplayDataBuilder) {
+        builder.add_text("target", self.target.resource_name());
+        if let Some(profile) = &self.app_profile_id {
+            builder.add_text("app_profile_id", profile);
+        }
+        builder.add_text("shape", self.shape.as_str());
+        builder.add_integer(
+            "max_initial_bundles",
+            i64::try_from(self.max_initial_bundles).unwrap_or(i64::MAX),
+        );
     }
 }

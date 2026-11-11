@@ -38,7 +38,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Both runners are linked, so `--runner=prism|dataflow` selects one at run time.
-beam = { workspace = true, features = ["prism", "dataflow", "gcp-bigquery-storage"] }
+beam = { workspace = true, features = ["prism", "dataflow", "gcp-bigquery"] }
 beam_benchmark_io = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }

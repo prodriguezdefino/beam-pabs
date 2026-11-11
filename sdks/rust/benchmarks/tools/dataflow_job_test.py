@@ -283,6 +283,178 @@ class PlatformAndCapacityTest(unittest.TestCase):
     self.assertTrue(events["stockout"])
     self.assertFalse(events["quota"])
 
+  def test_job_id_from_log_accepts_job_id_line(self):
+    self.assertEqual(dataflow_job.job_id_from_log("info\nJOB_ID=2026-11-11_00_01\n"),
+                     "2026-11-11_00_01")
+
+  def test_run_round_starts_producer_once_variants_run(self):
+    events = []
+    original_launch = dataflow_job.launch
+    original_companion = dataflow_job.launch_companion
+    try:
+      def fake_launch(args, variant, round_number, run_id, on_running=lambda: None,
+                      producer_done_at=lambda: None):
+        events.append(("start", variant["label"]))
+        on_running()
+        while producer_done_at() is None:
+          dataflow_job.time.sleep(0.005)
+        events.append(("after_producer", variant["label"]))
+        return {"round": round_number, "variant": variant["label"]}
+
+      def fake_companion(args, producer, round_number, run_id):
+        events.append(("producer", producer["label"]))
+        return {"round": round_number, "variant": producer["label"], "job_id": "p1",
+                "rows": 10.0, "ended": dataflow_job.time.time()}
+
+      dataflow_job.launch = fake_launch
+      dataflow_job.launch_companion = fake_companion
+      records, companion = dataflow_job.run_round(argparse.Namespace(), [{"label": "rust"}],
+                                                  {"label": "produce"}, 1, 99)
+      self.assertEqual(events, [("start", "rust"), ("producer", "produce"),
+                                ("after_producer", "rust")])
+      self.assertEqual(records, [{"round": 1, "variant": "rust"}])
+      self.assertEqual(companion["job_id"], "p1")
+    finally:
+      dataflow_job.launch = original_launch
+      dataflow_job.launch_companion = original_companion
+
+
+class CompanionTest(unittest.TestCase):
+  """The companion producer of a round: errors, failed rounds and the shared mode."""
+
+  def setUp(self):
+    self.saved = (dataflow_job.launch, dataflow_job.launch_companion,
+                  dataflow_job.SHARED_POLL_SECONDS)
+    dataflow_job.SHARED_POLL_SECONDS = 0.01
+
+  def tearDown(self):
+    (dataflow_job.launch, dataflow_job.launch_companion,
+     dataflow_job.SHARED_POLL_SECONDS) = self.saved
+
+  def running_launch(self):
+    def fake_launch(args, variant, round_number, run_id, on_running=lambda: None,
+                    producer_done_at=lambda: None):
+      on_running()
+      while producer_done_at() is None:
+        dataflow_job.time.sleep(0.005)
+      return {"round": round_number, "variant": variant["label"]}
+    return fake_launch
+
+  def test_a_failed_companion_fails_the_round(self):
+    dataflow_job.launch = self.running_launch()
+    dataflow_job.launch_companion = lambda *a: {"round": 1, "variant": "producer",
+                                                "ended": dataflow_job.time.time(),
+                                                "error": "companion producer failed to launch"}
+    records, companion = dataflow_job.run_round(argparse.Namespace(), [{"label": "rust"}],
+                                                {"label": "producer"}, 1, 5)
+    self.assertTrue(records[0]["round_failed"])
+    self.assertEqual(records[0]["error"], "companion producer failed to launch")
+    self.assertEqual(companion["variant"], "producer")
+    self.assertEqual(dataflow_job.measured(records), [])
+    self.assertIn("Round 1: failed, not in the medians", dataflow_job.flags(records))
+
+  def test_an_exception_in_the_companion_ends_the_round(self):
+    dataflow_job.launch = self.running_launch()
+
+    def broken(*args):
+      raise OSError("no java")
+
+    dataflow_job.launch_companion = broken
+    records, companion = dataflow_job.run_round(argparse.Namespace(), [{"label": "rust"}],
+                                                {"label": "producer"}, 1, 5)
+    self.assertEqual(companion["error"], "companion producer failed: no java")
+    self.assertTrue(records[0]["round_failed"])
+
+  def test_a_launch_that_fails_before_running_does_not_block_the_round(self):
+    def failing(args, variant, round_number, run_id, on_running=lambda: None,
+                producer_done_at=lambda: None):
+      raise OSError("no gcloud")
+
+    dataflow_job.launch = failing
+    dataflow_job.launch_companion = lambda *a: self.fail("no job runs, so no companion")
+    with self.assertRaises(OSError):
+      dataflow_job.run_round(argparse.Namespace(), [{"label": "rust"}], {"label": "p"}, 1, 5)
+
+  def test_shared_producer_launches_once_and_writes_its_record(self):
+    with tempfile.TemporaryDirectory() as shared:
+      args = argparse.Namespace(shared_producer=shared, shared_tasks=1)
+      dataflow_job.launch_companion = lambda *a: {"round": 1, "variant": "producer",
+                                                  "job_id": "p1", "ended": 100.0}
+      record = dataflow_job.shared_companion(args, {"label": "producer"}, 1, 5)
+      self.assertEqual(record["job_id"], "p1")
+      with open(os.path.join(shared, "r1", "done.json")) as f:
+        self.assertEqual(json.load(f)["job_id"], "p1")
+      dataflow_job.leave_shared(shared, 1)
+      self.assertFalse(os.path.exists(os.path.join(shared, "r1")))
+
+  def test_shared_producer_member_reads_the_record_of_the_owner(self):
+    with tempfile.TemporaryDirectory() as shared:
+      root = os.path.join(shared, "r1")
+      os.makedirs(os.path.join(root, "owner"))
+      args = argparse.Namespace(shared_producer=shared, shared_tasks=2)
+      dataflow_job.launch_companion = lambda *a: self.fail("only the owner launches")
+
+      def owner_ends(seconds):
+        with open(os.path.join(root, "done.json"), "w") as f:
+          json.dump({"round": 1, "variant": "producer", "job_id": "p9", "ended": 50.0}, f)
+
+      record = dataflow_job.shared_companion(args, {"label": "producer"}, 1, 5,
+                                             sleep=owner_ends)
+      self.assertEqual(record["job_id"], "p9")
+
+  def test_shared_producer_that_ran_before_is_an_error(self):
+    with tempfile.TemporaryDirectory() as shared:
+      os.makedirs(os.path.join(shared, "r1", "members"))
+      open(os.path.join(shared, "r1", "done.json"), "w").close()
+      args = argparse.Namespace(shared_producer=shared, shared_tasks=2)
+      record = dataflow_job.shared_companion(args, {"label": "producer"}, 1, 5)
+      self.assertIn("use a new -PsharedProducer", record["error"])
+
+  def test_shared_producer_fails_when_the_other_tasks_do_not_join(self):
+    with tempfile.TemporaryDirectory() as shared:
+      args = argparse.Namespace(shared_producer=shared, shared_tasks=2)
+      clock = {"now": 0.0}
+
+      def sleep(seconds):
+        clock["now"] += dataflow_job.SHARED_JOIN_SECONDS
+
+      dataflow_job.launch_companion = lambda *a: self.fail("one task never launches")
+      record = dataflow_job.shared_companion(args, {"label": "producer"}, 1, 5, sleep=sleep,
+                                             clock=lambda: clock["now"])
+      self.assertEqual(record["error"], "1 of 2 tasks joined the shared producer")
+
+  def test_render_lists_the_companion(self):
+    runs = [run(1, "rust", ["A"])]
+    results = {"task": "kafkaBenchmark", "created": "now",
+               "config": {"description": "d", "variants": {"rust": "r"}},
+               "runs": runs, "medians": report.medians(runs, dataflow_job.SECTIONS),
+               "flags": [], "companions": [{"round": 1, "job_id": "p1", "state": "DRAINED",
+                                            "rows": 1800000.0,
+                                            "start": "2026-11-11T10:00:00Z",
+                                            "end": "2026-11-11T10:30:00Z"}]}
+    text = "\n".join(dataflow_job.render(results, None))
+    self.assertIn("## Companion producer\n\n- Round 1: job p1, state DRAINED, 1,800,000 rows, "
+                  "2026-11-11T10:00:00 to 2026-11-11T10:30:00", text)
+
+
+class NamespaceTest(unittest.TestCase):
+  def test_counter_total_counts_one_namespace(self):
+    metrics = [user_metric("rows", 10, step="a", namespace="e2e"),
+               user_metric("rows", 7, step="b", namespace="bigquery")]
+    self.assertEqual(dataflow_job.parse_metrics(metrics, "", "rows", "e2e")["metrics"]
+                     ["counter_total"], 10)
+    self.assertEqual(dataflow_job.parse_metrics(metrics, "", "rows")["metrics"]
+                     ["counter_total"], 17)
+
+  def test_summarize_takes_the_namespace_of_io(self):
+    job = {"id": "j1", "currentState": "JOB_STATE_DONE", "createTime": "2026-10-27T23:20:31Z",
+           "currentStateTime": "2026-10-27T23:30:31Z"}
+    metrics = METRICS + [user_metric("line_count", 1000, step="c", namespace="other")]
+    io = {"pipeline": "python", "namespace": "wordcount", "rows": "line_count"}
+    record = dataflow_job.summarize({"job": job, "metrics": metrics, "messages": []},
+                                    "", "line_count", io)
+    self.assertEqual(record["metrics"]["counter_total"], 40)
+
 
 if __name__ == "__main__":
   unittest.main()

@@ -17,10 +17,10 @@
  * under the License.
  */
 
-//! The checks of the read options of the native Storage Read connector, which make no call
+//! The checks of the read options of the Storage Read connector, which make no call
 //! to BigQuery.
 
-use beam_io_gcp::bigquery::storage::read::ReadOptions;
+use beam_io_gcp::bigquery::read::ReadOptions;
 
 #[test]
 fn invalid_session_settings_fail_before_any_call() {

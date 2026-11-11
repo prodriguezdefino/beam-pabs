@@ -55,6 +55,8 @@ pub(crate) struct MockDataflowClient {
     /// The `clientRequestId` of an active job with the same name, which `create_job` returns
     /// in place of a new job.
     active_request_id: Option<String>,
+    /// The messages of one `list_messages` page. `None` sends all messages in one page.
+    message_page_size: Option<usize>,
 }
 
 impl MockDataflowClient {
@@ -80,6 +82,14 @@ impl MockDataflowClient {
         Self {
             active_request_id: Some(request_id.into()),
             ..Self::default()
+        }
+    }
+
+    /// Sends the messages in pages of `size`.
+    pub(crate) fn with_message_page_size(self, size: usize) -> Self {
+        Self {
+            message_page_size: Some(size),
+            ..self
         }
     }
 
@@ -221,16 +231,21 @@ impl DataflowApiClient for MockDataflowClient {
         _region: &str,
         _job_id: &str,
         _start_time: Option<&str>,
+        page_token: Option<&str>,
     ) -> Result<ListJobMessagesResponse, ClientError> {
-        let job_messages = self
+        let messages = self
             .messages
             .lock()
             .expect("mock client state lock poisoned")
             .clone();
-
+        // A page token is the index of the first message of its page.
+        let start: usize = page_token.map_or(0, |token| token.parse().expect("a page token"));
+        let end = self
+            .message_page_size
+            .map_or(messages.len(), |size| (start + size).min(messages.len()));
         Ok(ListJobMessagesResponse {
-            job_messages,
-            next_page_token: None,
+            job_messages: messages[start..end].to_vec(),
+            next_page_token: (end < messages.len()).then(|| end.to_string()),
         })
     }
 

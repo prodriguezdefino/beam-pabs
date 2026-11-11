@@ -37,7 +37,7 @@ name = "apache-beam-benchmark-iceberg"
 path = "src/main.rs"
 
 [dependencies]
-beam = { workspace = true, features = ["prism", "dataflow", "kafka-native", "iceberg"] }
+beam = { workspace = true, features = ["prism", "dataflow", "kafka", "iceberg"] }
 beam_benchmark_io = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }

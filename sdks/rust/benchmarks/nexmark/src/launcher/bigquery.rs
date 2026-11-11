@@ -19,7 +19,9 @@
 
 //! Suite summary export to BigQuery: one row for each query, written by a small batch job.
 
-use beam::io::gcp::bigquery::{BigQueryWrite, CreateDisposition, WriteDisposition};
+use beam::io::gcp::bigquery::write::{
+    CreateDisposition, WriteDisposition, WriteOptions, WriteRows,
+};
 use beam::options::PipelineOptions;
 use beam::prelude::*;
 use chrono::{DateTime, Utc};
@@ -142,10 +144,8 @@ pub fn summary_rows(
         .collect()
 }
 
-/// Builds the batch job that appends `rows` to `--bigquery_table`.
-///
-/// The rows travel in the graph, so the job runs no Rust code on the workers. The table is
-/// created when it does not exist.
+/// Builds the batch job that appends `rows` to `--bigquery_table` with the Storage Write
+/// connector. The table is created when it does not exist.
 pub fn build_summary_pipeline(
     options: &PipelineOptions,
     args: &NexmarkArgs,
@@ -165,13 +165,11 @@ pub fn build_summary_pipeline(
         .map(SummaryRow::to_row)
         .collect::<Result<Vec<Row>, _>>()
         .map_err(|err| LauncherError::Summary(err.to_string()))?;
-    let write = BigQueryWrite::new(table)
-        .with_create_disposition(CreateDisposition::CreateIfNeeded)
-        .with_write_disposition(WriteDisposition::WriteAppend);
-    let write = match &args.expansion_service {
-        Some(service) => write.with_expansion_service(service),
-        None => write,
-    };
+    let write = WriteRows::new(
+        WriteOptions::new(table)
+            .with_create_disposition(CreateDisposition::CreateIfNeeded)
+            .with_write_disposition(WriteDisposition::WriteAppend),
+    );
 
     let mut summary_options = options.clone();
     summary_options.streaming = false;
@@ -183,7 +181,8 @@ pub fn build_summary_pipeline(
     pipeline
         .apply("SummaryRows", Create::new(rows))
         .with_row_schema(&SummaryRow::beam_schema())
-        .try_apply("WriteSummary", write)?;
+        .try_apply("WriteSummary", write)
+        .map_err(|err| LauncherError::Summary(err.to_string()))?;
     Ok(pipeline)
 }
 

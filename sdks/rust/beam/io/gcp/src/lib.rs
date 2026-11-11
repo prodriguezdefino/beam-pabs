@@ -31,19 +31,19 @@
 //! register().unwrap();
 //! ```
 
-pub mod auth;
+pub use beam_gcp_core::{auth, runtime};
+
 #[cfg(feature = "bigquery")]
 pub mod bigquery;
 #[cfg(feature = "bigtable")]
 pub mod bigtable;
 #[cfg(feature = "gcs")]
 pub mod gcs;
-#[cfg(any(feature = "bigtable", feature = "bigquery-storage"))]
-mod grpc;
+#[cfg(feature = "options")]
 pub mod options;
 #[cfg(feature = "pubsub")]
 pub mod pubsub;
-pub mod runtime;
+#[cfg(feature = "secret-manager")]
 pub mod secret_manager;
 
 #[cfg(feature = "gcs")]

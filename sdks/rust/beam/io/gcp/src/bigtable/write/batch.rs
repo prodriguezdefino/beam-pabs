@@ -25,6 +25,7 @@ use std::time::Duration;
 use super::decode::PendingEntry;
 use crate::bigtable::proto::{MutateRowsResponse, RateLimitInfo, Status};
 use crate::bigtable::retry::is_transient_code;
+use tonic::Code;
 
 /// Default maximum number of row entries per `MutateRows` RPC (`500`).
 pub const DEFAULT_MAX_ELEMENTS_PER_BATCH: usize = 500;
@@ -103,40 +104,6 @@ impl BatchBuffer {
     }
 }
 
-/// Bounds the number and byte weight of concurrent in-flight `MutateRows` RPCs per worker bundle.
-#[derive(Clone, Copy, Debug)]
-pub struct InFlightLimit {
-    active_requests: usize,
-    active_bytes: usize,
-    max_requests: usize,
-    max_bytes: usize,
-}
-
-impl InFlightLimit {
-    pub fn new(max_requests: usize, max_bytes: usize) -> Self {
-        Self {
-            active_requests: 0,
-            active_bytes: 0,
-            max_requests: max_requests.max(1),
-            max_bytes: max_bytes.max(1),
-        }
-    }
-
-    pub fn add(&mut self, bytes: usize) {
-        self.active_requests += 1;
-        self.active_bytes = self.active_bytes.saturating_add(bytes);
-    }
-
-    pub fn remove(&mut self, bytes: usize) {
-        self.active_requests = self.active_requests.saturating_sub(1);
-        self.active_bytes = self.active_bytes.saturating_sub(bytes);
-    }
-
-    pub fn is_full(&self) -> bool {
-        self.active_requests >= self.max_requests || self.active_bytes >= self.max_bytes
-    }
-}
-
 /// Result of partitioning per-entry statuses from a `MutateRows` response stream.
 #[derive(Clone, Debug)]
 pub enum BatchOutcome {
@@ -147,6 +114,8 @@ pub enum BatchOutcome {
         retryable: Vec<PendingEntry>,
         rejected: Vec<(PendingEntry, Status)>,
         server_backoff: Option<Duration>,
+        /// Whether a retryable entry failed with `RESOURCE_EXHAUSTED`.
+        throttled: bool,
     },
 }
 
@@ -186,11 +155,13 @@ pub fn partition_outcomes(
 
     let mut retryable = Vec::new();
     let mut rejected = Vec::new();
+    let mut throttled = false;
 
     for (entry, status_opt) in batch.into_iter().zip(statuses) {
         match status_opt {
             Some(status) if status.code == 0 => {}
             Some(status) if is_transient_code(status.code) => {
+                throttled |= status.code == Code::ResourceExhausted as i32;
                 retryable.push(entry);
             }
             Some(status) => {
@@ -209,6 +180,7 @@ pub fn partition_outcomes(
             retryable,
             rejected,
             server_backoff,
+            throttled,
         }
     }
 }

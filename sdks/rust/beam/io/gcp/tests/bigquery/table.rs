@@ -61,3 +61,26 @@ fn table_specs_parse_in_every_form() {
         assert!(TableRef::parse(invalid).is_err(), "{invalid}");
     }
 }
+
+#[test]
+fn table_reference_resolves_default_and_domain_projects() {
+    let without_project = TableRef::parse("samples.wikipedia").unwrap();
+    assert!(without_project.table_reference(None).is_err());
+    let resolved = without_project.table_reference(Some("my-proj")).unwrap();
+    assert_eq!(
+        (
+            &resolved.project_id[..],
+            &resolved.dataset_id[..],
+            &resolved.table_id[..]
+        ),
+        ("my-proj", "samples", "wikipedia")
+    );
+
+    let domain = TableRef::parse("example.com:proj:ds.tbl").unwrap();
+    let domain_ref = domain.table_reference(Some("ignored")).unwrap();
+    assert_eq!(domain_ref.project_id, "example.com:proj");
+    assert_eq!(
+        domain.resource_name(None).unwrap(),
+        "projects/example.com:proj/datasets/ds/tables/tbl"
+    );
+}

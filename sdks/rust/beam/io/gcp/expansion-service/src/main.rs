@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! Expansion service with the native Google Cloud connectors. It is also the worker of the
+//! Expansion service with the Google Cloud connectors. It is also the worker of the
 //! transforms that it expands.
 
 use beam_io_gcp_expansion as _;

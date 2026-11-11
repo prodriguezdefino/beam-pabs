@@ -17,16 +17,15 @@
  * under the License.
  */
 
-//! Integration tests: native BigQuery Storage reads of a public table and of a query.
+//! Integration tests: BigQuery Storage reads of a public table and of a query.
 //!
 //! The tests call BigQuery, so they carry `#[ignore]` and run only with
 //! `./gradlew :sdks:rust:bigQueryIntegrationTest`. The task sets
 //! `BEAM_TEST_PIPELINE_OPTIONS`, for example `--runner=prism --project=<project>`. The reads
 //! bill `--project` with Application Default Credentials. `bigquery_storage_test` covers the
 //! same paths with fake clients.
-#![expect(clippy::unwrap_used, reason = "test fixtures panic on setup failure")]
 
-use beam::io::gcp::bigquery::storage::read::{ArrowCompression, ReadOptions, ReadRows};
+use beam::io::gcp::bigquery::read::{ArrowCompression, ReadOptions, ReadRows};
 use beam::io::gcp::options::GcpOptions;
 use beam::schema::{FieldType, Row, Schema};
 use beam::testing::{TestPipeline, passert, test_pipeline_options};
