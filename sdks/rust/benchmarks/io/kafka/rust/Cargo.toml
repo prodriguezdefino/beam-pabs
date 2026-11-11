@@ -42,7 +42,7 @@ test = false
 [dependencies]
 # Both runners are linked, so `--runner=prism|dataflow` selects one at run time. The default
 # features install mimalloc, as in the worker of the Rust expansion service.
-beam = { workspace = true, features = ["prism", "dataflow", "kafka-native"] }
+beam = { workspace = true, features = ["prism", "dataflow", "kafka"] }
 beam_benchmark_io = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }

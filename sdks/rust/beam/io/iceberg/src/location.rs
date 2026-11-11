@@ -64,11 +64,12 @@ impl TableLocations {
                 .get(key)
                 .map_or(default, |value| value.eq_ignore_ascii_case("true"))
         };
-        let layout = match enabled(OBJECT_STORAGE_ENABLED, false) {
-            true => Layout::Hashed {
+        let layout = if enabled(OBJECT_STORAGE_ENABLED, false) {
+            Layout::Hashed {
                 partition_paths: enabled(PARTITIONED_PATHS, true),
-            },
-            false => Layout::Plain,
+            }
+        } else {
+            Layout::Plain
         };
         let configured = match layout {
             Layout::Hashed { .. } => properties
@@ -126,6 +127,7 @@ impl LocationGenerator for TableLocations {
 
 /// The directories of the 20 low bits of the murmur3 hash of `name`: `bbbb/bbbb/bbbb/bbbbbbbb`.
 pub fn hash_dirs(name: &str) -> String {
+    #[expect(clippy::expect_used, reason = "Cursor<&[u8]> read cannot fail")]
     let hash = murmur3::murmur3_32(&mut Cursor::new(name.as_bytes()), 0)
         .expect("a hash of an in-memory buffer does not fail");
     let bits = format!(

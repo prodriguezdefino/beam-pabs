@@ -29,7 +29,9 @@ use beam::schema::Row;
 use beam::transforms::sdf::RestrictionTracker;
 use beam_io_gcp::bigtable::proto::read_rows_response::CellChunk;
 use beam_io_gcp::bigtable::proto::read_rows_response::cell_chunk::RowStatus;
-use beam_io_gcp::bigtable::proto::{BytesValue, ReadRowsResponse, SampleRowKeysResponse, StringValue};
+use beam_io_gcp::bigtable::proto::{
+    BytesValue, ReadRowsResponse, SampleRowKeysResponse, StringValue,
+};
 use beam_io_gcp::bigtable::read::assembler::{RawCell, RawRow, RowAssembler, ScanEvent};
 use beam_io_gcp::bigtable::read::encode::{
     encode_flattened, encode_nested, into_flattened_rows, into_nested_row,
@@ -207,7 +209,7 @@ fn sample_coalescer_compacts_thousands_of_tablets_into_super_ranges_with_interio
         } else {
             Bytes::from(format!("tablet-{idx:06}"))
         };
-        coalescer.feed(SampleRowKeysResponse {
+        coalescer.feed(&SampleRowKeysResponse {
             row_key: key,
             offset_bytes: (idx as i64) * 1024 * 1024,
         });

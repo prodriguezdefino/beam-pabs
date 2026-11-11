@@ -21,10 +21,10 @@
 
 use std::sync::Arc;
 
-use beam_io_arrow::millis_instant_type;
 use beam::schema::{Field, FieldType, FieldValue, Row, Schema};
-use iceberg::spec::Schema as TableSchema;
+use beam_io_arrow::millis_instant_type;
 use beam_io_iceberg::schema::iceberg_schema;
+use iceberg::spec::Schema as TableSchema;
 
 pub(crate) fn device_metric() -> Arc<Schema> {
     Arc::new(Schema::new(vec![

@@ -23,16 +23,14 @@ parse, the ``DeviceMetric`` row and the Managed Iceberg write keep their configu
 step before the parse counts ``e2e/rows`` and records ``e2e/latency_ms``, as in the other
 pipelines of the benchmark.
 
-``--expected_rows`` or ``--drain_after_seconds`` polls Dataflow until the job reaches that
-count or time, drains the job, and waits for it to end. ``./gradlew
-:sdks:rust:icebergBenchmark -Ppipeline=python -Pwriter=java`` runs this script.
+``./gradlew :sdks:rust:icebergBenchmark -Ppipeline=python -Pwriter=java`` runs this script;
+``benchmarks/tools/job_wait.py`` waits for and drains the submitted job.
 """
 
 import argparse
 import bisect
 import json
 import logging
-import subprocess
 import sys
 import time
 from typing import NamedTuple
@@ -40,7 +38,6 @@ from typing import NamedTuple
 import apache_beam as beam
 from apache_beam import managed
 from apache_beam.metrics import Metrics
-from apache_beam.options.pipeline_options import GoogleCloudOptions
 from apache_beam.options.pipeline_options import PipelineOptions
 from apache_beam.options.pipeline_options import StandardOptions
 from apache_beam.typehints import schemas
@@ -117,47 +114,6 @@ class ParseAndValidateMessage(beam.DoFn):
       logging.warning("Skipping malformed message: %s | Raw element: %s", e, element)
 
 
-def gcloud(*args):
-  out = subprocess.run(["gcloud", *args, "--format=json"], check=True, capture_output=True,
-                       text=True).stdout
-  return json.loads(out) if out.strip() else {}
-
-
-def committed_rows(project, region, job_id):
-  for metric in gcloud("beta", "dataflow", "metrics", "list", job_id, f"--project={project}",
-                       f"--region={region}"):
-    name = metric.get("name", {})
-    context = name.get("context", {})
-    if (name.get("name") == "rows" and context.get("namespace") == "e2e"
-        and not context.get("tentative")):
-      return int(float(metric.get("scalar", 0)))
-  return 0
-
-
-def wait_for_streaming_job(project, region, job_id, expected_rows, drain_after_seconds):
-  start, drained = time.time(), False
-  while True:
-    state = gcloud("dataflow", "jobs", "describe", job_id, f"--project={project}",
-                   f"--region={region}").get("currentState", "")
-    rows = committed_rows(project, region, job_id)
-    elapsed = int(time.time() - start)
-    logging.info("Job %s: state=%s e2e/rows=%d elapsed=%ds", job_id, state, rows, elapsed)
-    if state in ("JOB_STATE_DONE", "JOB_STATE_DRAINED", "JOB_STATE_CANCELLED"):
-      if expected_rows is not None and rows < expected_rows:
-        raise RuntimeError(f"Job {job_id} finished with {rows} rows, expected {expected_rows}")
-      return
-    if state in ("JOB_STATE_FAILED", "JOB_STATE_UPDATED"):
-      raise RuntimeError(f"Job {job_id} ended in {state}")
-    due = ((expected_rows is not None and rows >= expected_rows) or
-           (drain_after_seconds is not None and elapsed >= drain_after_seconds))
-    if due and not drained and state == "JOB_STATE_RUNNING":
-      logging.info("Draining job %s at e2e/rows=%d (%ds)", job_id, rows, elapsed)
-      subprocess.run(["gcloud", "dataflow", "jobs", "drain", job_id, f"--project={project}",
-                      f"--region={region}"], check=True)
-      drained = True
-    time.sleep(15)
-
-
 def main(argv):
   parser = argparse.ArgumentParser(description=__doc__)
   parser.add_argument("--writer", choices=["java"], required=True)
@@ -175,8 +131,6 @@ def main(argv):
   parser.add_argument("--triggering_frequency_seconds", type=int, default=60)
   parser.add_argument("--object_storage", action="store_true")
   parser.add_argument("--billing_project", required=True)
-  parser.add_argument("--expected_rows", type=int)
-  parser.add_argument("--drain_after_seconds", type=int)
   args, pipeline_args = parser.parse_known_args(argv)
 
   options = PipelineOptions(pipeline_args)
@@ -226,11 +180,7 @@ def main(argv):
           "triggering_frequency_seconds": args.triggering_frequency_seconds,
       }))
   result = p.run()
-  job_id = result.job_id()
-  print(f"JOB_ID={job_id}", flush=True)
-  gcloud_opts = options.view_as(GoogleCloudOptions)
-  wait_for_streaming_job(gcloud_opts.project, gcloud_opts.region, job_id, args.expected_rows,
-                         args.drain_after_seconds)
+  print(f"JOB_ID={result.job_id()}", flush=True)
 
 
 if __name__ == "__main__":

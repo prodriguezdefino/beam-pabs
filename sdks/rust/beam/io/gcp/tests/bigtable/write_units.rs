@@ -25,7 +25,9 @@ use std::time::Duration;
 
 use beam::schema::{FieldValue, Row, RowElement};
 use beam_io_gcp::bigtable::proto::mutate_rows_response::Entry as RespEntry;
-use beam_io_gcp::bigtable::proto::{Duration as ProtoDuration, MutateRowsResponse, RateLimitInfo, Status};
+use beam_io_gcp::bigtable::proto::{
+    Duration as ProtoDuration, MutateRowsResponse, RateLimitInfo, Status,
+};
 use beam_io_gcp::bigtable::write::batch::{
     BatchBuffer, BatchOutcome, partition_outcomes, rate_limit_backoff,
 };
@@ -98,7 +100,7 @@ fn decode_mutation_row_supports_batched_mutation_schema_and_routes_invalid_rows_
         ),
     ];
     let valid_row = Row::new(
-        batched_schema.clone(),
+        Arc::clone(&batched_schema),
         vec![
             Some(FieldValue::Bytes(b"batch-key".to_vec())),
             Some(FieldValue::Array(vec![Some(FieldValue::Map(map_entry))])),
@@ -216,6 +218,7 @@ fn batch_buffer_and_partition_outcomes_separate_succeeded_retryable_and_rejected
         retryable,
         rejected,
         server_backoff,
+        throttled,
     } = outcome
     else {
         panic!("expected Partial outcome");
@@ -226,6 +229,7 @@ fn batch_buffer_and_partition_outcomes_separate_succeeded_retryable_and_rejected
     assert_eq!(rejected[0].0.entry.row_key.as_ref(), b"k3");
     assert_eq!(rejected[0].1.code, 3);
     assert!(server_backoff.unwrap() >= Duration::from_millis(500));
+    assert!(!throttled, "UNAVAILABLE is not RESOURCE_EXHAUSTED");
 
     // RateLimitInfo with factor >= 1.0 produces no backoff.
     assert!(
@@ -237,5 +241,82 @@ fn batch_buffer_and_partition_outcomes_separate_succeeded_retryable_and_rejected
             factor: 1.2,
         })
         .is_none()
+    );
+}
+
+#[test]
+fn into_error_row_reconstructs_flat_and_batched_failed_rows() {
+    let flat_schema = mutation_schema();
+    let flat_err = Arc::new(error_schema(&flat_schema));
+    let original_flat = Row::from(BigtableMutation::SetCell {
+        key: b"k-err".to_vec(),
+        family_name: "cf".to_string(),
+        column_qualifier: b"q".to_vec(),
+        value: b"v".to_vec(),
+        timestamp_micros: Some(99),
+    });
+    let pending = decode_mutation_row(
+        RowElement::Row(original_flat.clone()),
+        MutationInputKind::Flat,
+        &flat_schema,
+        &flat_err,
+    )
+    .unwrap()
+    .unwrap();
+    let err_row = pending
+        .into_error_row(MutationInputKind::Flat, &flat_schema, &flat_err, "denied")
+        .unwrap();
+    assert_eq!(err_row.get_string("error_message").unwrap(), Some("denied"));
+    assert_eq!(
+        err_row.get_value("failed_row"),
+        Some(&Some(FieldValue::Row(original_flat)))
+    );
+
+    let batched_schema = batched_mutation_schema();
+    let batched_err = Arc::new(error_schema(&batched_schema));
+    let original_batched = Row::new(
+        Arc::clone(&batched_schema),
+        vec![
+            Some(FieldValue::Bytes(b"bk".to_vec())),
+            Some(FieldValue::Array(vec![Some(FieldValue::Map(vec![
+                (
+                    FieldValue::String("type".to_string()),
+                    Some(FieldValue::Bytes(b"SetCell".to_vec())),
+                ),
+                (
+                    FieldValue::String("family_name".to_string()),
+                    Some(FieldValue::Bytes(b"cf".to_vec())),
+                ),
+                (
+                    FieldValue::String("column_qualifier".to_string()),
+                    Some(FieldValue::Bytes(b"q".to_vec())),
+                ),
+                (
+                    FieldValue::String("value".to_string()),
+                    Some(FieldValue::Bytes(b"v".to_vec())),
+                ),
+            ]))])),
+        ],
+    )
+    .unwrap();
+    let pending_batched = decode_mutation_row(
+        RowElement::Row(original_batched.clone()),
+        MutationInputKind::Batched,
+        &batched_schema,
+        &batched_err,
+    )
+    .unwrap()
+    .unwrap();
+    let batched_err_row = pending_batched
+        .into_error_row(
+            MutationInputKind::Batched,
+            &batched_schema,
+            &batched_err,
+            "rejected",
+        )
+        .unwrap();
+    assert_eq!(
+        batched_err_row.get_value("failed_row"),
+        Some(&Some(FieldValue::Row(original_batched)))
     );
 }

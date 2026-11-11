@@ -17,14 +17,10 @@
  * under the License.
  */
 
-//! BigQuery summary export: row content, table schema, and the graph built without an
-//! expansion service.
+//! BigQuery summary export: row content, table schema, and the graph of the summary job.
 
-use beam::io::gcp::bigquery::URN_BIGQUERY_WRITE;
 use beam::options::PipelineOptions;
-use beam::pipeline::URN_EXPANSION_SCHEMA_TRANSFORM;
 use beam::prelude::*;
-use beam_test_utils::xlang::decode_payload;
 use nexmark::config::{NexmarkConfig, NexmarkQueryName};
 use nexmark::launcher::{
     LauncherError, NexmarkArgs, NexmarkPerf, NexmarkRunOutcome, QueryRunSummary, RunInfo,
@@ -185,10 +181,8 @@ fn schema_uses_java_column_names_and_nullable_figures() {
 }
 
 #[test]
-fn summary_job_writes_the_rows_through_managed_bigquery() {
+fn summary_job_writes_the_rows_with_the_storage_write_api() {
     let mut options = PipelineOptions::default();
-    // A worker builds cross-language transforms as placeholders, without a service.
-    options.harness.worker = true;
     options.streaming = true;
     options.job_name = Some("bench".to_owned());
     let args = NexmarkArgs {
@@ -198,37 +192,35 @@ fn summary_job_writes_the_rows_through_managed_bigquery() {
     };
     let rows = summary_rows(&summaries(), &run_info()).expect("rows");
     let pipeline = build_summary_pipeline(&options, &args, &rows).expect("summary graph");
+    pipeline.validate().expect("valid summary graph");
 
     let proto = pipeline.to_proto();
     let components = proto.components.expect("pipeline components");
+    let names: Vec<&str> = components
+        .transforms
+        .values()
+        .map(|transform| transform.unique_name.as_str())
+        .collect();
+    // A bounded input writes to pending streams and commits them once.
+    for step in [
+        "WriteSummary/PrepareTable",
+        "WriteSummary/WritePendingStreams",
+        "WriteSummary/CommitStreams",
+    ] {
+        assert!(names.contains(&step), "{step} in {names:?}");
+    }
+    assert!(
+        !names
+            .iter()
+            .any(|name| name.contains("WriteBufferedStreams")),
+        "{names:?}"
+    );
+
     let write = components
         .transforms
         .values()
-        .find(|transform| {
-            transform
-                .spec
-                .as_ref()
-                .is_some_and(|spec| spec.urn == URN_EXPANSION_SCHEMA_TRANSFORM)
-        })
-        .expect("BigQuery write placeholder");
-    let (_, config_row) = decode_payload(&write.spec.as_ref().expect("spec").payload);
-    let text = |field: &str| {
-        config_row
-            .get_string(field)
-            .ok()
-            .flatten()
-            .map(str::to_owned)
-    };
-    assert_eq!(
-        text("transform_identifier").as_deref(),
-        Some(URN_BIGQUERY_WRITE)
-    );
-    let config: serde_json::Value =
-        serde_json::from_str(&text("config").expect("managed config")).expect("config JSON");
-    assert_eq!(config["table"], "p:d.t");
-    assert_eq!(config["create_disposition"], "CREATE_IF_NEEDED");
-    assert_eq!(config["write_disposition"], "WRITE_APPEND");
-
+        .find(|transform| transform.unique_name == "WriteSummary")
+        .expect("BigQuery write");
     let input = write.inputs.values().next().expect("write input");
     let coder_id = &components.pcollections[input].coder_id;
     let coder = components.coders[coder_id]

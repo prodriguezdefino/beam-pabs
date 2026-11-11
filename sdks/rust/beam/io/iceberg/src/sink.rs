@@ -26,16 +26,17 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 
-use beam_io_arrow::{BeamRowCodec, EncodedBatch, RowCodec, SchemaRowCodec};
 use beam::coders::{DefaultCoder, ShardedKey};
 use beam::internals::PipelineInternals;
 use beam::pipeline::Pipeline;
 use beam::schema::{BeamRow, Row, RowElement, Schema};
+use beam::transforms::display_data::{DisplayDataBuilder, HasDisplayData};
 use beam::transforms::{
     DoFn, GroupIntoBatches, Impulse, PTransform, ParDo, ProcessContext, WithFailures,
 };
 use beam::values::{IsBounded, PCollection, POutput};
 use beam::windowing::{GlobalWindows, WindowInto};
+use beam_io_arrow::{BeamRowCodec, EncodedBatch, RowCodec, SchemaRowCodec};
 use bytes::Bytes;
 
 use crate::catalog::CatalogClient;
@@ -102,10 +103,17 @@ impl<T> Write<T> {
     }
 }
 
+impl<T> HasDisplayData for Write<T> {
+    fn populate_display_data(&self, builder: &mut DisplayDataBuilder) {
+        self.options.populate_display_data(builder);
+    }
+}
+
 impl<T: BeamRow + DefaultCoder + Send + Sync + 'static> PTransform<PCollection<T>> for Write<T> {
     type Output = WriteResult;
 
     fn expand(self, input: &PCollection<T>) -> WriteResult {
+        input.pipeline().record_display_data(&self);
         let codec: Arc<dyn RowCodec<T>> = Arc::new(BeamRowCodec::<T>::new());
         expand(input, codec, &self.options, self.client.as_ref())
     }
@@ -133,10 +141,17 @@ impl WriteRows {
     }
 }
 
+impl HasDisplayData for WriteRows {
+    fn populate_display_data(&self, builder: &mut DisplayDataBuilder) {
+        self.options.populate_display_data(builder);
+    }
+}
+
 impl PTransform<PCollection<Row>> for WriteRows {
     type Output = WriteResult;
 
     fn expand(self, input: &PCollection<Row>) -> WriteResult {
+        input.pipeline().record_display_data(&self);
         let rows = input.as_row_elements();
         match input.row_schema() {
             Some(schema) => {
@@ -223,9 +238,10 @@ fn build<T: DefaultCoder + Send + Sync + 'static>(
         .min(MAX_GROUP_BYTES);
     let grouping = GroupIntoBatches::new(usize::MAX)
         .with_byte_size_fn(group_bytes, |batch: &EncodedBatch| batch.bytes.len());
-    let grouping = match unbounded {
-        true => grouping.with_max_buffering_duration(frequency),
-        false => grouping,
+    let grouping = if unbounded {
+        grouping.with_max_buffering_duration(frequency)
+    } else {
+        grouping
     };
     let grouped = match options.num_shards {
         Some(shards) => batches

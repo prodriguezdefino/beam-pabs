@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! SchemaTransform providers for the native Cloud Bigtable read and write connectors.
+//! SchemaTransform providers for the Cloud Bigtable read and write connectors.
 
 mod filter;
 
@@ -25,16 +25,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use beam::io::gcp::bigtable::BigtableReadShape;
 use beam::io::gcp::bigtable::read::{ReadOptions, ReadRows};
 use beam::io::gcp::bigtable::target::{ReadTarget, WriteTarget};
 use beam::io::gcp::bigtable::write::{WriteMutations, WriteOptions};
 use beam::pipeline::Pipeline;
 use beam::schema::{BeamRow, Row, Schema};
 use beam::transforms::{DoFn, ParDo, ProcessContext};
-use bytes::Bytes;
 use beam_expansion::{
     PCollectionId, SchemaTransformProvider, TransformInputs, register_schema_transform,
 };
+use bytes::Bytes;
 
 use crate::ErrorHandling;
 
@@ -48,8 +49,8 @@ pub const URN_BIGTABLE_WRITE: &str = "beam:schematransform:org.apache.beam:rust:
 ///
 /// Matches the fields of the Java `BigtableReadSchemaTransformConfiguration` (`project_id`,
 /// `instance_id`, `table_id`, `flatten`), plus optional Rust extensions for Materialized Views,
-/// Authorized Views, Data Boost (`app_profile_id`), key ranges, `RowFilter` bytes, a native
-/// value bitmask filter, and silent-scan self-checkpointing.
+/// Authorized Views, Data Boost (`app_profile_id`), key ranges, `RowFilter` bytes, a value
+/// bitmask filter, and silent-scan self-checkpointing.
 ///
 /// `value_bitmask` alone keeps the cells whose value has every bit of the mask set. With
 /// `value_bitmask_family` and `value_bitmask_qualifier`, it keeps the whole rows where that
@@ -102,7 +103,12 @@ impl BigtableReadConfig {
             }
         };
 
-        let mut options = ReadOptions::new(target).with_flattened(self.flatten.unwrap_or(true));
+        let shape = if self.flatten.unwrap_or(true) {
+            BigtableReadShape::Flattened
+        } else {
+            BigtableReadShape::Nested
+        };
+        let mut options = ReadOptions::new(target).with_shape(shape);
         if let Some(profile) = non_empty(self.app_profile_id) {
             options = options.with_app_profile_id(profile);
         }
@@ -141,12 +147,12 @@ impl BigtableReadConfig {
         if let Some(endpoint) = non_empty(self.endpoint) {
             options = options.with_endpoint(endpoint);
         }
-        options.validate()?;
+        options.validate().map_err(|e| e.to_string())?;
         Ok(options)
     }
 }
 
-/// SchemaTransform provider for native Cloud Bigtable reads.
+/// SchemaTransform provider for Cloud Bigtable reads.
 #[derive(Default)]
 pub struct BigtableReadProvider;
 
@@ -266,12 +272,12 @@ impl BigtableWriteConfig {
         if let Some(endpoint) = non_empty(self.endpoint) {
             options = options.with_endpoint(endpoint);
         }
-        options.validate()?;
+        options.validate().map_err(|e| e.to_string())?;
         Ok(options)
     }
 }
 
-/// SchemaTransform provider for native Cloud Bigtable writes.
+/// SchemaTransform provider for Cloud Bigtable writes.
 #[derive(Default)]
 pub struct BigtableWriteProvider;
 

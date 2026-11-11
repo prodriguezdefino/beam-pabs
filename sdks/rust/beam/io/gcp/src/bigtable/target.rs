@@ -201,6 +201,28 @@ impl ReadTarget {
             Self::AuthorizedView { .. } => req.authorized_view_name = name,
         }
     }
+
+    /// Returns `[project, instance, table_or_view]` for Beam source lineage.
+    pub(crate) fn lineage_segments(&self) -> [&str; 3] {
+        match self {
+            Self::Table {
+                project,
+                instance,
+                table,
+            }
+            | Self::AuthorizedView {
+                project,
+                instance,
+                table,
+                ..
+            } => [project, instance, table],
+            Self::MaterializedView {
+                project,
+                instance,
+                view,
+            } => [project, instance, view],
+        }
+    }
 }
 
 /// The Bigtable resource that a write targets. Materialized views are read-only.
@@ -321,6 +343,23 @@ impl WriteTarget {
         match self {
             Self::Table { .. } => req.table_name = name,
             Self::AuthorizedView { .. } => req.authorized_view_name = name,
+        }
+    }
+
+    /// Returns `[project, instance, table]` for Beam sink lineage.
+    pub(crate) fn lineage_segments(&self) -> [&str; 3] {
+        match self {
+            Self::Table {
+                project,
+                instance,
+                table,
+            }
+            | Self::AuthorizedView {
+                project,
+                instance,
+                table,
+                ..
+            } => [project, instance, table],
         }
     }
 }

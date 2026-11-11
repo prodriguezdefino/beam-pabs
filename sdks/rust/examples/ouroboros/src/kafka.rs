@@ -17,35 +17,25 @@
  * under the License.
  */
 
-//! The loop topic on Kafka, through the cross-language Kafka transforms expanded by Managed.
+//! The loop topic on Kafka, through the Kafka read and write of `beam::io::kafka`.
 //!
-//! Both transforms use Managed error handling. A record that the Java transforms cannot
-//! decode or serialize goes to an error output and does not fail the bundle. The pipeline
-//! counts these records as `kafka_read_errors` and `kafka_write_errors`.
+//! A record that the read cannot decode (a record with no value), and a payload that Kafka
+//! rejects, go to a failure output and do not fail the bundle. The pipeline counts them as
+//! `kafka_read_errors` and `kafka_write_errors`.
 
-use beam::external::ExpansionError;
-use beam::io::kafka::{
-    KafkaRead, KafkaWrite, OffsetReset, payload_bytes, raw_bytes_row, raw_bytes_schema,
-};
-use beam::io::managed;
+use beam::io::kafka::read::{Read, ReadOptions, StartOffset};
+use beam::io::kafka::write::{Write, WriteOptions};
 use beam::prelude::*;
 
 use crate::{Args, METRICS_NAMESPACE};
 
-/// Output tag of the records that the read cannot decode.
-const READ_ERRORS: &str = "read_errors";
-/// Output tag of the records that the write cannot serialize.
-const WRITE_ERRORS: &str = "write_errors";
-
-fn bootstrap_servers(args: &Args) -> Result<&str, ExpansionError> {
-    args.bootstrap_servers.as_deref().ok_or_else(|| {
-        ExpansionError::InvalidConfig(
-            "--bootstrap_servers is required with --transport=kafka".to_string(),
-        )
-    })
+fn bootstrap_servers(args: &Args) -> Result<&str> {
+    args.bootstrap_servers
+        .as_deref()
+        .ok_or_else(|| Error::msg("--bootstrap_servers is required with --transport=kafka"))
 }
 
-/// Counts the rows of a connector error output as `counter`, and logs each one.
+/// Counts the rows of a connector failure output as `counter`, and logs each one.
 fn count_errors(errors: &PCollection<Row>, name: &str, counter: &'static str) {
     let errors_counter = Metrics::counter(METRICS_NAMESPACE, counter);
     errors.inspect(name, move |row: &Row| {
@@ -65,65 +55,39 @@ fn count_errors(errors: &PCollection<Row>, name: &str, counter: &'static str) {
 ///
 /// # Errors
 ///
-/// Returns an error if `--bootstrap_servers` is missing or the expansion fails.
-pub fn read(p: &Pipeline, args: &Args) -> Result<PCollection<Vec<u8>>, ExpansionError> {
-    let read = KafkaRead::new(bootstrap_servers(args)?, &args.loop_topic)
-        .with_auto_offset_reset(OffsetReset::Earliest)
-        .with_error_handling(READ_ERRORS);
-    let read = match &args.group_id {
-        Some(group) => read.with_consumer_config("group.id", group),
-        None => read,
-    };
-    let read = if args.gmk {
-        read.with_google_managed_kafka_auth()
+/// Returns an error if `--bootstrap_servers` is missing or the options are not valid.
+pub fn read(p: &Pipeline, args: &Args) -> Result<PCollection<Vec<u8>>> {
+    let options = ReadOptions::new(bootstrap_servers(args)?, &args.loop_topic)
+        .with_start_offset(StartOffset::Earliest)
+        .with_consumer_properties(
+            args.group_id
+                .iter()
+                .map(|group| ("group.id".to_string(), group.clone())),
+        );
+    let options = if args.gmk {
+        options.with_google_auth()
     } else {
-        read
+        options
     };
-    let read = match &args.expansion_service {
-        Some(service) => read.with_expansion_service(service),
-        None => read,
-    };
-
-    let outputs = p.try_apply("ReadKafka", read.to_managed()?.with_all_outputs())?;
-    count_errors(
-        &outputs.try_get(READ_ERRORS)?,
-        "CountReadErrors",
-        "kafka_read_errors",
-    );
-    Ok(outputs
-        .try_get(managed::OUTPUT)?
-        // A Row does not give up its fields, so the payload is copied.
-        .flat_map("ToPayloads", |row: Row| {
-            payload_bytes(&row).map(<[u8]>::to_vec)
-        }))
+    let WithFailures { output, failures } =
+        p.try_apply("ReadKafka", Read::new(options).with_failures())?;
+    count_errors(&failures, "CountReadErrors", "kafka_read_errors");
+    Ok(output)
 }
 
 /// Writes `payloads` to the loop topic.
 ///
 /// # Errors
 ///
-/// Returns an error if `--bootstrap_servers` is missing or the expansion fails.
-pub fn write(payloads: &PCollection<Vec<u8>>, args: &Args) -> Result<(), ExpansionError> {
-    let write = KafkaWrite::new(bootstrap_servers(args)?, &args.loop_topic)
-        .with_error_handling(WRITE_ERRORS);
-    let write = if args.gmk {
-        write.with_google_managed_kafka_auth()
+/// Returns an error if `--bootstrap_servers` is missing or the options are not valid.
+pub fn write(payloads: &PCollection<Vec<u8>>, args: &Args) -> Result {
+    let options = WriteOptions::new(bootstrap_servers(args)?, &args.loop_topic);
+    let options = if args.gmk {
+        options.with_google_auth()
     } else {
-        write
+        options
     };
-    let write = match &args.expansion_service {
-        Some(service) => write.with_expansion_service(service),
-        None => write,
-    };
-
-    let outputs = payloads
-        .map("ToRows", raw_bytes_row)
-        .with_row_schema(&raw_bytes_schema())
-        .try_apply("WriteKafka", write.to_managed()?.with_outputs())?;
-    count_errors(
-        &outputs.try_get(WRITE_ERRORS)?,
-        "CountWriteErrors",
-        "kafka_write_errors",
-    );
+    let failures = payloads.try_apply("WriteKafka", Write::new(options))?;
+    count_errors(&failures, "CountWriteErrors", "kafka_write_errors");
     Ok(())
 }

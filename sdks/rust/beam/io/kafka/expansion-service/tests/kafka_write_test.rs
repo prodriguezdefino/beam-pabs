@@ -21,9 +21,9 @@
 
 use std::collections::BTreeMap;
 
-use beam::io::kafka::native::codec::managed::Format;
 use beam::schema::BeamRow;
 use beam_expansion::{SchemaTransformProvider, SchemaTransformRegistration};
+use beam_io_kafka_expansion::Format;
 use beam_io_kafka_expansion::{KafkaWriteConfig, KafkaWriteProvider, URN_KAFKA_WRITE};
 
 fn config(format: &str) -> KafkaWriteConfig {
@@ -84,12 +84,12 @@ fn a_valid_config_gives_the_write_options() {
     .unwrap();
     let (options, format) = options;
     assert!(matches!(format, Format::Json(_)));
-    assert_eq!(options.topic, "events");
-    assert_eq!(options.connection.bootstrap_servers, "broker:9092");
+    assert_eq!(options.topic(), "events");
+    assert_eq!(options.connection().bootstrap_servers(), "broker:9092");
     assert_eq!(
         options
-            .connection
-            .properties
+            .connection()
+            .properties()
             .get("linger.ms")
             .map(String::as_str),
         Some("5")
@@ -99,7 +99,17 @@ fn a_valid_config_gives_the_write_options() {
 #[test]
 fn an_invalid_config_says_why() {
     let cases = [
-        (config("PROTO"), "not support"),
+        (config("PROTO"), "file_descriptor_path"),
+        (
+            KafkaWriteConfig {
+                producer_config_updates: Some(BTreeMap::from([(
+                    "schema.registry.url".into(),
+                    "http://registry:8081".into(),
+                )])),
+                ..config("RAW")
+            },
+            "AVRO",
+        ),
         (config("XML"), "Unknown format"),
         (
             KafkaWriteConfig {
@@ -120,4 +130,26 @@ fn an_invalid_config_says_why() {
         let error = config.write_options().unwrap_err();
         assert!(error.contains(expected), "{error}");
     });
+}
+
+#[test]
+fn a_schema_registry_makes_avro_writes_register_their_schema() {
+    let (options, format) = KafkaWriteConfig {
+        producer_config_updates: Some(BTreeMap::from([
+            ("schema.registry.url".into(), "http://registry:8081".into()),
+            ("basic.auth.user.info".into(), "user:secret".into()),
+            ("linger.ms".into(), "5".into()),
+        ])),
+        ..config("AVRO")
+    }
+    .write_options()
+    .unwrap();
+    assert!(matches!(format, Format::Avro(_)), "{format:?}");
+    let keys: Vec<&str> = options
+        .connection()
+        .properties()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(keys, ["linger.ms"]);
 }

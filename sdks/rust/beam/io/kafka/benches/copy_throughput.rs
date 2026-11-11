@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! Throughput and CPU cost of a Kafka copy with the native read and the native write, on
+//! Throughput and CPU cost of a Kafka copy with the read and the write of the connector, on
 //! Prism against a local broker.
 //!
 //! The bench writes `--records` records to a new topic. Then it copies that topic to a new
@@ -26,33 +26,31 @@
 //! million records. The workers run in this process (LOOPBACK), so the CPU time is that of
 //! the connector and the SDK. Prism runs in its own process and does not count.
 //!
-//! Start a broker, then run the bench:
+//! Run the bench with Gradle (starts a local broker in Docker if none listens on port 9092):
 //!
 //! ```text
-//! docker run -d --name beam-kafka-bench -p 9092:9092 apache/kafka:3.9.0
-//! cargo bench -p apache-beam-io-kafka --features native --bench copy_throughput -- \
-//!   --records=2000000 --runs=3 --formats=bytes,json
+//! ./gradlew :sdks:rust:kafkaCopyBenchmark -Precords=2000000 -Pruns=3 -Pformats=bytes,json
 //! ```
 //!
-//! With no broker at `--bootstrap_servers`, the bench says so and stops. To profile one copy:
+//! With no broker and no Docker daemon, the bench says so and stops. To profile one copy:
 //!
 //! ```text
 //! ./gradlew :sdks:rust:profilePrism -Ppkg=apache-beam-io-kafka -PcargoBench=copy_throughput \
-//!   -PexampleFeatures=native -PextraArgs="--runs=1 --formats=bytes"
+//!   -PextraArgs="--runs=1 --formats=bytes"
 //! ```
 
 use std::ffi::OsString;
 use std::fmt::Write as _;
-use std::mem::MaybeUninit;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use beam_io_kafka::codec::Json;
+use beam_io_kafka::read::{Read, ReadOptions, StartOffset};
+use beam_io_kafka::write::{Write, WriteOptions};
 use beam_sdk::options::{PipelineOptionGroup, PipelineOptions};
 use beam_sdk::prelude::*;
+use beam_test_utils::process_cpu_time as process_cpu;
 use clap::{Args as ClapArgs, ValueEnum};
-use beam_io_kafka::native::codec::Json;
-use beam_io_kafka::native::read::{Read, ReadOptions, StartOffset};
-use beam_io_kafka::native::write::{Write, WriteOptions};
 use rdkafka::ClientConfig;
 use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
 use rdkafka::client::DefaultClientContext;
@@ -168,22 +166,6 @@ fn arguments() -> Vec<OsString> {
         .chain(defaults)
         .chain(given.iter().skip(1).cloned())
         .collect()
-}
-
-/// The CPU time of this process: user time and system time of all its threads.
-fn process_cpu() -> Duration {
-    let mut usage = MaybeUninit::<libc::rusage>::zeroed();
-    // SAFETY: `usage` is valid for a write of one `rusage`. With `RUSAGE_SELF`, `getrusage`
-    // fills it and does not fail. The zeroed value is also a valid `rusage`.
-    let usage = unsafe {
-        libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr());
-        usage.assume_init()
-    };
-    let time = |value: libc::timeval| {
-        Duration::from_secs(u64::try_from(value.tv_sec).unwrap_or(0))
-            + Duration::from_micros(u64::try_from(value.tv_usec).unwrap_or(0))
-    };
-    time(usage.ru_utime) + time(usage.ru_stime)
 }
 
 /// A client configuration for `servers`.

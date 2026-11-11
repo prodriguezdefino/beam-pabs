@@ -21,7 +21,7 @@
 
 use std::time::Duration;
 
-use beam::io::kafka::native::read::{ConsumerPool, PoolSize, ReadOptions};
+use beam::io::kafka::read::{ConsumerPool, PoolSize, ReadOptions};
 use beam::options::{ParseError, PipelineOptions, try_parse_from};
 use beam_benchmark_io::{AutoOffsetReset, Connector, parse_consumer_pool_size, parse_property};
 use beam_benchmark_kafka::{Args, Format, Shape, build_pipeline, read_options, write_options};
@@ -141,13 +141,13 @@ fn pipeline_builds_with_consumer_properties() {
 fn consumer_pool_size_sets_read_options_and_rejects_zero() {
     let (_, default_args) = parse(&[]);
     assert_eq!(
-        read_options(&default_args).unwrap().consumer_pool,
+        read_options(&default_args).unwrap().consumer_pool(),
         ConsumerPool::OnePerPartition
     );
 
     let (_, single_args) = parse(&["--consumer_pool_size=1"]);
     assert_eq!(
-        read_options(&single_args).unwrap().consumer_pool,
+        read_options(&single_args).unwrap().consumer_pool(),
         ConsumerPool::Size(PoolSize::try_from(1).unwrap())
     );
 
@@ -162,12 +162,14 @@ fn consumer_pool_size_sets_read_options_and_rejects_zero() {
 fn max_read_time_per_call_sets_read_options_and_rejects_zero() {
     let (_, default_args) = parse(&[]);
     assert_eq!(
-        read_options(&default_args).unwrap().max_read_time_per_call,
-        ReadOptions::new("b", "t").max_read_time_per_call
+        read_options(&default_args)
+            .unwrap()
+            .max_read_time_per_call(),
+        ReadOptions::new("b", "t").max_read_time_per_call()
     );
     let (_, args) = parse(&["--max_read_time_per_call_ms=1500"]);
     assert_eq!(
-        read_options(&args).unwrap().max_read_time_per_call,
+        read_options(&args).unwrap().max_read_time_per_call(),
         Duration::from_millis(1_500)
     );
     assert!(try_parse(&["--max_read_time_per_call_ms=0"]).is_err());
@@ -177,12 +179,12 @@ fn max_read_time_per_call_sets_read_options_and_rejects_zero() {
 fn max_idle_per_call_sets_read_options_and_rejects_zero() {
     let (_, default_args) = parse(&[]);
     assert_eq!(
-        read_options(&default_args).unwrap().max_idle_per_call,
-        ReadOptions::new("b", "t").max_idle_per_call
+        read_options(&default_args).unwrap().max_idle_per_call(),
+        ReadOptions::new("b", "t").max_idle_per_call()
     );
     let (_, args) = parse(&["--max_idle_per_call_ms=2500"]);
     assert_eq!(
-        read_options(&args).unwrap().max_idle_per_call,
+        read_options(&args).unwrap().max_idle_per_call(),
         Duration::from_millis(2_500)
     );
     assert!(try_parse(&["--max_idle_per_call_ms=0"]).is_err());
@@ -193,15 +195,15 @@ fn producer_properties_set_write_options() {
     let (_, default_args) = parse(&[]);
     assert!(
         write_options(&default_args)
-            .connection
-            .properties
+            .connection()
+            .properties()
             .is_empty()
     );
 
     let (_, args) = parse(&["--producer_properties=linger.ms=5,acks=all"]);
     let write = write_options(&args);
-    assert_eq!(write.connection.properties["linger.ms"], "5");
-    assert_eq!(write.connection.properties["acks"], "all");
+    assert_eq!(write.connection().properties()["linger.ms"], "5");
+    assert_eq!(write.connection().properties()["acks"], "all");
 }
 
 /// The coder URNs of the PCollections of `pipeline`.

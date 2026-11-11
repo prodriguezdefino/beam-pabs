@@ -17,20 +17,22 @@
  * under the License.
  */
 
-//! SchemaTransform providers for the native BigQuery Storage Read and Write connectors.
+//! SchemaTransform providers for the BigQuery Storage Read and Write connectors.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 #[cfg(doc)]
-use beam::io::gcp::bigquery::storage::read::error_schema;
-use beam::io::gcp::bigquery::storage::read::{ReadOptions, ReadRows};
-use beam::io::gcp::bigquery::storage::write::{Semantics, WriteOptions, WriteRows, is_unbounded};
-use beam::io::gcp::bigquery::{CreateDisposition, WriteDisposition};
+use beam::io::gcp::bigquery::read::error_schema;
+use beam::io::gcp::bigquery::read::{ReadOptions, ReadRows};
+use beam::io::gcp::bigquery::write::{
+    CreateDisposition, Semantics, WriteDisposition, WriteOptions, WriteRows,
+};
 use beam::pipeline::Pipeline;
 use beam::schema::{BeamRow, Row, Schema};
 use beam::transforms::{DoFn, ParDo, ProcessContext};
+use beam::values::IsBounded;
 use beam_expansion::{
     PCollectionId, SchemaTransformProvider, TransformInputs, register_schema_transform,
 };
@@ -343,7 +345,7 @@ impl SchemaTransformProvider for BigQueryStorageWriteProvider {
             .get::<Row>(pipeline, "input")
             .map_err(beam::Error::msg)?;
         let options = config
-            .write_options(is_unbounded(&rows))
+            .write_options(rows.is_bounded() == IsBounded::Unbounded)
             .map_err(beam::Error::msg)?;
         let errors = rows
             .try_apply("WriteToBigQuery", WriteRows::new(options))

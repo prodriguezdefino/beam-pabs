@@ -25,7 +25,7 @@ use std::sync::Arc;
 use beam_io_arrow::EncodedBatch;
 use beam_io_arrow::arrow_array::{RecordBatch, StringArray};
 use beam_io_arrow::arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
-use beam_io_gcp::bigquery::storage::write::encode::{APPEND_BYTES, MAX_REQUEST_BYTES, accepted, split};
+use beam_io_gcp::bigquery::write::encode::{APPEND_BYTES, MAX_REQUEST_BYTES, accepted, split};
 
 /// A batch of `rows` strings of `bytes` bytes each.
 fn strings(rows: usize, bytes: usize) -> RecordBatch {

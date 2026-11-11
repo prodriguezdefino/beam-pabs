@@ -21,8 +21,9 @@
 
 use std::time::Duration;
 
-use beam::io::gcp::bigquery::storage::write::{Semantics, WriteOptions};
-use beam::io::gcp::bigquery::{CreateDisposition, WriteDisposition};
+use beam::io::gcp::bigquery::write::{
+    CreateDisposition, Semantics, WriteDisposition, WriteOptions,
+};
 use beam::schema::{BeamRow, FieldType};
 use beam_expansion::{SchemaTransformProvider, SchemaTransformRegistration};
 use beam_io_gcp_expansion::{

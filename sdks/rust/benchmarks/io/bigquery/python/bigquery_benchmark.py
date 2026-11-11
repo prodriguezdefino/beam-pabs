@@ -191,24 +191,26 @@ def main(argv):
       table_schema(args.billing_project, args.table)
       if args.shape == "copy" and args.reader == "python" else None)
 
-  with beam.Pipeline(options=PipelineOptions(pipeline_args)) as p:
-    rows = p | "Read" >> READERS[args.reader](args)
-    if args.shape == "count":
-      total = rows | "CountRows" >> beam.combiners.Count.Globally()
-      if args.expected_rows is not None:
-        assert_that(total, equal_to([args.expected_rows]), label="CheckRows")
-    elif args.shape == "per_key":
-      key = args.key
-      (
-          rows
-          | "Key" >> beam.Map(lambda row: (field(row, key), 1))
-          | "CountPerKey" >> beam.CombinePerKey(sum)
-          | "CountKeys" >> beam.combiners.Count.Globally())
-    else:
-      _ = (
-          rows
-          | "Touch" >> beam.ParDo(Touch()).with_output_types(rows.element_type)
-          | "Write" >> WRITERS[args.writer](args))
+  p = beam.Pipeline(options=PipelineOptions(pipeline_args))
+  rows = p | "Read" >> READERS[args.reader](args)
+  if args.shape == "count":
+    total = rows | "CountRows" >> beam.combiners.Count.Globally()
+    if args.expected_rows is not None:
+      assert_that(total, equal_to([args.expected_rows]), label="CheckRows")
+  elif args.shape == "per_key":
+    key = args.key
+    (
+        rows
+        | "Key" >> beam.Map(lambda row: (field(row, key), 1))
+        | "CountPerKey" >> beam.CombinePerKey(sum)
+        | "CountKeys" >> beam.combiners.Count.Globally())
+  else:
+    _ = (
+        rows
+        | "Touch" >> beam.ParDo(Touch()).with_output_types(rows.element_type)
+        | "Write" >> WRITERS[args.writer](args))
+  result = p.run()
+  print(f"JOB_ID={result.job_id()}", flush=True)
 
 
 if __name__ == "__main__":

@@ -17,16 +17,16 @@
  * under the License.
  */
 
-//! The error output of the native Storage Read connector: the error rows, and the rows that
+//! The error output of the Storage Read connector: the error rows, and the rows that
 //! become error rows.
 
 use std::sync::Arc;
 
-use beam_io_arrow::RowOutput;
-use beam_io_arrow::arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use beam::coders::{DefaultCoder, RowCoder};
 use beam::schema::{Field, FieldType, FieldValue, RowElement, Schema};
-use beam_io_gcp::bigquery::storage::read::failures::{error_row, error_schema, read_outputs};
+use beam_io_arrow::RowOutput;
+use beam_io_arrow::arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
+use beam_io_gcp::bigquery::read::failures::{error_row, error_schema, read_outputs};
 
 #[test]
 fn an_error_row_decodes_with_the_error_schema() {

@@ -22,7 +22,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Apache Beam Rust SDK cross-language Bigtable WordCount example"
+description = "Apache Beam Rust SDK Bigtable WordCount example"
 
 [lib]
 path = "src/lib.rs"

@@ -17,16 +17,16 @@
  * under the License.
  */
 
-//! Tests for Google Cloud Bigtable: cross-language SchemaTransforms, key arithmetic, target
-//! routing headers (Tables, Materialized Views, Authorized Views, Data Boost), server-side
-//! bitmask `RowFilter` builders, read/write unit tests, and end-to-end mock gRPC tests.
+//! Tests for Google Cloud Bigtable: element schemas, key arithmetic, target routing headers
+//! (Tables, Materialized Views, Authorized Views, Data Boost), server-side bitmask `RowFilter`
+//! builders, read/write unit tests, and end-to-end mock gRPC tests.
 
 mod construction;
-mod external;
 mod filter;
 mod key_and_target;
 mod live;
 mod mock_service;
 mod read_units;
 mod retry;
+mod schema;
 mod write_units;

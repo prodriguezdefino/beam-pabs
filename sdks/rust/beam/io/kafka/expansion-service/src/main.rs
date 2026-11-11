@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! Expansion service with the native Kafka connector. It is also the worker of the
+//! Expansion service with the Kafka connector of the Rust SDK. It is also the worker of the
 //! transforms that it expands.
 
 use beam_io_kafka_expansion as _;

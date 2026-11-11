@@ -17,10 +17,39 @@
  * under the License.
  */
 
-//! The `keep`, `drop` and `only` options of the native Storage Write connector.
+//! The dispositions and the `keep`, `drop` and `only` options of the Storage Write
+//! connector.
 
-use beam_io_gcp::bigquery::storage::write::WriteOptions;
-use beam_io_gcp::bigquery::storage::write::projection::FieldSelection;
+use beam_io_gcp::bigquery::write::projection::FieldSelection;
+use beam_io_gcp::bigquery::write::{CreateDisposition, WriteDisposition, WriteOptions};
+
+#[test]
+fn dispositions_parse_their_names_in_any_case() {
+    for disposition in [
+        CreateDisposition::CreateIfNeeded,
+        CreateDisposition::CreateNever,
+    ] {
+        let name = disposition.to_string();
+        assert_eq!(name, disposition.as_str());
+        assert_eq!(name.to_lowercase().parse(), Ok(disposition));
+    }
+    for disposition in [WriteDisposition::WriteAppend, WriteDisposition::WriteEmpty] {
+        let name = disposition.to_string();
+        assert_eq!(name, disposition.as_str());
+        assert_eq!(name.to_lowercase().parse(), Ok(disposition));
+    }
+    let unknown = "CREATE_SOMETIMES".parse::<CreateDisposition>().unwrap_err();
+    assert!(unknown.contains("Unknown create disposition"), "{unknown}");
+    let unknown = "WRITE_SOMETIMES".parse::<WriteDisposition>().unwrap_err();
+    assert!(unknown.contains("Unknown write disposition"), "{unknown}");
+}
+
+#[test]
+fn write_truncate_names_managed_io() {
+    let error = "write_truncate".parse::<WriteDisposition>().unwrap_err();
+    assert!(error.contains("cannot replace the rows"), "{error}");
+    assert!(error.contains("Managed I/O"), "{error}");
+}
 
 #[test]
 fn at_most_one_of_keep_drop_and_only() {

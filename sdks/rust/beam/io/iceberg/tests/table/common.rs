@@ -23,10 +23,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use beam::schema::{Field, FieldType, Schema, URN_MILLIS_INSTANT};
-use iceberg::CatalogBuilder;
-use iceberg::memory::{MEMORY_CATALOG_WAREHOUSE, MemoryCatalog, MemoryCatalogBuilder};
 use beam_io_iceberg::storage::FileSystemStorageFactory;
 use beam_io_iceberg::{Catalog, WriteOptions};
+use iceberg::CatalogBuilder;
+use iceberg::memory::{MEMORY_CATALOG_WAREHOUSE, MemoryCatalog, MemoryCatalogBuilder};
 use tempfile::TempDir;
 
 /// A memory catalog whose metadata files go to a temp directory through the SDK storage.

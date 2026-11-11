@@ -29,18 +29,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use std::sync::Arc;
 
-use beam_io_arrow::SchemaRowCodec;
 use beam::schema::{Field, FieldType, FieldValue, Row, RowElement, Schema, URN_MILLIS_INSTANT};
-use bytes::Bytes;
-use iceberg::spec::DataFile;
-use iceberg::{Catalog as _, TableIdent};
+use beam_io_arrow::SchemaRowCodec;
 use beam_io_iceberg::catalog::{Connection, connect};
 use beam_io_iceberg::commit::{COMMIT_ID, Commit, commit, commit_id};
 use beam_io_iceberg::encode::Encoder;
 use beam_io_iceberg::storage::GCS_TOKEN;
 use beam_io_iceberg::table::{TableInfo, prepare};
 use beam_io_iceberg::write::TableWriter;
-use beam_io_iceberg::{Catalog, PartitionField, Transform, WriteOptions};
+use beam_io_iceberg::{Catalog, PartitionField, PartitionTransform, WriteOptions};
+use bytes::Bytes;
+use iceberg::spec::DataFile;
+use iceberg::{Catalog as _, TableIdent};
 
 const BIGLAKE: &str = "https://biglake.googleapis.com/iceberg/v1/restcatalog";
 
@@ -76,7 +76,10 @@ async fn biglake_creates_a_table_and_vends_a_token_that_writes_to_its_location()
         .expect("the clock is after the epoch")
         .as_secs();
     let options = WriteOptions::new(catalog, format!("beam_rust_it.prepare_{seconds}"))
-        .with_partition_fields([PartitionField::new("timestamp_ms", Transform::Hour)])
+        .with_partition_fields([PartitionField::new(
+            "timestamp_ms",
+            PartitionTransform::Hour,
+        )])
         .with_table_property("write.parquet.compression-codec", "zstd");
     let ident = options.table_ident().expect("a valid table name");
 

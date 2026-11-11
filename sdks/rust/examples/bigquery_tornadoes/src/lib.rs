@@ -19,12 +19,14 @@
 
 //! Counts tornadoes per month in BigQuery weather data.
 //!
-//! The pipeline reads weather station rows through the cross-language BigQuery Storage Read
-//! transform, counts the rows with a tornado for each month, and writes `(month, tornado_count)`
-//! rows through the cross-language BigQuery write transform. Both transforms run in the Java
-//! expansion service.
+//! The pipeline reads weather station rows with the BigQuery Storage Read connector,
+//! counts the rows with a tornado for each month, and writes `(month, tornado_count)` rows with
+//! the Storage Write connector.
 
-use beam::io::gcp::bigquery::{BigQueryRead, BigQueryWrite, CreateDisposition, WriteDisposition};
+use beam::io::gcp::bigquery::read::{ReadOptions, ReadRows};
+use beam::io::gcp::bigquery::write::{
+    CreateDisposition, WriteDisposition, WriteOptions, WriteRows,
+};
 use beam::prelude::*;
 use clap::Args as ClapArgs;
 use serde::{Deserialize, Serialize};
@@ -47,10 +49,6 @@ pub struct Args {
     /// Table to write the counts to, as PROJECT:DATASET.TABLE or DATASET.TABLE.
     #[arg(long)]
     pub output: String,
-
-    /// Address (host:port) of an expansion service to use instead of the Java one that the SDK starts.
-    #[arg(long)]
-    pub expansion_service: Option<String>,
 }
 
 impl PipelineOptionGroup for Args {}
@@ -98,40 +96,15 @@ pub fn build_pipeline(options: &PipelineOptions, args: &Args) -> Pipeline {
     let p = Pipeline::create(options);
 
     let read = match &args.input_query {
-        Some(query) => BigQueryRead::new().with_query(query),
-        None => BigQueryRead::new()
-            .with_table(&args.input)
-            .with_selected_fields(["month", "tornado"]),
+        Some(query) => ReadOptions::from_query(query),
+        None => ReadOptions::new(&args.input).with_selected_fields(["month", "tornado"]),
     };
-    let write = BigQueryWrite::new(&args.output)
+    let write = WriteOptions::new(&args.output)
         .with_create_disposition(CreateDisposition::CreateIfNeeded)
         .with_write_disposition(WriteDisposition::WriteAppend);
-    let (read, write) = match &args.expansion_service {
-        Some(service) => (
-            read.with_expansion_service(service),
-            write.with_expansion_service(service),
-        ),
-        None => (read, write),
-    };
 
-    match p.try_apply("ReadWeather", read) {
-        Ok(rows) => {
-            if let Err(err) = rows
-                .apply("CountTornadoes", CountTornadoes)
-                .try_apply("WriteCounts", write)
-            {
-                p.record_construction_error(beam::pipeline::PipelineError::InvalidConstruction {
-                    transform_id: "WriteCounts".to_string(),
-                    reason: err.to_string(),
-                });
-            }
-        }
-        Err(err) => {
-            p.record_construction_error(beam::pipeline::PipelineError::InvalidConstruction {
-                transform_id: "ReadWeather".to_string(),
-                reason: err.to_string(),
-            });
-        }
-    }
+    p.apply("ReadWeather", ReadRows::new(read))
+        .apply("CountTornadoes", CountTornadoes)
+        .apply("WriteCounts", WriteRows::new(write));
     p
 }

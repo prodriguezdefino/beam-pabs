@@ -20,10 +20,10 @@
 //! `prepare` creates a missing table, loads an existing one, and checks the input schema.
 
 use beam::schema::{BeamRow, Field, FieldType, Schema};
+use beam_io_iceberg::table::{TableInfo, prepare};
+use beam_io_iceberg::{PartitionField, PartitionTransform};
 use iceberg::spec::{TableMetadata, Transform as IcebergTransform};
 use iceberg::{Catalog as _, NamespaceIdent};
-use beam_io_iceberg::table::{TableInfo, prepare};
-use beam_io_iceberg::{PartitionField, Transform};
 use tempfile::TempDir;
 
 use crate::common::{device_metric, memory_catalog, options};
@@ -37,7 +37,10 @@ async fn a_missing_table_is_created_with_its_namespace_spec_and_properties() {
     let warehouse = TempDir::new().expect("a temp dir");
     let catalog = memory_catalog(&warehouse).await;
     let options = options("iceberg_poc_db.device_metrics")
-        .with_partition_fields([PartitionField::new("timestamp_ms", Transform::Hour)])
+        .with_partition_fields([PartitionField::new(
+            "timestamp_ms",
+            PartitionTransform::Hour,
+        )])
         .with_table_property("write.parquet.compression-codec", "zstd");
 
     let info = prepare(&catalog, &options, &device_metric())

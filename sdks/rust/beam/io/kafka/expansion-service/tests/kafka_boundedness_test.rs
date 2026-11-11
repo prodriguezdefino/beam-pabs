@@ -71,7 +71,7 @@ fn downstream_of(p: &Pipeline, suffix: &str) -> BTreeSet<String> {
     }
 }
 
-fn expand_read(config: KafkaReadConfig) -> (Pipeline, HashMap<String, PCollectionId>) {
+fn expand_read(config: &KafkaReadConfig) -> (Pipeline, HashMap<String, PCollectionId>) {
     let mut p = Pipeline::new();
     let outputs = KafkaReadProvider
         .build_transform(
@@ -97,7 +97,7 @@ fn read_config(max_read_time_seconds: Option<i32>, output: Option<&str>) -> Kafk
 #[test]
 fn every_pcollection_after_read_partitions_is_unbounded() {
     [None, Some("failures")].into_iter().for_each(|output| {
-        let (p, outputs) = expand_read(read_config(None, output));
+        let (p, outputs) = expand_read(&read_config(None, output));
         let marks = marks(&p);
         let after = downstream_of(&p, "/ReadPartitions");
         assert!(!after.is_empty(), "{output:?}: no ReadPartitions output");
@@ -117,7 +117,7 @@ fn every_pcollection_after_read_partitions_is_unbounded() {
 
 #[test]
 fn a_read_with_a_max_read_time_is_bounded() {
-    let (p, _) = expand_read(read_config(Some(60), None));
+    let (p, _) = expand_read(&read_config(Some(60), None));
     let unbounded: Vec<(String, IsBounded)> = marks(&p)
         .into_iter()
         .filter(|(_, mark)| *mark != IsBounded::Bounded)

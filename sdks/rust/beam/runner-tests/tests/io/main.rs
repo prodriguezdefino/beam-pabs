@@ -17,7 +17,10 @@
  */
 
 mod avroio_test;
+mod bigquery_storage_it;
+mod bigquery_storage_test;
 mod fileio_test;
+mod icebergio_test;
 mod parquetio_test;
 mod textio_gcs_test;
 mod textio_test;

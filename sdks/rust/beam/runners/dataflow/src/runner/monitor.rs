@@ -105,7 +105,38 @@ impl<'a> JobPoller<'a> {
         }
     }
 
+    /// Logs the first page of the messages after the cursor. The next poll starts after the
+    /// last message of the page, so a running job loses no message.
     async fn log_new_messages(&mut self) {
+        let start_time = self.cursor.start_time().map(str::to_string);
+        self.log_page(start_time.as_deref(), None).await;
+    }
+
+    /// Logs every page of the messages after the cursor. Call it once after the job reaches
+    /// a terminal state, because no later poll reads the remaining pages.
+    pub(crate) async fn drain_messages(&mut self) {
+        let start_time = self.cursor.start_time().map(str::to_string);
+        let mut page_token = None;
+        for _ in 0..MAX_DRAINED_MESSAGE_PAGES {
+            page_token = self
+                .log_page(start_time.as_deref(), page_token.as_deref())
+                .await;
+            if page_token.is_none() {
+                return;
+            }
+        }
+        warn!(
+            "Stopped reading the messages of Dataflow job '{}' after {MAX_DRAINED_MESSAGE_PAGES} pages",
+            self.job.id()
+        );
+    }
+
+    /// Logs one page of messages and returns the token of the next page, if there is one.
+    async fn log_page(
+        &mut self,
+        start_time: Option<&str>,
+        page_token: Option<&str>,
+    ) -> Option<String> {
         let job = self.job;
         match self
             .client
@@ -113,26 +144,32 @@ impl<'a> JobPoller<'a> {
                 job.project(),
                 job.region(),
                 job.id(),
-                self.cursor.start_time(),
+                start_time,
+                page_token,
             )
             .await
         {
-            Ok(msgs) => {
+            Ok(page) => {
                 self.cursor = record_new_messages(
-                    msgs.job_messages,
+                    page.job_messages,
                     std::mem::take(&mut self.cursor),
                     &mut self.errors,
                 );
+                page.next_page_token.filter(|token| !token.is_empty())
             }
             Err(e) => {
                 warn!(
                     "Failed to retrieve job messages for Dataflow job '{}': {e}",
                     job.id()
                 );
+                None
             }
         }
     }
 }
+
+/// The most pages of messages that [`JobPoller::drain_messages`] reads.
+const MAX_DRAINED_MESSAGE_PAGES: usize = 100;
 
 /// Fetches metrics for `job`, logging failures without propagating.
 pub(crate) async fn fetch_metrics(
@@ -185,6 +222,7 @@ pub(super) async fn poll_until_terminal(
     loop {
         let state = JobState::parse(&poller.next_status().await?.current_state);
         if state.is_terminal() {
+            poller.drain_messages().await;
             return Ok((state, poller.errors));
         }
     }

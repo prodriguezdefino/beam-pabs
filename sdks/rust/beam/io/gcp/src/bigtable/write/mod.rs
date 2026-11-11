@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! Native Cloud Bigtable write connector (`MutateRows` batching, partial-failure retries,
+//! Cloud Bigtable write connector (`MutateRows` batching, partial-failure retries,
 //! and rejected-row error output).
 
 #[doc(hidden)]
@@ -30,8 +30,9 @@ pub mod writer;
 
 use std::sync::Arc;
 
-use beam::internals::PipelineInternals;
-use beam::schema::{Field, FieldType, Row, Schema};
+use beam::internals::{PipelineInternals, failed_row_schema};
+use beam::schema::{Row, Schema};
+use beam::transforms::display_data::{DisplayDataBuilder, HasDisplayData};
 use beam::transforms::{PTransform, ParDo, TryPTransform};
 use beam::values::PCollection;
 use beam::windowing::{GlobalWindows, WindowInto};
@@ -50,15 +51,15 @@ use crate::bigtable::client::BigtableClient;
 /// Returns the error output [`Schema`] for rejected mutation rows of `input_schema`:
 /// `(failed_row: ROW<input_schema>, error_message: STRING)`.
 pub fn error_schema(input_schema: &Schema) -> Schema {
-    Schema::new(vec![
-        Field::new("failed_row", FieldType::row(input_schema.clone())),
-        Field::new("error_message", FieldType::string()),
-    ])
+    failed_row_schema(input_schema)
 }
 
-/// Native Cloud Bigtable `PTransform` that writes mutation [`Row`]s (`mutation_schema` or
+/// Cloud Bigtable `PTransform` that writes mutation [`Row`]s (`mutation_schema` or
 /// `batched_mutation_schema`) using `Bigtable.MutateRows` and returns a [`PCollection<Row>`]
 /// of rejected mutations with [`error_schema`].
+///
+/// A `SetCell` with a server-assigned timestamp (`timestamp_micros` unset or `-1`) is not
+/// idempotent: a retry after an ambiguous failure can write a second cell version.
 #[derive(Clone)]
 pub struct WriteMutations {
     options: WriteOptions,
@@ -81,10 +82,16 @@ impl WriteMutations {
     }
 }
 
-impl WriteMutations {
+impl HasDisplayData for WriteMutations {
+    fn populate_display_data(&self, builder: &mut DisplayDataBuilder) {
+        self.options.populate_display_data(builder);
+    }
+}
 
+impl WriteMutations {
     fn try_expand_ref(&self, input: &PCollection<Row>) -> beam::Result<PCollection<Row>> {
-        self.options.validate().map_err(beam::Error::msg)?;
+        input.pipeline().record_display_data(self);
+        self.options.validate()?;
         let step = input.pipeline().scope_name().unwrap_or_default();
         let input_schema = input
             .row_schema()
@@ -100,7 +107,7 @@ impl WriteMutations {
             .apply(
                 "WriteMutations",
                 ParDo::new(WriteMutationsFn::new(
-                    self.options.clone(),
+                    Arc::new(self.options.clone()),
                     kind,
                     Arc::clone(&input_schema),
                     Arc::clone(&err_schema),
@@ -116,6 +123,7 @@ impl WriteMutations {
 impl TryPTransform<PCollection<Row>> for WriteMutations {
     type Output = PCollection<Row>;
     type Error = beam::Error;
+
     fn try_expand(self, input: &PCollection<Row>) -> beam::Result<PCollection<Row>> {
         self.try_expand_ref(input)
     }

@@ -17,14 +17,14 @@
  * under the License.
  */
 
-//! The fields of the input rows that the native Storage Write connector writes.
+//! The fields of the input rows that the Storage Write connector writes.
 
 use std::sync::Arc;
 
+use beam::schema::{FieldType, FieldValue, Row, Schema};
 use beam_io_arrow::Projection;
 use beam_io_arrow::arrow_schema::{DataType, Field as ArrowField, Fields};
-use beam::schema::{FieldType, FieldValue, Row, Schema};
-use beam_io_gcp::bigquery::storage::write::projection::{FieldSelection, Selection};
+use beam_io_gcp::bigquery::write::projection::{FieldSelection, Selection};
 
 fn input() -> Arc<Schema> {
     let payload = Schema::builder()
@@ -52,25 +52,25 @@ fn names(schema: &Schema) -> Vec<&str> {
     schema.fields.iter().map(|f| f.name.as_str()).collect()
 }
 
-fn select(selection: FieldSelection, ignore: bool) -> beam::Result<Selection> {
-    Selection::new(input(), &selection, ignore)
+fn select(selection: &FieldSelection, ignore: bool) -> beam::Result<Selection> {
+    Selection::new(input(), selection, ignore)
 }
 
 #[test]
 fn keep_drop_and_only_choose_the_written_fields() {
     let keep = select(
-        FieldSelection::Keep(vec!["name".into(), "id".into()]),
+        &FieldSelection::Keep(vec!["name".into(), "id".into()]),
         false,
     );
     assert_eq!(names(keep.unwrap().written()), ["id", "name"]);
     let drop = select(
-        FieldSelection::Drop(vec!["extra".into(), "payload".into()]),
+        &FieldSelection::Drop(vec!["extra".into(), "payload".into()]),
         false,
     );
     assert_eq!(names(drop.unwrap().written()), ["id", "name"]);
-    let only = select(FieldSelection::Only("payload".into()), false);
+    let only = select(&FieldSelection::Only("payload".into()), false);
     assert_eq!(names(only.unwrap().written()), ["id", "name"]);
-    let all = select(FieldSelection::All, false).unwrap();
+    let all = select(&FieldSelection::All, false).unwrap();
     assert_eq!(names(all.written()), ["id", "name", "extra", "payload"]);
 }
 
@@ -94,7 +94,7 @@ fn a_name_that_the_input_lacks_is_an_error_that_names_it() {
             "only: the field 'id' is not a row",
         ),
     ] {
-        let err = select(selection, false).unwrap_err().to_string();
+        let err = select(&selection, false).unwrap_err().to_string();
         assert!(err.contains(message), "{err}");
     }
 }
@@ -102,7 +102,7 @@ fn a_name_that_the_input_lacks_is_an_error_that_names_it() {
 #[test]
 fn a_field_that_the_table_lacks_is_an_error_unless_ignored() {
     let keep = FieldSelection::Keep(vec!["id".into(), "extra".into()]);
-    let err = select(keep.clone(), false)
+    let err = select(&keep, false)
         .unwrap()
         .for_table(&table(&["id"]))
         .err()
@@ -110,7 +110,7 @@ fn a_field_that_the_table_lacks_is_an_error_unless_ignored() {
         .to_string();
     assert!(err.contains("'extra'"), "{err}");
 
-    let selection = select(keep, true)
+    let selection = select(&keep, true)
         .unwrap()
         .for_table(&table(&["ID"]))
         .unwrap();
@@ -120,7 +120,7 @@ fn a_field_that_the_table_lacks_is_an_error_unless_ignored() {
 
 #[test]
 fn all_fields_in_the_table_write_the_input_unchanged() {
-    let selection = select(FieldSelection::All, false).unwrap();
+    let selection = select(&FieldSelection::All, false).unwrap();
     let table = selection
         .for_table(&table(&["id", "name", "extra", "payload"]))
         .unwrap();
@@ -130,7 +130,7 @@ fn all_fields_in_the_table_write_the_input_unchanged() {
 
 #[test]
 fn only_unnests_and_a_written_row_goes_back_into_the_only_field() {
-    let selection = select(FieldSelection::Only("payload".into()), true).unwrap();
+    let selection = select(&FieldSelection::Only("payload".into()), true).unwrap();
     let table = selection.for_table(&table(&["name"])).unwrap();
     assert_eq!(
         table.projection,

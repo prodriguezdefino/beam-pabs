@@ -32,7 +32,8 @@ test = false
 beam = { package = "apache-beam-core", path = "../../core", version = "2.79.0-SNAPSHOT" }
 beam_model = { workspace = true }
 beam_io_file = { workspace = true }
-beam_io_gcp = { workspace = true, features = ["gcs"] }
+beam_gcp_core = { workspace = true }
+beam_io_gcp = { workspace = true, features = ["gcs", "options", "secret-manager"] }
 inventory = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true }

@@ -40,27 +40,21 @@ Shapes:
   ``--destination_topic`` with ``--writer``. The Python step keeps a Rust reader from fusing
   with a Rust writer, so the rows cross the Fn API data plane to Python and back.
 
-For ``copy``, ``--expected_rows`` or ``--drain_after_seconds`` polls Dataflow until the job
-reaches that count or time, drains the job, and waits for ``JOB_STATE_DONE``. ``--detach``
-prints the job ID and exits as soon as the job runs, so a ``load`` job can run at the same
-time.
-
 ``../java/KafkaBenchmark.java`` runs the same shapes in a Java pipeline.
-``./gradlew :sdks:rust:kafkaBenchmark`` runs this script.
+``./gradlew :sdks:rust:kafkaBenchmark`` runs this script; ``benchmarks/tools/job_wait.py``
+waits for and drains the submitted job.
 """
 
 import argparse
 import bisect
 import json
 import logging
-import subprocess
 import sys
 import time
 import typing
 
 import apache_beam as beam
 from apache_beam.metrics import Metrics
-from apache_beam.options.pipeline_options import GoogleCloudOptions
 from apache_beam.options.pipeline_options import PipelineOptions
 from apache_beam.options.pipeline_options import StandardOptions
 from apache_beam.transforms.external import SchemaAwareExternalTransform
@@ -334,64 +328,6 @@ class TouchCopy(beam.DoFn):
     yield row
 
 
-def gcloud(*args):
-  out = subprocess.run(["gcloud", *args, "--format=json"],
-                       check=True,
-                       capture_output=True,
-                       text=True).stdout
-  return json.loads(out) if out.strip() else {}
-
-
-def committed_rows(project, region, job_id):
-  metrics = gcloud("beta", "dataflow", "metrics", "list", job_id,
-                   f"--project={project}", f"--region={region}")
-  for metric in metrics:
-    name = metric.get("name", {})
-    context = name.get("context", {})
-    if (name.get("name") == "rows" and context.get("namespace") == "e2e"
-        and not context.get("tentative")):
-      return int(float(metric.get("scalar", 0)))
-  return 0
-
-
-def job_state(project, region, job_id):
-  job = gcloud("dataflow", "jobs", "describe", job_id, f"--project={project}",
-               f"--region={region}")
-  return job.get("currentState", "")
-
-
-def wait_for_streaming_job(project, region, job_id, expected_rows,
-                           drain_after_seconds):
-  start = time.time()
-  drained = False
-  while True:
-    state = job_state(project, region, job_id)
-    rows = committed_rows(project, region, job_id)
-    elapsed = int(time.time() - start)
-    logging.info("Job %s: state=%s e2e/rows=%d elapsed=%ds", job_id, state,
-                 rows, elapsed)
-    if state in ("JOB_STATE_DONE", "JOB_STATE_DRAINED", "JOB_STATE_CANCELLED"):
-      if expected_rows is not None and rows < expected_rows:
-        raise RuntimeError(
-            f"Job {job_id} finished with {rows} rows, expected {expected_rows}")
-      return
-    if state in ("JOB_STATE_FAILED", "JOB_STATE_UPDATED"):
-      raise RuntimeError(f"Job {job_id} ended in {state}")
-    should_drain = ((expected_rows is not None and rows >= expected_rows) or
-                    (drain_after_seconds is not None
-                     and elapsed >= drain_after_seconds))
-    if should_drain and not drained and state == "JOB_STATE_RUNNING":
-      logging.info("Draining job %s at e2e/rows=%d (%ds)", job_id, rows,
-                   elapsed)
-      subprocess.run([
-          "gcloud", "dataflow", "jobs", "drain", job_id,
-          f"--project={project}", f"--region={region}"
-      ],
-                     check=True)
-      drained = True
-    time.sleep(15)
-
-
 def main(argv):
   parser = argparse.ArgumentParser(description=__doc__)
   parser.add_argument(
@@ -430,18 +366,6 @@ def main(argv):
           "waits for the next record."))
   parser.add_argument("--billing_project", required=True)
   parser.add_argument("--expansion_service", default="localhost:8097")
-  parser.add_argument(
-      "--expected_rows",
-      type=int,
-      help="For copy, drain the job once e2e/rows reaches at least this count.")
-  parser.add_argument(
-      "--drain_after_seconds",
-      type=int,
-      help="For copy, drain the job after this many seconds.")
-  parser.add_argument(
-      "--detach",
-      action="store_true",
-      help="For copy, print the job ID and exit once the job is submitted.")
   args, pipeline_args = parser.parse_known_args(argv)
 
   if args.shape == "load":
@@ -467,32 +391,14 @@ def main(argv):
         | "Touch" >> beam.ParDo(
             TouchLoad(raw=args.format == "RAW")).with_output_types(row_type)
         | "Write" >> WRITERS[args.writer](args, args.topic))
-    result = p.run()
-    state = result.wait_until_finish()
-    if state != beam.runners.runner.PipelineState.DONE:
-      raise RuntimeError(f"The job finished in state {state}")
-    if args.expected_rows is not None:
-      gcloud_opts = options.view_as(GoogleCloudOptions)
-      rows = committed_rows(gcloud_opts.project, gcloud_opts.region,
-                            result.job_id())
-      if rows != args.expected_rows:
-        raise RuntimeError(
-            f"Job {result.job_id()} wrote {rows} rows, expected {args.expected_rows}"
-        )
   else:
     rows = p | "Read" >> READERS[args.reader](args)
     _ = (
         rows
         | "Touch" >> beam.ParDo(TouchCopy()).with_output_types(rows.element_type)
         | "Write" >> WRITERS[args.writer](args, args.destination_topic))
-    result = p.run()
-    job_id = result.job_id()
-    print(f"JOB_ID={job_id}", flush=True)
-    if args.detach:
-      return
-    gcloud_opts = options.view_as(GoogleCloudOptions)
-    wait_for_streaming_job(gcloud_opts.project, gcloud_opts.region, job_id,
-                           args.expected_rows, args.drain_after_seconds)
+  result = p.run()
+  print(f"JOB_ID={result.job_id()}", flush=True)
 
 
 if __name__ == "__main__":

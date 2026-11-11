@@ -17,12 +17,16 @@
  * under the License.
  */
 
-//! Tests for the retry wait: the `RetryInfo` delay of the server and the backoff fallback.
+//! Tests for the retry decision: the `RetryInfo` delay of the server, server push-back, closed
+//! connections and the backoff fallback.
 
 use std::time::Duration;
 
-use beam_io_gcp::bigtable::proto::{Any, Duration as ProtoDuration, RetryInfo, Status as RpcStatus};
-use beam_io_gcp::bigtable::retry::{DEFAULT_RETRY, retry_delay, server_retry_delay};
+use beam::retry::Decision;
+use beam_io_gcp::bigtable::proto::{
+    Any, Duration as ProtoDuration, RetryInfo, Status as RpcStatus,
+};
+use beam_io_gcp::bigtable::retry::{DEFAULT_RETRY, decision, server_retry_delay};
 use prost::Message as _;
 use tonic::{Code, Status};
 
@@ -61,9 +65,12 @@ fn server_delay_comes_from_retry_info() {
         server_retry_delay(&status),
         Some(Duration::from_millis(2_500))
     );
+    let retry = decision(&status);
+    assert_eq!(retry, Decision::Wait(Duration::from_millis(2_500)));
+    assert!(retry.is_throttling());
     assert_eq!(
-        retry_delay(DEFAULT_RETRY, 3, Some(&status)),
-        Duration::from_millis(2_500)
+        retry.wait(DEFAULT_RETRY, 3),
+        Some(Duration::from_millis(2_500))
     );
 }
 
@@ -81,11 +88,11 @@ fn retry_info_is_found_among_other_details() {
 fn backoff_applies_without_retry_info() {
     let plain = Status::unavailable("try later");
     assert_eq!(server_retry_delay(&plain), None);
+    assert_eq!(decision(&plain), Decision::Backoff);
     assert!(within_backoff(
-        retry_delay(DEFAULT_RETRY, 2, Some(&plain)),
+        decision(&plain).wait(DEFAULT_RETRY, 2).unwrap_or_default(),
         2
     ));
-    assert!(within_backoff(retry_delay(DEFAULT_RETRY, 2, None), 2));
 }
 
 #[test]
@@ -94,8 +101,49 @@ fn malformed_details_fall_back_to_backoff() {
     assert_eq!(server_retry_delay(&garbage), None);
     let negative = status_with(vec![retry_info(-1, 0)]);
     assert_eq!(server_retry_delay(&negative), None);
-    assert!(within_backoff(
-        retry_delay(DEFAULT_RETRY, 0, Some(&negative)),
-        0
-    ));
+    assert_eq!(decision(&negative), Decision::Backoff);
+}
+
+#[test]
+fn resource_exhausted_is_throttling() {
+    let retry = decision(&Status::resource_exhausted("quota"));
+    assert_eq!(retry, Decision::Throttled);
+    assert!(retry.is_throttling());
+    assert!(!Decision::Backoff.is_throttling());
+}
+
+#[test]
+fn permanent_codes_stop() {
+    assert_eq!(decision(&Status::invalid_argument("bad")), Decision::Stop);
+    assert_eq!(decision(&Status::not_found("table")), Decision::Stop);
+}
+
+/// A transport error whose source is a `CANCELLED` status, as hyper reports a closed connection.
+#[derive(Debug)]
+struct ConnectionClosed(Status);
+
+impl std::fmt::Display for ConnectionClosed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("connection closed")
+    }
+}
+
+impl std::error::Error for ConnectionClosed {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+#[test]
+fn cancelled_from_a_closed_connection_is_retried() {
+    let closed = Status::from_error(Box::new(ConnectionClosed(Status::cancelled(
+        "connection closed",
+    ))));
+    assert_eq!(closed.code(), Code::Cancelled);
+    assert_eq!(decision(&closed), Decision::Backoff);
+}
+
+#[test]
+fn cancelled_from_the_server_is_final() {
+    assert_eq!(decision(&Status::cancelled("cancelled")), Decision::Stop);
 }

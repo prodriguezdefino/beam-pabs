@@ -17,16 +17,15 @@
  * under the License.
  */
 
-//! Pipeline shapes of the native Storage Read connector. The tests build pipelines and do not
+//! Pipeline shapes of the Storage Read connector. The tests build pipelines and do not
 //! run them, and give the schema, so no test calls BigQuery.
-#![expect(clippy::unwrap_used, reason = "test fixtures panic on setup failure")]
 
 use beam::internals::PipelineInternals;
 use std::sync::Arc;
 
 use beam::pipeline::Pipeline;
 use beam::schema::{FieldType, Schema};
-use beam_io_gcp::bigquery::storage::read::{ReadOptions, ReadRows, error_schema};
+use beam_io_gcp::bigquery::read::{ReadOptions, ReadRows, error_schema};
 
 const TABLE: &str = "my-project.my_dataset.my_table";
 
@@ -164,5 +163,91 @@ fn apply_records_invalid_options_and_returns_outputs_that_take_later_steps() {
                 if transform_id == "ReadRows" && reason.contains("max_stream_count")
         ),
         "{error}"
+    );
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, beam::schema::BeamRow)]
+struct TypedItem {
+    id: i64,
+}
+
+#[test]
+fn read_transforms_record_display_data_in_pipeline_proto() {
+    use std::collections::HashMap;
+
+    use beam::transforms::display_data::DisplayDataItem;
+    use beam_io_gcp::bigquery::read::ArrowCompression;
+
+    let schema = Arc::new(Schema::builder().field("id", FieldType::int64()).build());
+    let pipeline = Pipeline::new();
+    pipeline.apply(
+        "ReadTable",
+        ReadRows::new(
+            ReadOptions::new(TABLE)
+                .with_row_restriction("id > 0")
+                .with_selected_fields(["id"])
+                .with_compression(ArrowCompression::Zstd),
+        )
+        .with_schema(Arc::clone(&schema)),
+    );
+    pipeline.apply(
+        "ReadQuery",
+        ReadRows::new(ReadOptions::from_query("SELECT id FROM t"))
+            .with_schema(Arc::clone(&schema))
+            .with_failures(),
+    );
+    pipeline.apply(
+        "ReadTyped",
+        ReadRows::new(ReadOptions::new(TABLE)).typed::<TypedItem>(),
+    );
+
+    let components = pipeline.to_proto().components.unwrap();
+    let display_map = |name: &str| -> HashMap<String, String> {
+        let transform = components
+            .transforms
+            .values()
+            .find(|t| t.unique_name == name)
+            .unwrap();
+        transform
+            .display_data
+            .iter()
+            .map(|d| {
+                let item = DisplayDataItem::from_proto(d).unwrap();
+                (item.key, item.value.to_string())
+            })
+            .collect()
+    };
+
+    let table_items = display_map("ReadTable");
+    assert_eq!(table_items.get("table").map(String::as_str), Some(TABLE));
+    assert_eq!(
+        table_items.get("row_restriction").map(String::as_str),
+        Some("id > 0")
+    );
+    assert_eq!(
+        table_items.get("selected_fields").map(String::as_str),
+        Some("id")
+    );
+    assert_eq!(
+        table_items.get("arrow_compression").map(String::as_str),
+        Some("ZSTD")
+    );
+
+    let query_items = display_map("ReadQuery");
+    assert_eq!(
+        query_items.get("query").map(String::as_str),
+        Some("SELECT id FROM t")
+    );
+    assert_eq!(
+        query_items.get("arrow_compression").map(String::as_str),
+        Some("NONE")
+    );
+    assert!(!query_items.contains_key("table"));
+
+    let typed_items = display_map("ReadTyped");
+    assert_eq!(typed_items.get("table").map(String::as_str), Some(TABLE));
+    assert_eq!(
+        typed_items.get("selected_fields").map(String::as_str),
+        Some("id")
     );
 }

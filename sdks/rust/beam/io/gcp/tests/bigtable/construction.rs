@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! Tests that an invalid native read or write configuration makes `Pipeline::validate` fail.
+//! Tests that an invalid read or write configuration makes `Pipeline::validate` fail.
 
 use std::sync::Arc;
 
@@ -102,5 +102,117 @@ fn write_mutations_with_unsupported_input_schema_fails_validate() {
     assert!(
         err.to_string()
             .contains("Unsupported Bigtable write input schema")
+    );
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, beam::schema::BeamRow)]
+struct TypedCell {
+    family_name: String,
+}
+
+#[test]
+fn transforms_record_display_data_in_pipeline_proto() {
+    use std::collections::HashMap;
+
+    use beam::transforms::display_data::DisplayDataItem;
+    use beam_io_gcp::bigtable::BigtableReadShape;
+
+    let p = Pipeline::new();
+    let _ = p.apply(
+        "ReadTable",
+        ReadRows::new(
+            ReadOptions::from_table("proj", "inst", "tbl")
+                .with_app_profile_id("read-prof")
+                .with_shape(BigtableReadShape::Nested)
+                .with_max_initial_bundles(32),
+        ),
+    );
+    let _ = p.apply(
+        "ReadMvFailures",
+        ReadRows::new(ReadOptions::from_materialized_view("proj", "inst", "mv")).with_failures(),
+    );
+    let _ = p.apply(
+        "ReadTyped",
+        ReadRows::new(ReadOptions::from_table("proj", "inst", "typed")).typed::<TypedCell>(),
+    );
+    let _ = mutations(&p).apply(
+        "WriteTable",
+        WriteMutations::new(
+            WriteOptions::from_table("proj", "inst", "sink")
+                .with_app_profile_id("write-prof")
+                .with_max_elements_per_batch(50)
+                .with_max_bytes_per_batch(4096)
+                .with_flow_control(true),
+        ),
+    );
+
+    let components = p.to_proto().components.unwrap();
+    let display_map = |name: &str| -> HashMap<String, String> {
+        let transform = components
+            .transforms
+            .values()
+            .find(|t| t.unique_name == name)
+            .unwrap();
+        transform
+            .display_data
+            .iter()
+            .map(|d| {
+                let item = DisplayDataItem::from_proto(d).unwrap();
+                (item.key, item.value.to_string())
+            })
+            .collect()
+    };
+
+    let read_items = display_map("ReadTable");
+    assert_eq!(
+        read_items.get("target").map(String::as_str),
+        Some("projects/proj/instances/inst/tables/tbl")
+    );
+    assert_eq!(
+        read_items.get("app_profile_id").map(String::as_str),
+        Some("read-prof")
+    );
+    assert_eq!(read_items.get("shape").map(String::as_str), Some("NESTED"));
+    assert_eq!(
+        read_items.get("max_initial_bundles").map(String::as_str),
+        Some("32")
+    );
+
+    let mv_items = display_map("ReadMvFailures");
+    assert_eq!(
+        mv_items.get("target").map(String::as_str),
+        Some("projects/proj/instances/inst/materializedViews/mv")
+    );
+    assert_eq!(mv_items.get("shape").map(String::as_str), Some("FLATTENED"));
+    assert!(!mv_items.contains_key("app_profile_id"));
+
+    let typed_items = display_map("ReadTyped");
+    assert_eq!(
+        typed_items.get("target").map(String::as_str),
+        Some("projects/proj/instances/inst/tables/typed")
+    );
+
+    let write_items = display_map("WriteTable");
+    assert_eq!(
+        write_items.get("target").map(String::as_str),
+        Some("projects/proj/instances/inst/tables/sink")
+    );
+    assert_eq!(
+        write_items.get("app_profile_id").map(String::as_str),
+        Some("write-prof")
+    );
+    assert_eq!(
+        write_items
+            .get("max_elements_per_batch")
+            .map(String::as_str),
+        Some("50")
+    );
+    assert_eq!(
+        write_items.get("max_bytes_per_batch").map(String::as_str),
+        Some("4096")
+    );
+    assert_eq!(
+        write_items.get("flow_control").map(String::as_str),
+        Some("true")
     );
 }

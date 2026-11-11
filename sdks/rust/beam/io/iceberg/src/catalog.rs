@@ -89,7 +89,7 @@ async fn token(auth: &Auth) -> beam::Result<Option<String>> {
         Auth::None => Ok(None),
         Auth::Token(token) => Ok(Some(token.clone())),
         #[cfg(feature = "gcp")]
-        Auth::Google => Ok(Some(beam_io_gcp::auth::access_token().await?)),
+        Auth::Google => Ok(Some(beam_gcp_core::auth::access_token().await?)),
     }
 }
 
@@ -327,13 +327,14 @@ impl Connection {
                 .json(report)
                 .send()
                 .await?;
-            match response.status().is_success() {
-                true => Ok(()),
-                false => Err(beam::Error::msg(format!(
+            if response.status().is_success() {
+                Ok(())
+            } else {
+                Err(beam::Error::msg(format!(
                     "HTTP {}: {}",
                     response.status(),
                     response.text().await.unwrap_or_default()
-                ))),
+                )))
             }
         };
         if let Err(e) = sent.await {
@@ -397,12 +398,13 @@ impl Connection {
     ) -> beam::Result<T> {
         let response = self.authorized(request).await?.send().await?;
         let status = response.status();
-        match status.is_success() {
-            true => Ok(response.json().await?),
-            false => Err(beam::Error::msg(format!(
+        if status.is_success() {
+            Ok(response.json().await?)
+        } else {
+            Err(beam::Error::msg(format!(
                 "The catalog request '{url}' failed with HTTP {status}: {}",
                 response.text().await.unwrap_or_default()
-            ))),
+            )))
         }
     }
 
@@ -467,14 +469,15 @@ impl iceberg::Catalog for Connection {
     /// Loads the table. With vended credentials, its files use the credentials of its location.
     async fn load_table(&self, ident: &TableIdent) -> iceberg::Result<Table> {
         let table = self.catalog.load_table(ident).await?;
-        match self.vended_credentials {
-            false => Ok(table),
-            true => self.with_credentials(table).await.map_err(|e| {
+        if self.vended_credentials {
+            self.with_credentials(table).await.map_err(|e| {
                 iceberg::Error::new(
                     ErrorKind::Unexpected,
                     format!("Cannot get the storage credentials of the table {ident}: {e}"),
                 )
-            }),
+            })
+        } else {
+            Ok(table)
         }
     }
 

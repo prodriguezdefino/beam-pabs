@@ -29,26 +29,25 @@ name = "beam_io_gcp"
 test = false
 
 [features]
-# One feature per connector (D8): each enables only its module and its dependencies.
-# `auth`, `options`, `runtime` and `secret_manager` are always built.
-default = ["gcs", "bigquery", "bigtable", "pubsub"]
-gcs = ["dep:beam_io_file", "dep:google-cloud-storage", "dep:google-cloud-gax", "dep:futures", "dep:bytes"]
-bigquery = ["dep:beam_external", "dep:beam_io_managed"]
-bigtable = [
-    "dep:beam_external",
-    "dep:bytes",
-    "dep:prost",
-    "dep:tonic",
+# One feature per module: each enables only its own dependencies.
+default = ["gcs", "bigquery", "bigtable", "pubsub", "options", "secret-manager"]
+options = ["dep:clap", "dep:inventory"]
+secret-manager = ["dep:google-cloud-secretmanager-v1", "dep:inventory"]
+gcs = [
+    "beam_gcp_core/retry",
+    "dep:beam_io_file",
+    "dep:google-cloud-auth",
+    "dep:google-cloud-storage",
     "dep:google-cloud-gax",
-    "dep:google-cloud-gax-internal",
-    "dep:beam_io_gcp_googleapis",
-    "beam_io_gcp_googleapis/bigtable",
+    "dep:futures",
+    "dep:bytes",
+    "dep:inventory",
 ]
-pubsub = ["dep:beam_external"]
-# Native BigQuery Storage Read API reads and Storage Write API writes. Off by default: they
-# pull in arrow-rs and the BigQuery clients.
-bigquery-storage = [
-    "bigquery",
+# BigQuery Storage Read API reads and Storage Write API writes. They pull in arrow-rs
+# and the BigQuery clients.
+bigquery = [
+    "options",
+    "beam_gcp_core/grpc",
     "dep:google-cloud-gax",
     "dep:bytes",
     "dep:google-cloud-bigquery",
@@ -64,26 +63,36 @@ bigquery-storage = [
     "dep:beam_io_gcp_googleapis",
     "beam_io_gcp_googleapis/bigquery-storage",
 ]
+bigtable = [
+    "beam_gcp_core/grpc",
+    "dep:base64",
+    "dep:bytes",
+    "dep:prost",
+    "dep:tonic",
+    "dep:google-cloud-gax",
+    "dep:google-cloud-gax-internal",
+    "dep:beam_io_gcp_googleapis",
+    "beam_io_gcp_googleapis/bigtable",
+]
+pubsub = ["dep:beam_external"]
 
 [dependencies]
 beam = { package = "apache-beam-core", path = "../../core", version = "2.79.0-SNAPSHOT", features = ["derive"] }
-beam_model = { workspace = true }
+beam_gcp_core = { workspace = true }
 beam_io_file = { workspace = true, optional = true }
 beam_external = { workspace = true, optional = true }
-beam_io_managed = { workspace = true, optional = true }
-clap = { workspace = true }
-inventory = { workspace = true }
+clap = { workspace = true, optional = true }
+inventory = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+google-cloud-auth = { workspace = true, optional = true }
 google-cloud-storage = { workspace = true, optional = true }
 google-cloud-gax = { workspace = true, optional = true }
-google-cloud-secretmanager-v1 = { workspace = true }
+google-cloud-secretmanager-v1 = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-rustls = { workspace = true }
 serde = { workspace = true }
-# The Application Default Credentials of the calls that no client library makes (auth).
-google-cloud-auth = { workspace = true }
 google-cloud-bigquery = { workspace = true, optional = true }
 google-cloud-bigquery-v2 = { workspace = true, optional = true }
 # The snapshot time of a read session.
@@ -91,7 +100,7 @@ google-cloud-wkt = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
 beam_io_arrow = { workspace = true, optional = true }
 # The Arrow IPC codecs of compressed Storage Read responses.
-arrow-ipc = { workspace = true, optional = true, features = ["lz4", "zstd"] }
+arrow-ipc = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 # The gRPC transport and the messages of the calls that no client library makes: the Bigtable
 # data API and the BatchCommitWriteStreams call of exactly-once writes, which the Write client
@@ -102,10 +111,10 @@ prost = { workspace = true, optional = true }
 tonic = { workspace = true, optional = true }
 
 [dev-dependencies]
-beam_io_gcp = { package = "apache-beam-io-gcp", path = ".", features = ["bigquery-storage"] }
 beam_model = { workspace = true }
 beam_test_utils = { workspace = true }
 beam_io_arrow = { workspace = true }
+google-cloud-auth = { workspace = true }
 google-cloud-bigquery = { workspace = true }
 google-cloud-bigquery-v2 = { workspace = true }
 prost = { workspace = true }
@@ -132,6 +141,11 @@ required-features = ["bigtable"]
 name = "pubsub"
 path = "tests/pubsub/main.rs"
 required-features = ["pubsub"]
+
+[[test]]
+name = "options"
+path = "tests/options/main.rs"
+required-features = ["options", "secret-manager"]
 
 [lints]
 workspace = true

@@ -18,10 +18,9 @@
  */
 
 //! Pub/Sub and Kafka modes: flag checks, payloads, and graphs built without an expansion
-//! service.
+//! service. The Kafka modes use the Kafka connector of the Rust SDK.
 
 use beam::io::gcp::pubsub::{URN_PUBSUB_READ, URN_PUBSUB_WRITE};
-use beam::io::kafka::{URN_KAFKA_READ, URN_KAFKA_WRITE};
 use beam::options::PipelineOptions;
 use beam::pipeline::URN_EXPANSION_SCHEMA_TRANSFORM;
 use beam::prelude::*;
@@ -77,14 +76,6 @@ fn external_transforms(pipeline: &Pipeline) -> Vec<(String, Row)> {
 
 fn text(row: &Row, field: &str) -> Option<String> {
     row.get_string(field).ok().flatten().map(str::to_owned)
-}
-
-/// The Kafka target and JSON config of a Managed transform row.
-fn managed(row: &Row) -> (String, serde_json::Value) {
-    let target = text(row, "transform_identifier").expect("managed target");
-    let config = serde_json::from_str(&text(row, "config").expect("managed config"))
-        .expect("managed config JSON");
-    (target, config)
 }
 
 #[test]
@@ -234,48 +225,51 @@ fn pubsub_query_reads_the_subscription_and_publishes_results() {
     }
 }
 
+/// The unique names of the steps of `pipeline`.
+fn step_names(pipeline: &Pipeline) -> Vec<String> {
+    let components = pipeline.to_proto().components.expect("pipeline components");
+    components
+        .transforms
+        .into_values()
+        .map(|transform| transform.unique_name)
+        .collect()
+}
+
 #[test]
-fn kafka_modes_use_managed_read_and_write() {
+fn kafka_modes_use_the_rust_read_and_write() {
     let kafka = |mode, sink| NexmarkArgs {
         bootstrap_servers: Some("broker:9092".into()),
         kafka_topic: Some("events".into()),
         kafka_results_topic: Some("results".into()),
-        expansion_service: Some("localhost:8097".into()),
         ..args(SourceType::Kafka, mode, sink)
     };
+    let has = |steps: &[String], name: &str| steps.iter().any(|step| step == name);
 
     let publisher = build(
         false,
-        true,
+        false,
         &kafka(PubsubMode::PublishOnly, SinkType::Devnull),
-    );
-    let transforms = external_transforms(&publisher.expect("graph"));
-    let targets: Vec<(String, serde_json::Value)> =
-        transforms.iter().map(|(_, row)| managed(row)).collect();
-    let [(target, config)] = targets.as_slice() else {
-        panic!("expected one Kafka write, got {targets:?}");
-    };
-    assert_eq!(target, URN_KAFKA_WRITE);
-    assert_eq!(config["topic"], "events");
-    assert_eq!(config["bootstrap_servers"], "broker:9092");
+    )
+    .expect("graph");
+    assert!(external_transforms(&publisher).is_empty());
+    let steps = step_names(&publisher);
+    assert!(has(&steps, "WriteKafkaEvents/Write"), "{steps:?}");
 
-    let query = build(
-        true,
-        true,
-        &kafka(PubsubMode::SubscribeOnly, SinkType::Kafka),
-    );
-    let transforms = external_transforms(&query.expect("graph"));
-    let mut targets: Vec<(String, serde_json::Value)> =
-        transforms.iter().map(|(_, row)| managed(row)).collect();
-    targets.sort_by(|a, b| a.0.cmp(&b.0));
-    let [(read_target, read), (write_target, write)] = targets.as_slice() else {
-        panic!("expected a Kafka read and write, got {targets:?}");
-    };
-    assert_eq!(read_target, URN_KAFKA_READ);
-    assert_eq!(read["topic"], "events");
-    assert_eq!(read["auto_offset_reset_config"], "earliest");
-    assert_eq!(write_target, URN_KAFKA_WRITE);
-    assert_eq!(write["topic"], "results");
+    for auth in [false, true] {
+        let query = build(
+            true,
+            false,
+            &NexmarkArgs {
+                google_managed_kafka_auth: auth,
+                ..kafka(PubsubMode::SubscribeOnly, SinkType::Kafka)
+            },
+        )
+        .expect("graph");
+        assert!(external_transforms(&query).is_empty());
+        let steps = step_names(&query);
+        assert!(has(&steps, "ReadKafkaEvents/ReadPartitions"), "{steps:?}");
+        assert!(has(&steps, "WriteKafkaResults/Write"), "{steps:?}");
+    }
 }
 
 #[test]
@@ -322,31 +316,4 @@ fn a_combined_run_gives_each_job_its_own_mode() {
     assert_eq!(mode(&publisher), Some(PubsubMode::PublishOnly));
     assert_eq!(publisher.job_name.as_deref(), Some("run-publisher"));
     assert_eq!(query_options.job_name.as_deref(), Some("run"));
-}
-
-#[test]
-fn google_managed_kafka_auth_reaches_the_read_and_the_write() {
-    let has_auth = |config: &serde_json::Value| config.to_string().contains("OAUTHBEARER");
-    for auth in [false, true] {
-        let query = NexmarkArgs {
-            bootstrap_servers: Some("broker:9092".into()),
-            kafka_topic: Some("events".into()),
-            kafka_results_topic: Some("results".into()),
-            expansion_service: Some("localhost:8097".into()),
-            google_managed_kafka_auth: auth,
-            ..args(
-                SourceType::Kafka,
-                PubsubMode::SubscribeOnly,
-                SinkType::Kafka,
-            )
-        };
-        let transforms = external_transforms(&build(true, true, &query).expect("graph"));
-        let configs: Vec<serde_json::Value> =
-            transforms.iter().map(|(_, row)| managed(row).1).collect();
-        assert_eq!(configs.len(), 2, "{configs:?}");
-        assert!(
-            configs.iter().all(|config| has_auth(config) == auth),
-            "{configs:?}"
-        );
-    }
 }

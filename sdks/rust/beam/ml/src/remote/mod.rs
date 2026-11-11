@@ -87,6 +87,10 @@ pub enum RemoteInferenceError {
     #[error("Adapter processing error: {0}")]
     Adapter(String),
 
+    /// The worker has credentials, but they gave no authorization for a request.
+    #[error("Authentication error: {0}")]
+    Authentication(String),
+
     /// Other unclassified errors.
     #[error("Remote inference error: {0}")]
     Other(String),
@@ -344,7 +348,7 @@ where
         ));
 
         let auth = self.config.auth.clone();
-        let auth = block_on_remote(async move { Ok(auth.resolve().await?) })?;
+        let auth = block_on_remote(async move { auth.resolve().await })?;
 
         Ok(Arc::new(RemoteClient {
             client,

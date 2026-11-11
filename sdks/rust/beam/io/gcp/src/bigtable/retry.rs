@@ -19,13 +19,17 @@
 
 //! Retry policy of the Bigtable calls and the wait before each retry.
 //!
-//! When the error of a call has a `google.rpc.RetryInfo` detail, the client waits for the
-//! delay in it. Else it waits for the exponential backoff of [`DEFAULT_RETRY`]. Each retry logs
-//! a warning.
+//! [`decision`] reads the status of a failed call. A `google.rpc.RetryInfo` delay or
+//! `RESOURCE_EXHAUSTED` is server push-back, which counts as throttling. Another transient
+//! error waits for the backoff of [`DEFAULT_RETRY`]. Each retry logs a warning.
+//!
+//! The codes differ from `beam_gcp_core::retry`, which works on `google-cloud-gax` errors and
+//! retries every `CANCELLED` and `UNKNOWN` status.
 
+use std::error::Error as _;
 use std::time::Duration;
 
-use beam::retry::Backoff;
+use beam::retry::{Backoff, Decision, RetryWaits};
 use beam_io_gcp_googleapis::google::rpc::RetryInfo;
 use prost::Message as _;
 use tonic::{Code, Status};
@@ -33,19 +37,35 @@ use tonic::{Code, Status};
 /// Type URL of the `google.rpc.RetryInfo` detail in a `google.rpc.Status`.
 const RETRY_INFO_TYPE: &str = "type.googleapis.com/google.rpc.RetryInfo";
 
-/// Default retry settings for read and write RPCs: 10 retries.
+/// Default retry settings for read and write RPCs: 11 retries.
 pub const DEFAULT_RETRY: Backoff = Backoff {
-    attempts: 11,
+    attempts: 12,
     initial: Duration::from_millis(200),
     max: Duration::from_secs(60),
 };
 
-/// Returns the wait before retry `attempt`: the delay of the server when `status` has a
-/// `RetryInfo` detail, else the [`Backoff::delay`] of `backoff`.
-pub fn retry_delay(backoff: Backoff, attempt: u32, status: Option<&Status>) -> Duration {
-    status
-        .and_then(server_retry_delay)
-        .unwrap_or_else(|| backoff.delay(attempt))
+/// Returns how to retry a call that failed with `status`: [`Decision::Wait`] for a
+/// `RetryInfo` delay, [`Decision::Throttled`] for `RESOURCE_EXHAUSTED`, [`Decision::Backoff`]
+/// for another transient status or a [closed connection](is_closed_connection), else
+/// [`Decision::Stop`].
+pub fn decision(status: &Status) -> Decision {
+    if !is_transient(status.code()) && !is_closed_connection(status) {
+        return Decision::Stop;
+    }
+    if let Some(delay) = server_retry_delay(status) {
+        return Decision::Wait(delay);
+    }
+    if status.code() == Code::ResourceExhausted {
+        Decision::Throttled
+    } else {
+        Decision::Backoff
+    }
+}
+
+/// Returns whether `status` is `CANCELLED` because the transport connection closed. Only a
+/// local transport error gives a status a source, so a `CANCELLED` from the server stays final.
+pub fn is_closed_connection(status: &Status) -> bool {
+    status.code() == Code::Cancelled && status.source().is_some()
 }
 
 /// Returns whether a gRPC status code is transient and safe to retry on Bigtable.
@@ -81,22 +101,26 @@ pub fn server_retry_delay(status: &Status) -> Option<Duration> {
         })
 }
 
-/// Logs a warning for retry `attempt` of `call` on `resource`, then waits for
-/// [`retry_delay`]. `cause` describes the error. `status` is the gRPC error, if any.
+/// Logs a warning for retry `attempt` of `call` on `resource`, waits as `decision` gives,
+/// and adds the wait to `waits`. [`Decision::Stop`] does not wait.
 pub async fn wait_before_retry(
     policy: Backoff,
     attempt: u32,
+    decision: Decision,
+    waits: &RetryWaits,
     call: &str,
     resource: &str,
     cause: &str,
-    status: Option<&Status>,
 ) {
-    let delay = retry_delay(policy, attempt, status);
+    let Some(wait) = decision.wait(policy, attempt) else {
+        return;
+    };
     tracing::warn!(
         "Retrying Bigtable {call} on {resource} (retry {} of {}) in {} ms: {cause}",
         attempt + 1,
-        policy.attempts - 1,
-        delay.as_millis()
+        policy.retries(),
+        wait.as_millis()
     );
-    tokio::time::sleep(delay).await;
+    tokio::time::sleep(wait).await;
+    waits.add(decision, wait);
 }

@@ -18,6 +18,8 @@
 package org.apache.beam.gradle.rust
 
 import groovy.transform.CompileStatic
+import java.net.ServerSocket
+import java.net.Socket
 import org.gradle.api.Action
 import org.gradle.api.GradleException
 import org.gradle.api.Project
@@ -47,6 +49,7 @@ class RustIoTasks {
     RustIoTasks io = new RustIoTasks(xlang)
     io.registerGcp()
     io.registerKafka()
+    io.registerKafkaCopyBenchmark()
     return io
   }
 
@@ -241,4 +244,123 @@ class RustIoTasks {
     }
   }
 
+  private void registerKafkaCopyBenchmark() {
+    Project project = build.project
+    project.tasks.register('kafkaCopyBenchmark') { Task task ->
+      task.group = 'Verification'
+      task.description = 'Run the local Kafka copy throughput bench on Prism; starts a Docker broker when none listens on localhost:9092 ' +
+          '([-Precords=1000000] [-Pruns=3] [-Pformats=bytes,json] [-Ppartitions=16] [-PbootstrapServers=localhost:9092] ' +
+          '[-PcargoProfile=worker] [-PextraArgs=<flags>])'
+      task.dependsOn('fetchPrism')
+      task.doLast {
+        String host = config.dockerHost()
+        String servers = project.findProperty('bootstrapServers')?.toString()
+        String container = null
+        if (!servers) {
+          if (portOpen('localhost', 9092)) {
+            servers = 'localhost:9092'
+          } else if (xlang.dockerReachable()) {
+            ServerSocket sock = new ServerSocket(0)
+            int port
+            try {
+              port = sock.localPort
+            } finally {
+              sock.close()
+            }
+            container = "beam-kafka-bench-${port}"
+            servers = "localhost:${port}"
+            project.exec({ ExecSpec spec ->
+              if (host != null) {
+                spec.environment('DOCKER_HOST', host)
+              }
+              spec.commandLine(
+                  'docker', 'run', '-d', '--rm', '--name', container, '-p', "${port}:9092".toString(),
+                  '-e', 'KAFKA_NODE_ID=1',
+                  '-e', 'KAFKA_PROCESS_ROLES=broker,controller',
+                  '-e', 'KAFKA_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093',
+                  '-e', "KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://${servers}".toString(),
+                  '-e', 'KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER',
+                  '-e', 'KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT',
+                  '-e', 'KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093',
+                  '-e', 'KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1',
+                  'apache/kafka:3.9.0')
+            } as Action<ExecSpec>)
+            try {
+              waitForKafkaContainer(container, 60)
+            } catch (Exception e) {
+              removeContainer(host, container)
+              throw e
+            }
+          } else {
+            servers = 'localhost:9092'
+          }
+        }
+        try {
+          List<String> benchArgs = ["--bootstrap_servers=${servers}".toString()]
+          ['records': 'records', 'runs': 'runs', 'formats': 'formats', 'partitions': 'partitions']
+              .each { String prop, String flag ->
+                String val = project.findProperty(prop)?.toString()
+                if (val != null && !val.isEmpty()) {
+                  benchArgs.add("--${flag}=${val}".toString())
+                }
+              }
+          benchArgs.addAll(project.findProperty('extraArgs')?.toString()?.tokenize(' ') ?: new ArrayList<String>())
+          String cargoProfile = (project.findProperty('cargoProfile') ?: 'worker').toString()
+          println("kafkaCopyBenchmark: Cargo profile ${cargoProfile}")
+          project.exec({ ExecSpec spec ->
+            spec.workingDir(build.rustDir)
+            spec.environment(config.launchEnvironment())
+            spec.commandLine(['cargo', 'bench'] + build.workspaceScope +
+                ['--profile', cargoProfile, '--bench', 'copy_throughput', '--'] + benchArgs)
+          } as Action<ExecSpec>)
+        } finally {
+          if (container != null) {
+            removeContainer(host, container)
+          }
+        }
+      }
+    }
+  }
+
+  private static boolean portOpen(String host, int port) {
+    try {
+      new Socket(host, port).close()
+      return true
+    } catch (IOException ignored) {
+      return false
+    }
+  }
+
+  private void waitForKafkaContainer(String container, int timeoutSeconds) {
+    String host = config.dockerHost()
+    long deadline = System.currentTimeMillis() + timeoutSeconds * 1000L
+    while (System.currentTimeMillis() < deadline) {
+      ByteArrayOutputStream out = new ByteArrayOutputStream()
+      build.project.exec({ ExecSpec spec ->
+        if (host != null) {
+          spec.environment('DOCKER_HOST', host)
+        }
+        spec.commandLine('docker', 'logs', container)
+        spec.standardOutput = out
+        spec.errorOutput = out
+        spec.ignoreExitValue = true
+      } as Action<ExecSpec>)
+      if (out.toString('UTF-8').contains('Kafka Server started')) {
+        return
+      }
+      Thread.sleep(500L)
+    }
+    throw new GradleException("Kafka container ${container} did not start within ${timeoutSeconds} s.")
+  }
+
+  private void removeContainer(String host, String container) {
+    build.project.exec({ ExecSpec spec ->
+      if (host != null) {
+        spec.environment('DOCKER_HOST', host)
+      }
+      spec.commandLine('docker', 'rm', '-f', container)
+      spec.ignoreExitValue = true
+      spec.standardOutput = new ByteArrayOutputStream()
+    } as Action<ExecSpec>)
+  }
 }

@@ -17,12 +17,12 @@
  * under the License.
  */
 
-//! Tests for the native `value_bitmask_filter` builders of [`RowFilter`].
+//! Tests for the `value_bitmask_filter` builders of [`RowFilter`].
 
-use bytes::Bytes;
 use beam_io_gcp::bigtable::RowFilterExt as _;
 use beam_io_gcp::bigtable::proto::row_filter::{Chain, Condition, Filter};
 use beam_io_gcp::bigtable::proto::{RowFilter, ValueBitmask};
+use bytes::Bytes;
 
 #[test]
 fn value_bitmask_encodes_field_20_with_the_nested_mask() {

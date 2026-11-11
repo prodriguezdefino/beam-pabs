@@ -32,11 +32,11 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Set, Optional, Tuple, Any
 
 STAGE_PATTERNS = [
-  ("Row bytes -> Arrow", ["apache_beam_io_arrow::convert", "apache_beam_io_arrow::array", "apache_beam_io_arrow::schema"]),
-  ("Kafka JSON", ["json_io::", "apache_beam_io_json::", "kafka_io::native::codec::", "apache_beam_io_kafka::native::codec::", "serde_json::"]),
-  ("Kafka connector", ["kafka_io::native::", "apache_beam_io_kafka::native::"]),
+  ("Row bytes -> Arrow", ["beam_io_arrow::convert", "beam_io_arrow::array", "beam_io_arrow::schema", "apache_beam_io_arrow::convert", "apache_beam_io_arrow::array", "apache_beam_io_arrow::schema"]),
+  ("Kafka JSON", ["beam_io_json::", "json_io::", "apache_beam_io_json::", "beam_io_kafka::codec::", "kafka_io::codec::", "apache_beam_io_kafka::codec::", "serde_json::"]),
+  ("Kafka connector", ["beam_io_kafka::", "kafka_io::", "apache_beam_io_kafka::"]),
   ("librdkafka", ["rdkafka::", "rdkafka_sys::"]),
-  ("Harness data plane", ["apache_beam_harness::", "harness::"]),
+  ("Harness data plane", ["beam_harness::", "apache_beam_harness::", "harness::"]),
   ("Core coders", ["apache_beam_core::coders::", "apache_beam_core::coders", "core::coders::", "beam::coders::", "beam::coders"]),
   ("Core transforms", ["apache_beam_core::transforms::", "apache_beam_core::transforms", "beam::transforms::", "beam::transforms"]),
   ("gRPC / protobuf / TLS", ["tonic::", "h2::", "rustls::", "prost::"]),

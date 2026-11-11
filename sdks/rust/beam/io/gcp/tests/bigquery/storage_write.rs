@@ -17,38 +17,55 @@
  * under the License.
  */
 
-//! Options and pipeline shapes of the native Storage Write connector. The tests build
+//! Options and pipeline shapes of the Storage Write connector. The tests build
 //! pipelines and do not run them, so no test calls BigQuery.
-#![expect(clippy::unwrap_used, reason = "test fixtures panic on setup failure")]
 
 use beam::internals::PipelineInternals;
 use std::sync::Arc;
 use std::time::Duration;
 
 use beam::pipeline::Pipeline;
-use beam::schema::{FieldType, FieldValue, Row, Schema};
-use beam::transforms::Create;
-use beam::values::PCollection;
-use beam_io_gcp::bigquery::WriteDisposition;
-use beam_io_gcp::bigquery::storage::write::{Semantics, WriteOptions, WriteRows, error_schema};
+use beam::schema::{BeamRow, FieldType, FieldValue, Row, Schema};
+use beam::transforms::{Create, Map, PeriodicImpulse};
+use beam::values::{IsBounded, PCollection};
+use beam_io_gcp::bigquery::write::{Semantics, WriteOptions, WriteRows, error_schema};
 use beam_model::pipeline::ParDoPayload;
 use prost::Message;
 
 const TABLE: &str = "my-project.my_dataset.my_table";
 
-fn rows(pipeline: &Pipeline) -> PCollection<Row> {
-    let schema = Schema::builder()
+fn schema() -> Schema {
+    Schema::builder()
         .field("id", FieldType::int64())
         .nullable_field("name", FieldType::string())
-        .build();
-    let row = Row::new(
+        .build()
+}
+
+fn row(schema: &Schema) -> Row {
+    Row::new(
         Arc::new(schema.clone()),
         vec![Some(FieldValue::Int64(1)), None],
     )
-    .unwrap();
+    .unwrap()
+}
+
+fn rows(pipeline: &Pipeline) -> PCollection<Row> {
+    let schema = schema();
     pipeline
-        .apply("Rows", Create::new([row]))
+        .apply("Rows", Create::new([row(&schema)]))
         .with_row_schema(&schema)
+}
+
+/// An unbounded input: one row for each tick.
+fn unbounded_rows(pipeline: &Pipeline) -> PCollection<Row> {
+    let schema = schema();
+    let row = row(&schema);
+    let rows = pipeline
+        .apply("Ticks", PeriodicImpulse::new(Duration::from_secs(1)))
+        .apply("Rows", Map::new(move |_: i64| row.clone()))
+        .with_row_schema(&schema);
+    assert_eq!(rows.is_bounded(), IsBounded::Unbounded);
+    rows
 }
 
 /// The names of the transforms under the write, without the `WriteRows/` prefix.
@@ -99,9 +116,9 @@ fn exactly_once_on_bounded_input_writes_pending_streams_then_commits() {
 }
 
 #[test]
-fn exactly_once_with_a_triggering_frequency_writes_buffered_streams_with_state() {
+fn exactly_once_on_unbounded_input_writes_buffered_streams_with_state() {
     let pipeline = Pipeline::new();
-    rows(&pipeline).apply(
+    unbounded_rows(&pipeline).apply(
         "WriteRows",
         WriteRows::new(WriteOptions::new(TABLE).with_triggering_frequency(Duration::from_secs(2))),
     );
@@ -147,10 +164,6 @@ fn invalid_options_fail_before_any_call() {
     let cases = [
         (WriteOptions::new("no_dataset"), "Invalid table spec"),
         (
-            WriteOptions::new(TABLE).with_write_disposition(WriteDisposition::WriteTruncate),
-            "cannot replace",
-        ),
-        (
             WriteOptions::new(TABLE).with_triggering_frequency(Duration::ZERO),
             "positive",
         ),
@@ -170,10 +183,7 @@ fn apply_records_an_expansion_error_and_returns_an_errors_output() {
         "WriteRows",
         WriteRows::new(WriteOptions::new("dataset.table")),
     );
-    errors.apply(
-        "Count",
-        beam::transforms::Map::new(|row: Row| row.values().len() as i64),
-    );
+    errors.apply("Count", Map::new(|row: Row| row.values().len() as i64));
     assert_eq!(errors.row_schema().as_deref(), Some(&error_schema(&schema)));
     let error = pipeline.validate().unwrap_err();
     assert!(
@@ -197,4 +207,138 @@ fn a_table_without_a_project_needs_one_from_the_pipeline() {
         .unwrap_err()
         .to_string();
     assert!(error.contains("has no project"), "{error}");
+}
+
+#[test]
+fn a_bounded_input_with_a_triggering_frequency_does_not_expand() {
+    let pipeline = Pipeline::new();
+    let error = rows(&pipeline)
+        .try_apply(
+            "WriteRows",
+            WriteRows::new(
+                WriteOptions::new(TABLE).with_triggering_frequency(Duration::from_secs(2)),
+            ),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("A triggering frequency applies only to an unbounded input"),
+        "{error}"
+    );
+}
+
+#[test]
+fn an_unbounded_input_without_a_triggering_frequency_writes_buffered_streams() {
+    let pipeline = Pipeline::new();
+    unbounded_rows(&pipeline).apply("WriteRows", WriteRows::new(WriteOptions::new(TABLE)));
+    let lock = pipeline.lock();
+    let names: Vec<&str> = lock
+        .components
+        .transforms
+        .values()
+        .map(|t| t.unique_name.as_str())
+        .collect();
+    assert!(
+        names.contains(&"WriteRows/WriteBufferedStreams"),
+        "{names:?}"
+    );
+    assert!(
+        !names.contains(&"WriteRows/WritePendingStreams"),
+        "{names:?}"
+    );
+}
+
+#[test]
+fn write_rows_records_display_data_in_pipeline_proto() {
+    use std::collections::HashMap;
+
+    use beam::transforms::display_data::DisplayDataItem;
+    use beam_io_gcp::bigquery::write::{CreateDisposition, WriteDisposition};
+
+    let pipeline = Pipeline::new();
+    unbounded_rows(&pipeline).apply(
+        "WriteRows",
+        WriteRows::new(
+            WriteOptions::new(TABLE)
+                .with_create_disposition(CreateDisposition::CreateNever)
+                .with_write_disposition(WriteDisposition::WriteEmpty)
+                .with_triggering_frequency(Duration::from_secs(7))
+                .with_num_streams(4),
+        ),
+    );
+
+    let components = pipeline.to_proto().components.unwrap();
+    let transform = components
+        .transforms
+        .values()
+        .find(|t| t.unique_name == "WriteRows")
+        .unwrap();
+    let items: HashMap<String, String> = transform
+        .display_data
+        .iter()
+        .map(|d| {
+            let item = DisplayDataItem::from_proto(d).unwrap();
+            (item.key, item.value.to_string())
+        })
+        .collect();
+
+    assert_eq!(items.get("table").map(String::as_str), Some(TABLE));
+    assert_eq!(
+        items.get("semantics").map(String::as_str),
+        Some("EXACTLY_ONCE")
+    );
+    assert_eq!(
+        items.get("create_disposition").map(String::as_str),
+        Some("CREATE_NEVER")
+    );
+    assert_eq!(
+        items.get("write_disposition").map(String::as_str),
+        Some("WRITE_EMPTY")
+    );
+    assert_eq!(
+        items.get("triggering_frequency").map(String::as_str),
+        Some("7s")
+    );
+    assert_eq!(items.get("num_streams").map(String::as_str), Some("4"));
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, BeamRow)]
+struct TypedItem {
+    id: i64,
+    name: Option<String>,
+}
+
+#[test]
+fn write_typed_expands_beam_row_elements_without_to_rows_step() {
+    let pipeline = Pipeline::new();
+    let failed = pipeline
+        .apply(
+            "Items",
+            Create::new([TypedItem {
+                id: 7,
+                name: Some("alpha".to_string()),
+            }]),
+        )
+        .apply(
+            "WriteTyped",
+            WriteRows::new(WriteOptions::new(TABLE)).typed::<TypedItem>(),
+        );
+
+    assert_eq!(
+        failed.row_schema().as_deref(),
+        Some(&error_schema(&TypedItem::beam_schema()))
+    );
+
+    let lock = pipeline.lock();
+    let names: Vec<&str> = lock
+        .components
+        .transforms
+        .values()
+        .map(|t| t.unique_name.as_str())
+        .collect();
+    assert!(
+        names.contains(&"WriteTyped/WritePendingStreams"),
+        "{names:?}"
+    );
+    assert!(!names.contains(&"WriteTyped/ToRows"), "{names:?}");
 }

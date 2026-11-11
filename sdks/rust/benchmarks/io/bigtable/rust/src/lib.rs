@@ -17,41 +17,52 @@
  * under the License.
  */
 
-//! Cloud Bigtable benchmark in a Rust pipeline: the `bt_to_gcs` shape with the native
-//! Bigtable connector.
+//! Cloud Bigtable benchmark in a Rust pipeline: `bt_to_gcs` and `gcs_to_bt` with the
+//! Bigtable read and write connectors.
 //!
-//! The pipeline reads `--bigtable_table` with `ReadRows`, sends each row through a Rust
-//! `Touch` step that counts `e2e/rows` and formats the row as a line of text, and writes the
-//! lines to `--output` with `textio::Write`. All steps run in one Rust SDK harness.
+//! - `bt_to_gcs` reads `--bigtable_table` with `ReadRows`, counts `e2e/rows`, formats each row
+//!   as a tab-separated line, and writes the lines to `--output` with `textio::Write`.
+//! - `gcs_to_bt` reads tab-separated lines from `--input` with `textio::Read`, parses each line
+//!   into a batched mutation row, counts `e2e/rows`, and writes to `--bigtable_table` with
+//!   `WriteMutations`.
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
-use beam::io::gcp::bigtable::BigtableColumn;
-use beam::io::gcp::bigtable::ReadTarget;
 use beam::io::gcp::bigtable::read::{ReadOptions, ReadRows};
+use beam::io::gcp::bigtable::write::{WriteMutations, WriteOptions};
+use beam::io::gcp::bigtable::{
+    BigtableColumn, BigtableReadShape, MUTATION_SET_CELL, ReadTarget, WriteTarget,
+    batched_mutation_schema,
+};
 use beam::options::PipelineOptionGroup;
 use beam::prelude::*;
-use beam::schema::{FieldValue, MapEntry};
+use beam::schema::{FieldValue, MapEntry, Schema};
 use beam_benchmark_io::{Connector, NAMESPACE};
 use clap::{Args as ClapArgs, ValueEnum};
 use serde::{Deserialize, Serialize};
 
-/// The shape of the benchmark.
+/// Benchmark shape.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
 #[value(rename_all = "snake_case")]
 pub enum Shape {
     /// Reads a Bigtable table and writes formatted text lines to Cloud Storage.
     BtToGcs,
+    /// Reads formatted text lines from Cloud Storage and mutates a Bigtable table.
+    GcsToBt,
 }
 
-/// Benchmark flags. The flags of the runner come from the pipeline options.
+/// Benchmark flags. Runner flags come from [`PipelineOptions`].
 #[derive(ClapArgs, Serialize, Deserialize, Clone, Debug)]
 pub struct Args {
-    /// The connector of the read.
-    #[arg(long, value_enum, default_value_t = Connector::Rust)]
-    pub reader: Connector,
-    /// The shape of the benchmark.
+    /// Read connector (`bt_to_gcs`).
+    #[arg(long, value_enum)]
+    pub reader: Option<Connector>,
+    /// Write connector (`gcs_to_bt`).
+    #[arg(long, value_enum)]
+    pub writer: Option<Connector>,
+    /// Benchmark shape.
     #[arg(long, value_enum, default_value_t = Shape::BtToGcs)]
     pub shape: Shape,
     /// Google Cloud project ID that holds the Bigtable instance.
@@ -70,7 +81,7 @@ pub struct Args {
     /// Cloud Bigtable materialized view ID to read instead of a table.
     #[arg(long)]
     pub bigtable_materialized_view: Option<String>,
-    /// Optional Bigtable app profile ID, such as a Data Boost profile.
+    /// Optional Bigtable app profile ID.
     #[arg(long)]
     pub app_profile: Option<String>,
     /// Emit one row per column qualifier (`true`) or one row per Bigtable row (`false`).
@@ -82,9 +93,12 @@ pub struct Args {
         action = clap::ArgAction::Set
     )]
     pub flatten: bool,
+    /// Input file pattern for `gcs_to_bt`.
+    #[arg(long)]
+    pub input: Option<String>,
     /// Output file prefix for `bt_to_gcs`.
     #[arg(long)]
-    pub output: String,
+    pub output: Option<String>,
     /// Optional cap on the initial key-range bundles produced at sampling time.
     #[arg(long, value_parser = parse_positive_usize)]
     pub max_initial_bundles: Option<usize>,
@@ -110,7 +124,12 @@ pub fn parse_positive_usize(value: &str) -> std::result::Result<usize, String> {
     Ok(parsed)
 }
 
-/// Builds the [`ReadOptions`] for the table or materialized view of `args`.
+/// Builds the [`ReadOptions`] for the table or materialized view in `args`.
+///
+/// # Errors
+///
+/// Fails if neither or both of `--bigtable_table` and `--bigtable_materialized_view` are set,
+/// or if the resulting options fail validation.
 pub fn read_options(args: &Args) -> Result<ReadOptions> {
     let Args {
         bigtable_project: project,
@@ -126,7 +145,12 @@ pub fn read_options(args: &Args) -> Result<ReadOptions> {
             ));
         }
     };
-    let mut options = ReadOptions::new(target).with_flattened(args.flatten);
+    let shape = if args.flatten {
+        BigtableReadShape::Flattened
+    } else {
+        BigtableReadShape::Nested
+    };
+    let mut options = ReadOptions::new(target).with_shape(shape);
     if let Some(profile) = args.app_profile.as_deref().filter(|s| !s.is_empty()) {
         options = options.with_app_profile_id(profile);
     }
@@ -136,7 +160,35 @@ pub fn read_options(args: &Args) -> Result<ReadOptions> {
     if let Some(sub_split) = args.sub_split_tablets {
         options = options.with_sub_split_tablets(sub_split);
     }
-    options.validate().map_err(Error::msg)?;
+    options.validate()?;
+    Ok(options)
+}
+
+/// Builds the [`WriteOptions`] for the destination table in `args`.
+///
+/// # Errors
+///
+/// Fails if `--bigtable_table` is missing or if the options fail validation.
+pub fn write_options(args: &Args) -> Result<WriteOptions> {
+    if args.bigtable_materialized_view.is_some() {
+        return Err(Error::msg(
+            "gcs_to_bt writes to --bigtable_table, not --bigtable_materialized_view",
+        ));
+    }
+    let table = args
+        .bigtable_table
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| Error::msg("gcs_to_bt needs --bigtable_table"))?;
+    let mut options = WriteOptions::new(WriteTarget::table(
+        &args.bigtable_project,
+        &args.bigtable_instance,
+        table,
+    ));
+    if let Some(profile) = args.app_profile.as_deref().filter(|s| !s.is_empty()) {
+        options = options.with_app_profile_id(profile);
+    }
+    options.validate()?;
     Ok(options)
 }
 
@@ -233,6 +285,63 @@ fn first_cell_value(cells: &[Option<FieldValue>]) -> Cow<'_, str> {
     }
 }
 
+fn set_cell_map_entry(family: &str, qualifier: &str, value: &str) -> Option<FieldValue> {
+    if family.is_empty() {
+        return None;
+    }
+    Some(FieldValue::Map(vec![
+        (
+            FieldValue::String("type".to_string()),
+            Some(FieldValue::Bytes(MUTATION_SET_CELL.as_bytes().to_vec())),
+        ),
+        (
+            FieldValue::String("family_name".to_string()),
+            Some(FieldValue::Bytes(family.as_bytes().to_vec())),
+        ),
+        (
+            FieldValue::String("column_qualifier".to_string()),
+            Some(FieldValue::Bytes(qualifier.as_bytes().to_vec())),
+        ),
+        (
+            FieldValue::String("value".to_string()),
+            Some(FieldValue::Bytes(value.as_bytes().to_vec())),
+        ),
+    ]))
+}
+
+/// Parses one flattened (`<key>\t<family>:<qualifier>\t<value>`) or nested
+/// (`<key>\t<family>:<qualifier>=<value>...`) text line into a [`batched_mutation_schema`] row.
+pub fn parse_line(line: &str, schema: &Arc<Schema>) -> Option<Row> {
+    let mut parts = line.split('\t');
+    let key = parts.next().filter(|k| !k.is_empty())?;
+    let rest: Vec<&str> = parts.collect();
+    let mutations: Vec<Option<FieldValue>> = match rest.as_slice() {
+        [col, val] if !col.contains('=') => {
+            let (family, qualifier) = col.split_once(':')?;
+            vec![Some(set_cell_map_entry(family, qualifier, val)?)]
+        }
+        fields => fields
+            .iter()
+            .filter_map(|field| {
+                let (col, val) = field.split_once('=')?;
+                let (family, qualifier) = col.split_once(':')?;
+                set_cell_map_entry(family, qualifier, val).map(Some)
+            })
+            .collect(),
+    };
+    if mutations.is_empty() {
+        return None;
+    }
+    Row::new(
+        Arc::clone(schema),
+        vec![
+            Some(FieldValue::Bytes(key.as_bytes().to_vec())),
+            Some(FieldValue::Array(mutations)),
+        ],
+    )
+    .ok()
+}
+
 /// Counts `e2e/rows` and formats each [`Row`] into a text line for Cloud Storage.
 #[derive(Clone)]
 pub struct TouchFn {
@@ -260,18 +369,100 @@ impl DoFn for TouchFn {
     }
 }
 
-/// Builds the `bt_to_gcs` pipeline: `Read`, `Touch`, and `Write`.
+/// Parses text lines into batched Bigtable mutation rows and counts `e2e/rows`.
+#[derive(Clone)]
+pub struct ParseMutationsFn {
+    rows: Counter,
+    schema: Arc<Schema>,
+}
+
+impl ParseMutationsFn {
+    /// Creates a [`ParseMutationsFn`] for [`batched_mutation_schema`].
+    pub fn new(schema: Arc<Schema>) -> Self {
+        Self {
+            rows: Metrics::counter(NAMESPACE, "rows"),
+            schema,
+        }
+    }
+}
+
+impl DoFn for ParseMutationsFn {
+    type In = String;
+    type Out = Row;
+
+    fn process_element(&mut self, line: String, ctx: &mut ProcessContext<'_, Row>) -> Result {
+        if let Some(row) = parse_line(&line, &self.schema) {
+            self.rows.inc();
+            ctx.emit(row)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct FailOnRejectedRowFn;
+
+impl DoFn for FailOnRejectedRowFn {
+    type In = Row;
+    type Out = i32;
+
+    fn process_element(&mut self, row: Row, _ctx: &mut ProcessContext<'_, i32>) -> Result {
+        let message = row
+            .get_string("error_message")
+            .ok()
+            .flatten()
+            .unwrap_or("unknown error");
+        Err(Error::msg(format!(
+            "Bigtable rejected a mutation row: {message}"
+        )))
+    }
+}
+
+/// Builds the `bt_to_gcs` or `gcs_to_bt` pipeline.
+///
+/// # Errors
+///
+/// Fails if required flags for the selected shape are missing or invalid.
 pub fn build_pipeline(options: &PipelineOptions, args: &Args) -> Result<Pipeline> {
-    let Args {
-        reader: Connector::Rust,
-        shape: Shape::BtToGcs,
-        flatten,
-        output,
-        ..
-    } = args;
     let p = Pipeline::create(options);
-    p.apply("Read", ReadRows::new(read_options(args)?))
-        .par_do("Touch", TouchFn::new(*flatten))
-        .apply("Write", textio::Write::new(output.as_str()));
+    match args.shape {
+        Shape::BtToGcs => {
+            if args.writer.is_some() {
+                return Err(Error::msg("bt_to_gcs does not accept --writer"));
+            }
+            if args.input.is_some() {
+                return Err(Error::msg("bt_to_gcs does not accept --input"));
+            }
+            let Connector::Rust = args.reader.unwrap_or(Connector::Rust);
+            let output = args
+                .output
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| Error::msg("bt_to_gcs needs --output"))?;
+            p.apply("Read", ReadRows::new(read_options(args)?))
+                .par_do("Touch", TouchFn::new(args.flatten))
+                .apply("Write", textio::Write::new(output));
+        }
+        Shape::GcsToBt => {
+            if args.reader.is_some() {
+                return Err(Error::msg("gcs_to_bt does not accept --reader"));
+            }
+            if args.output.is_some() {
+                return Err(Error::msg("gcs_to_bt does not accept --output"));
+            }
+            let Connector::Rust = args.writer.unwrap_or(Connector::Rust);
+            let input = args
+                .input
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| Error::msg("gcs_to_bt needs --input"))?;
+            let schema = batched_mutation_schema();
+            p.apply("Read", textio::Read::new(input))
+                .par_do("Touch", ParseMutationsFn::new(Arc::clone(&schema)))
+                .with_row_schema(&schema)
+                .apply("Write", WriteMutations::new(write_options(args)?))
+                .par_do("FailOnError", FailOnRejectedRowFn);
+        }
+    }
     Ok(p)
 }

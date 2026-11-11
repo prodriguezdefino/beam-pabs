@@ -23,12 +23,12 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use beam_io_arrow::EncodedBatch;
-use beam_io_arrow::arrow_array::RecordBatch;
 use beam::coders::ShardedKey;
-use beam::metrics::Metrics;
+use beam::metrics::{Lineage, Metrics};
 use beam::transforms::{DoFn, ProcessContext};
 use beam::values::{AnySideInput, SingletonView};
+use beam_io_arrow::EncodedBatch;
+use beam_io_arrow::arrow_array::RecordBatch;
 use iceberg::TableIdent;
 use iceberg::arrow::RecordBatchPartitionSplitter;
 use iceberg::io::FileIO;
@@ -77,12 +77,13 @@ impl TableWriter {
         let metadata: TableMetadata = serde_json::from_slice(&info.metadata)?;
         let schema = Arc::clone(metadata.current_schema());
         let spec = Arc::clone(metadata.default_partition_spec());
-        let splitter = match spec.is_unpartitioned() {
-            true => None,
-            false => Some(RecordBatchPartitionSplitter::try_new_with_computed_values(
+        let splitter = if spec.is_unpartitioned() {
+            None
+        } else {
+            Some(RecordBatchPartitionSplitter::try_new_with_computed_values(
                 Arc::clone(&schema),
                 spec,
-            )?),
+            )?)
         };
         Ok(Self {
             table: info.table.clone(),
@@ -213,6 +214,7 @@ impl WriteDataFilesFn {
         }
         let info = ctx.side_input(&self.table)?;
         let writer = Arc::new(TableWriter::new(&info, self.target_file_bytes)?);
+        Lineage::sinks().add(METRICS, self.catalog.lineage_segments(&self.ident));
         self.writer = Some(Arc::clone(&writer));
         Ok(writer)
     }
@@ -227,24 +229,23 @@ impl WriteDataFilesFn {
         if let Some(storage) = self.storage.as_ref().filter(|storage| fresh(storage)) {
             return Ok(storage.file_io.clone());
         }
-        let storage = match self.catalog.vended_credentials {
-            false => Storage {
+        let storage = if self.catalog.vended_credentials {
+            let (catalog, ident) = (&self.catalog, &self.ident);
+            let config = beam::internals::block_on_io(async {
+                connect(catalog).await?.credentials(ident, location).await
+            })??;
+            let refresh_after = config
+                .get(TOKEN_EXPIRES_AT)
+                .and_then(|millis| millis.parse::<u64>().ok())
+                .map(|millis| UNIX_EPOCH + Duration::from_millis(millis) - REFRESH_MARGIN);
+            Storage {
+                file_io: file_io(config),
+                refresh_after,
+            }
+        } else {
+            Storage {
                 file_io: file_io([]),
                 refresh_after: None,
-            },
-            true => {
-                let (catalog, ident) = (&self.catalog, &self.ident);
-                let config = beam::internals::block_on_io(async {
-                    connect(catalog).await?.credentials(ident, location).await
-                })??;
-                let refresh_after = config
-                    .get(TOKEN_EXPIRES_AT)
-                    .and_then(|millis| millis.parse::<u64>().ok())
-                    .map(|millis| UNIX_EPOCH + Duration::from_millis(millis) - REFRESH_MARGIN);
-                Storage {
-                    file_io: file_io(config),
-                    refresh_after,
-                }
             }
         };
         let file_io = storage.file_io.clone();

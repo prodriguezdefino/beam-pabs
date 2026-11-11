@@ -64,24 +64,28 @@ impl MutationInputKind {
     }
 }
 
-/// One decoded `MutateRows` entry paired with its original [`RowElement`] so rejected rows
-/// can be routed to the error output without re-encoding.
+/// One decoded `MutateRows` entry with its estimated wire size.
 #[derive(Clone, Debug)]
 pub struct PendingEntry {
-    pub raw_row: RowElement,
     pub entry: Entry,
     pub byte_size: usize,
 }
 
 impl PendingEntry {
-    /// Materializes an error [`Row`] matching [`error_schema`](super::error_schema).
+    /// Materializes an error [`Row`] matching [`error_schema`](super::error_schema) from this
+    /// rejected entry.
     pub fn into_error_row(
         self,
+        kind: MutationInputKind,
         input_schema: &Arc<Schema>,
         err_schema: &Arc<Schema>,
         error_message: impl Into<String>,
     ) -> beam::Result<Row> {
-        element_to_error_row(self.raw_row, input_schema, err_schema, error_message)
+        let failed_row = match kind {
+            MutationInputKind::Flat => flat::flat_entry_to_row(self.entry, input_schema)?,
+            MutationInputKind::Batched => batched::batched_entry_to_row(self.entry, input_schema)?,
+        };
+        wrap_error_row(failed_row, err_schema, error_message)
     }
 }
 
@@ -96,6 +100,14 @@ pub fn element_to_error_row(
         RowElement::Row(row) => row,
         RowElement::Encoded(bytes) => decode_row(&bytes, input_schema)?,
     };
+    wrap_error_row(failed_row, err_schema, error_message)
+}
+
+fn wrap_error_row(
+    failed_row: Row,
+    err_schema: &Arc<Schema>,
+    error_message: impl Into<String>,
+) -> beam::Result<Row> {
     Row::new(
         Arc::clone(err_schema),
         vec![
@@ -108,40 +120,32 @@ pub fn element_to_error_row(
 
 /// Decodes `element` into a [`PendingEntry`], or returns an error [`Row`] if the mutation is
 /// invalid (for example, an empty row key, an unknown mutation type, or missing required fields).
-///
-/// The element stays in the [`PendingEntry`] for the error output. So the entry copies the
-/// keys and values of the element: `Row` gives only borrowed access to its values.
 pub fn decode_mutation_row(
     element: RowElement,
     kind: MutationInputKind,
     input_schema: &Arc<Schema>,
     err_schema: &Arc<Schema>,
 ) -> beam::Result<Result<PendingEntry, Row>> {
-    let result = match (&element, kind) {
-        (RowElement::Encoded(bytes), MutationInputKind::Flat)
-            if is_mutation_layout(input_schema) =>
-        {
-            flat::decode_flat_encoded(bytes)
+    let decoded = match (element, kind) {
+        (RowElement::Encoded(vec), MutationInputKind::Flat) if is_mutation_layout(input_schema) => {
+            let raw = bytes::Bytes::from(vec);
+            match flat::decode_flat_encoded(&raw) {
+                Ok(entry) => Ok(entry),
+                Err(reason) => Err((decode_row(&raw, input_schema)?, reason)),
+            }
         }
         (RowElement::Encoded(bytes), kind) => {
-            decode_row_entry(&decode_row(bytes, input_schema)?, kind)
+            decode_row_entry(decode_row(&bytes, input_schema)?, kind)
         }
         (RowElement::Row(row), kind) => decode_row_entry(row, kind),
     };
 
-    match result {
+    match decoded {
         Ok(entry) => {
             let byte_size = estimate_entry_bytes(&entry);
-            Ok(Ok(PendingEntry {
-                raw_row: element,
-                entry,
-                byte_size,
-            }))
+            Ok(Ok(PendingEntry { entry, byte_size }))
         }
-        Err(reason) => {
-            let err_row = element_to_error_row(element, input_schema, err_schema, reason)?;
-            Ok(Err(err_row))
-        }
+        Err((failed_row, reason)) => Ok(Err(wrap_error_row(failed_row, err_schema, reason)?)),
     }
 }
 
@@ -151,7 +155,7 @@ fn is_mutation_layout(schema: &Schema) -> bool {
     schema.fields.len() == 8 && schema.fields.first().is_some_and(|f| f.name == "key")
 }
 
-fn decode_row_entry(row: &Row, kind: MutationInputKind) -> Result<Entry, String> {
+fn decode_row_entry(row: Row, kind: MutationInputKind) -> Result<Entry, (Row, String)> {
     match kind {
         MutationInputKind::Flat => flat::decode_flat_row(row),
         MutationInputKind::Batched => batched::decode_batched_row(row),

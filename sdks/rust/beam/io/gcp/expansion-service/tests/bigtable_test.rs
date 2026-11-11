@@ -27,11 +27,10 @@ use beam::io::gcp::bigtable::proto::RowFilter;
 use beam::io::gcp::bigtable::read::ReadOptions;
 use beam::io::gcp::bigtable::target::{ReadTarget, WriteTarget};
 use beam::io::gcp::bigtable::write::WriteOptions;
-use beam::io::gcp::bigtable::{BigtableMutation, mutation_schema};
+use beam::io::gcp::bigtable::{BigtableMutation, BigtableReadShape, mutation_schema};
 use beam::pipeline::Pipeline;
 use beam::schema::{BeamRow, Row};
 use beam::transforms::Create;
-use bytes::Bytes;
 use beam_expansion::{
     PCollectionId, SchemaTransformProvider, SchemaTransformRegistration, TransformInputs,
 };
@@ -39,6 +38,7 @@ use beam_io_gcp_expansion::{
     BigtableReadConfig, BigtableReadProvider, BigtableWriteConfig, BigtableWriteProvider,
     ErrorHandling, URN_BIGTABLE_READ, URN_BIGTABLE_WRITE,
 };
+use bytes::Bytes;
 
 #[test]
 fn bigtable_read_and_write_providers_are_registered() {
@@ -83,7 +83,7 @@ fn bigtable_read_config_round_trips_and_maps_all_targets_and_options() {
         options,
         ReadOptions::new(ReadTarget::materialized_view("proj", "inst", "mv_1"))
             .with_app_profile_id("databoost")
-            .with_flattened(false)
+            .with_shape(BigtableReadShape::Nested)
             .with_key_range(b"a".to_vec(), b"z".to_vec())
             .with_row_filter(&RowFilter::chain([
                 row_filter,

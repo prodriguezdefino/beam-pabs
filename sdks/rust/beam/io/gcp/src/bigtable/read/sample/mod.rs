@@ -32,14 +32,15 @@ mod coalesce;
 use std::sync::Arc;
 use std::time::Duration;
 
+use beam::retry::{Decision, RetryWaits};
 use beam::transforms::{DoFn, ProcessContext};
 
 pub use self::coalesce::{SampleCoalescer, shuffle_restrictions};
 use super::restriction::KeyRangeRestriction;
+use crate::bigtable::METRICS;
 use crate::bigtable::client::{BigtableClient, RoutingCookies};
 use crate::bigtable::proto::{RowRange, RowRangeExt as _, SampleRowKeysRequest};
-use crate::bigtable::retry::wait_before_retry;
-use crate::bigtable::retry::{DEFAULT_RETRY, is_transient};
+use crate::bigtable::retry::{DEFAULT_RETRY, decision, wait_before_retry};
 use crate::bigtable::target::ReadTarget;
 use crate::runtime::block_on_async;
 
@@ -70,45 +71,49 @@ impl DoFn for SampleKeyRangesFn {
         _impulse: Self::In,
         ctx: &mut ProcessContext<'_, Self::Out>,
     ) -> beam::Result {
-        let existing_client = self.client.clone();
-        let endpoint = self.endpoint.clone();
-        let target = self.target.clone();
-        let app_profile = self.app_profile_id.clone();
-        let start_key = self.start_key.clone();
-        let end_key = self.end_key.clone();
-        let max_initial_bundles = self.max_initial_bundles;
-        let sub_split_tablets = self.sub_split_tablets;
-        let attempt_timeout = self.attempt_timeout;
+        let SampleKeyRangesFn {
+            target,
+            app_profile_id,
+            start_key,
+            end_key,
+            max_initial_bundles,
+            sub_split_tablets,
+            attempt_timeout,
+            endpoint,
+            client,
+        } = &*self;
+        let app_profile = app_profile_id.as_deref();
         let retry_policy = DEFAULT_RETRY;
+        let waits = RetryWaits::default();
 
-        let (client, restrictions) = block_on_async(async move {
-            let client = match existing_client {
-                Some(c) => c,
+        let sampled = block_on_async(async {
+            let client = match client {
+                Some(c) => Arc::clone(c),
                 None => Arc::new(BigtableClient::connect(endpoint.as_deref()).await?),
             };
-            let routing_header = target.routing_header(app_profile.as_deref());
+            let routing_header = target.routing_header(app_profile);
             let mut cookies = RoutingCookies::default();
             let mut attempt = 0u32;
             loop {
                 let mut request = SampleRowKeysRequest::default();
-                target.apply_to_sample(&mut request, app_profile.as_deref());
+                target.apply_to_sample(&mut request, app_profile);
                 if !start_key.is_empty() || !end_key.is_empty() {
                     request.row_range = Some(RowRange::half_open(
-                        bytes::Bytes::copy_from_slice(&start_key),
-                        bytes::Bytes::copy_from_slice(&end_key),
+                        bytes::Bytes::copy_from_slice(start_key),
+                        bytes::Bytes::copy_from_slice(end_key),
                     ));
                 }
                 let coalescer = SampleCoalescer::new(
                     start_key.clone(),
                     end_key.clone(),
-                    max_initial_bundles,
-                    sub_split_tablets,
+                    *max_initial_bundles,
+                    *sub_split_tablets,
                 );
                 match collect_samples(
                     &client,
                     request,
                     &routing_header,
-                    attempt_timeout,
+                    *attempt_timeout,
                     &mut cookies,
                     coalescer,
                 )
@@ -116,18 +121,19 @@ impl DoFn for SampleKeyRangesFn {
                 {
                     Ok(ranges) => return Ok((client, ranges)),
                     Err(status)
-                        if retry_policy.allows_retry(attempt) && is_transient(status.code()) =>
+                        if retry_policy.allows_retry(attempt)
+                            && decision(&status) != Decision::Stop =>
                     {
                         let resource = target.resource_name();
                         let cause = status.to_string();
-                        let status = Some(&status);
                         wait_before_retry(
                             retry_policy,
                             attempt,
+                            decision(&status),
+                            &waits,
                             "SampleRowKeys",
                             &resource,
                             &cause,
-                            status,
                         )
                         .await;
                         attempt += 1;
@@ -141,7 +147,9 @@ impl DoFn for SampleKeyRangesFn {
                     }
                 }
             }
-        })?;
+        });
+        waits.record(METRICS);
+        let (client, restrictions) = sampled?;
         self.client = Some(client);
 
         restrictions
@@ -170,7 +178,7 @@ async fn collect_samples(
         .map_err(|_| tonic::Status::deadline_exceeded("SampleRowKeys stream timed out"))?
         .inspect_err(|status| cookies.extract(status.metadata()))?
     {
-        coalescer.feed(sample);
+        coalescer.feed(&sample);
     }
 
     Ok(coalescer.finish())

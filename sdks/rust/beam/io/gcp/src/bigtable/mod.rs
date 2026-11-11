@@ -17,12 +17,11 @@
  * under the License.
  */
 
-//! Google Cloud Bigtable I/O connectors: native Rust [`read::ReadRows`] and
-//! [`write::WriteMutations`], server-side [`proto::RowFilter`] builders (including the native
-//! [`RowFilterExt::value_bitmask`] filter), and cross-language SchemaTransform wrappers
-//! ([`BigtableRead`], [`BigtableWrite`]).
+//! Google Cloud Bigtable connectors: [`read::ReadRows`], [`write::WriteMutations`],
+//! and server-side [`proto::RowFilter`] builders (including the
+//! [`RowFilterExt::value_bitmask`] filter).
 //!
-//! # Native Read (`ReadRows`)
+//! # Read (`ReadRows`)
 //! ```no_run
 //! use beam::prelude::*;
 //! use beam_io_gcp::bigtable::read::{ReadOptions, ReadRows};
@@ -33,7 +32,7 @@
 //! let rows: PCollection<Row> = p.apply("ReadBigtable", ReadRows::new(options));
 //! ```
 //!
-//! # Native Write (`WriteMutations`)
+//! # Write (`WriteMutations`)
 //! ```no_run
 //! use beam::prelude::*;
 //! use beam_io_gcp::bigtable::write::{WriteMutations, WriteOptions};
@@ -57,7 +56,6 @@
 
 #[doc(hidden)]
 pub mod client;
-mod external;
 mod filter;
 #[doc(hidden)]
 pub mod key;
@@ -70,7 +68,6 @@ mod schema;
 pub mod target;
 pub mod write;
 
-pub use self::external::{BigtableRead, BigtableWrite, URN_BIGTABLE_READ, URN_BIGTABLE_WRITE};
 pub use self::filter::RowFilterExt;
 pub use self::schema::{
     BigtableCell, BigtableColumn, BigtableMutation, BigtableReadShape, MUTATION_DELETE_FROM_COLUMN,
@@ -78,3 +75,6 @@ pub use self::schema::{
     batched_mutation_schema, cell_schema, flattened_row_schema, mutation_schema, nested_row_schema,
 };
 pub use self::target::{ReadTarget, WriteTarget};
+
+/// Metrics namespace of the Bigtable read and write connectors.
+pub const METRICS: &str = "bigtable";

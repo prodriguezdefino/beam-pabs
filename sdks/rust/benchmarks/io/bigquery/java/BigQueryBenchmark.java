@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 import org.apache.beam.model.pipeline.v1.ExternalTransforms.SchemaTransformPayload;
+import org.apache.beam.runners.dataflow.DataflowPipelineJob;
 import org.apache.beam.runners.dataflow.options.DataflowPipelineOptions;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.PipelineResult;
@@ -507,7 +508,12 @@ public class BigQueryBenchmark {
       }
     }
 
-    PipelineResult.State state = p.run().waitUntilFinish();
+    PipelineResult result = p.run();
+    if (result instanceof DataflowPipelineJob) {
+      System.out.println("JOB_ID=" + ((DataflowPipelineJob) result).getJobId());
+      return;
+    }
+    PipelineResult.State state = result.waitUntilFinish();
     if (state != PipelineResult.State.DONE) {
       throw new IllegalStateException("The job finished in state " + state);
     }

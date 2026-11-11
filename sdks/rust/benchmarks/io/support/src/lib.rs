@@ -261,11 +261,19 @@ pub fn print_metrics(metrics: &MetricResults) {
     }
 }
 
-/// Parses CLI options, builds the benchmark pipeline, runs it and prints `JOB_ID` and metrics.
+fn is_dataflow_runner(runner: &str) -> bool {
+    runner.eq_ignore_ascii_case("dataflow") || runner.eq_ignore_ascii_case("dataflowrunner")
+}
+
+/// Parses CLI options, builds and submits the benchmark pipeline, and prints `JOB_ID`.
+///
+/// On Dataflow, returns as soon as the service accepts the job so `benchmarks/tools/job_wait.py`
+/// waits and drains uniformly across SDKs. On local runners such as Prism, waits for completion
+/// and prints the `e2e` metrics.
 ///
 /// # Errors
 ///
-/// Fails if pipeline construction or execution fails.
+/// Fails if pipeline construction, submission or local execution fails.
 pub async fn run<A, F>(build: F) -> std::result::Result<(), Box<dyn Error + Send + Sync>>
 where
     A: ClapArgs + PipelineOptionGroup,
@@ -274,11 +282,11 @@ where
     run_with_options(|_, _| {}, build).await
 }
 
-/// Parses CLI options, updates `PipelineOptions`, builds and runs the benchmark pipeline.
+/// Parses CLI options, updates `PipelineOptions`, builds and submits the benchmark pipeline.
 ///
 /// # Errors
 ///
-/// Fails if pipeline construction or execution fails.
+/// Fails if pipeline construction, submission or local execution fails.
 pub async fn run_with_options<A, C, F>(
     configure: C,
     build: F,
@@ -291,12 +299,15 @@ where
     init_logging();
     let (mut options, args) = parse::<A>();
     configure(&mut options, &args);
+    let detach_on_runner = is_dataflow_runner(&options.runner);
     let p = build(&options, &args).map_err(|e| e.to_string())?;
-    let result = p.run().await?;
-    // The benchmark script finds the job by its name; this line is for the log.
-    println!("JOB_ID={}", result.job_id);
-    if let Some(metrics) = result.metrics() {
-        print_metrics(metrics);
+    let job = p.submit().await?;
+    println!("JOB_ID={}", job.job_id());
+    if !detach_on_runner {
+        let result = job.wait_until_finish(None).await?;
+        if let Some(metrics) = result.metrics() {
+            print_metrics(metrics);
+        }
     }
     Ok(())
 }

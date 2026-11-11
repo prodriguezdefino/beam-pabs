@@ -183,6 +183,7 @@ async fn test_http_dataflow_client_live_mock_server() {
             "us-central1",
             "job-http-1",
             Some("2026-09-23T00:00:00Z"),
+            None,
         )
         .await
         .unwrap();
@@ -193,7 +194,7 @@ async fn test_http_dataflow_client_live_mock_server() {
     );
 
     let msgs_no_time = client
-        .list_messages("test-proj", "us-central1", "job-http-1", None)
+        .list_messages("test-proj", "us-central1", "job-http-1", None, None)
         .await
         .unwrap();
     assert_eq!(msgs_no_time.job_messages.len(), 1);
@@ -223,6 +224,41 @@ async fn test_http_dataflow_client_live_mock_server() {
     let default_client = HttpDataflowClient::default();
     let debug_default = format!("{default_client:?}");
     assert!(debug_default.contains("HttpDataflowClient"));
+}
+
+#[tokio::test]
+async fn list_messages_sends_the_page_token_and_returns_the_next_one() {
+    const MESSAGES: &str = "/v1b3/projects/p/locations/r/jobs/j/messages";
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(MESSAGES))
+        .and(query_param("startTime", "2026-09-23T00:00:00Z"))
+        .and(query_param("pageToken", "tok/+= 1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jobMessages": [{"id": "msg-3", "messageText": "second page"}],
+            "nextPageToken": "third"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = HttpDataflowClient::with_endpoint_and_token(server.uri(), Some("token"));
+
+    let page = client
+        .list_messages(
+            "p",
+            "r",
+            "j",
+            Some("2026-09-23T00:00:00Z"),
+            Some("tok/+= 1"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        page.job_messages[0].message_text.as_deref(),
+        Some("second page")
+    );
+    assert_eq!(page.next_page_token.as_deref(), Some("third"));
 }
 
 fn message(id: Option<&str>, time: Option<&str>, text: &str) -> JobMessageItem {

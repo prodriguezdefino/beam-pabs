@@ -17,14 +17,13 @@
  * under the License.
  */
 
-//! Word counts stored in Bigtable through the cross-language Bigtable transforms.
+//! Word counts stored in Bigtable with the Bigtable connectors.
 //!
 //! - `--mode=write` (the default) counts the words of `--input` with `wordcount::CountWords`.
-//!   It writes one Bigtable row for each word through the Java `bigtable_write`
-//!   SchemaTransform. The row key is the word, and `<column_family>:count` holds the count
-//!   as a decimal string.
-//! - `--mode=read` reads the table through the Java `bigtable_read` SchemaTransform. It
-//!   writes `word: count` lines to `--output`.
+//!   It writes one Bigtable row for each word with `WriteMutations`. The row key is the word,
+//!   and `<column_family>:count` holds the count as a decimal string.
+//! - `--mode=read` reads the table with `ReadRows`. It writes `word: count` lines to
+//!   `--output`.
 //!
 //! Create the table and its column family before a write:
 //!
@@ -32,9 +31,7 @@
 //! cbt -project my-project -instance my-instance createtable wordcount families=counts
 //! ```
 
-use beam::io::gcp::bigtable::{
-    BigtableColumn, BigtableMutation, BigtableRead, BigtableWrite, mutation_schema,
-};
+use beam::io::gcp::bigtable::{BigtableColumn, BigtableMutation, mutation_schema, read, write};
 use beam::pipeline::PipelineError;
 use beam::prelude::*;
 use clap::{Args as ClapArgs, ValueEnum};
@@ -91,10 +88,6 @@ pub struct Args {
     /// Column family of the counts. It must exist in the table.
     #[arg(long, default_value = "counts")]
     pub column_family: String,
-
-    /// Address (host:port) of an expansion service to use instead of the Java one that the SDK starts.
-    #[arg(long)]
-    pub expansion_service: Option<String>,
 }
 
 impl PipelineOptionGroup for Args {}
@@ -160,57 +153,35 @@ pub fn build_pipeline(options: &PipelineOptions, args: &Args) -> Pipeline {
 }
 
 fn build_write(p: &Pipeline, args: &Args) {
-    let write = BigtableWrite::new(
+    let writer = write::WriteMutations::new(write::WriteOptions::from_table(
         &args.bigtable_project,
         &args.bigtable_instance,
         &args.bigtable_table,
-    );
-    let write = match &args.expansion_service {
-        Some(service) => write.with_expansion_service(service),
-        None => write,
-    };
-    if let Err(err) = p
-        .apply("ReadLines", textio::Read::new(&args.input))
+    ));
+    p.apply("ReadLines", textio::Read::new(&args.input))
         .apply(
             "CountWordsToMutations",
             CountWordsToMutations {
                 column_family: args.column_family.clone(),
             },
         )
-        .try_apply("WriteCounts", write)
-    {
-        p.record_construction_error(PipelineError::InvalidConstruction {
-            transform_id: "WriteCounts".to_string(),
-            reason: err.to_string(),
-        });
-    }
+        .apply("WriteCounts", writer);
 }
 
 fn build_read(p: &Pipeline, args: &Args, output: &str) {
-    let read = BigtableRead::new(
+    let reader = read::ReadRows::new(read::ReadOptions::from_table(
         &args.bigtable_project,
         &args.bigtable_instance,
         &args.bigtable_table,
-    );
-    let read = match &args.expansion_service {
-        Some(service) => read.with_expansion_service(service),
-        None => read,
-    };
+    ));
     // The closure must own its data, because the runner calls it after the pipeline is built.
     let family = args.column_family.clone();
-    match p.try_apply("ReadCounts", read) {
-        Ok(rows) => {
-            rows.flat_map("DecodeCounts", move |row: Row| {
-                BigtableColumn::try_from(row)
-                    .ok()
-                    .and_then(|column| decode_count(&family, column))
-                    .map(|(word, count)| format!("{word}: {count}"))
-            })
-            .apply("WriteLines", textio::Write::new(output));
-        }
-        Err(err) => p.record_construction_error(PipelineError::InvalidConstruction {
-            transform_id: "ReadCounts".to_string(),
-            reason: err.to_string(),
-        }),
-    }
+    p.apply("ReadCounts", reader)
+        .flat_map("DecodeCounts", move |row: Row| {
+            BigtableColumn::try_from(row)
+                .ok()
+                .and_then(|column| decode_count(&family, column))
+                .map(|(word, count)| format!("{word}: {count}"))
+        })
+        .apply("WriteLines", textio::Write::new(output));
 }

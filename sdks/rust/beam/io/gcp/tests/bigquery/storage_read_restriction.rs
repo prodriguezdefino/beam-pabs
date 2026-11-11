@@ -17,17 +17,16 @@
  * under the License.
  */
 
-//! Stream restrictions, their coder, and the tracker of the native Storage Read connector:
+//! Stream restrictions, their coder, and the tracker of the Storage Read connector:
 //! claims, checkpoints, server splits, sizes and progress. A fake service stands in for
 //! BigQuery.
-#![expect(clippy::unwrap_used, reason = "test fixtures panic on setup failure")]
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use beam::coders::DefaultCoder;
 use beam::transforms::sdf::RestrictionTracker;
-use beam_io_gcp::bigquery::storage::read::{StreamRestriction, StreamTracker};
+use beam_io_gcp::bigquery::read::{StreamRestriction, StreamTracker};
 use google_cloud_bigquery::client::Read;
 use google_cloud_bigquery::model::{
     ReadRowsRequest, ReadRowsResponse, ReadStream, SplitReadStreamRequest, SplitReadStreamResponse,

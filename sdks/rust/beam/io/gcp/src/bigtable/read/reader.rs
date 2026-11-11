@@ -25,6 +25,8 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Instant;
 
+use beam::metrics::{Lineage, Metrics};
+use beam::retry::RetryWaits;
 use beam::transforms::ProcessContext;
 use beam::transforms::sdf::{ProcessContinuation, RestrictionTracker, SplittableDoFn};
 
@@ -34,6 +36,7 @@ use super::assembler::ScanEvent;
 use super::options::ReadOptions;
 use super::restriction::{KeyRangeRestriction, KeyRangeTracker};
 use super::stream::{StreamBatch, spawn_range_reader};
+use crate::bigtable::METRICS;
 use crate::bigtable::client::BigtableClient;
 use crate::bigtable::key::{compare_end, is_valid_range, next_key};
 use beam::internals::recv_blocking;
@@ -86,12 +89,16 @@ impl<O: ReadOutput> ReadRangesFn<O> {
         if let Some(ScanEvent::Row(_)) = events.first() {
             *silent_scan_start = Instant::now();
         }
+        let mut rows_read: i64 = 0;
+        let mut continuation = None;
         for event in events {
             match event {
                 ScanEvent::Row(raw_row) => {
                     if !tracker.try_claim_slice(&raw_row.key) {
-                        return Ok(Some(ProcessContinuation::Stop));
+                        continuation = Some(ProcessContinuation::Stop);
+                        break;
                     }
+                    rows_read += 1;
                     O::emit_raw_row(
                         raw_row,
                         self.options.shape,
@@ -102,7 +109,8 @@ impl<O: ReadOutput> ReadRangesFn<O> {
                 }
                 ScanEvent::Scanned(scanned_key) => {
                     if !tracker.try_claim_slice(&scanned_key) {
-                        return Ok(Some(ProcessContinuation::Stop));
+                        continuation = Some(ProcessContinuation::Stop);
+                        break;
                     }
                     if silent_scan_start.elapsed() >= self.options.max_silent_scan_duration
                         && is_valid_range(
@@ -110,12 +118,16 @@ impl<O: ReadOutput> ReadRangesFn<O> {
                             &tracker.current_restriction().end_key,
                         )
                     {
-                        return Ok(Some(ProcessContinuation::Resume));
+                        continuation = Some(ProcessContinuation::Resume);
+                        break;
                     }
                 }
             }
         }
-        Ok(None)
+        if rows_read > 0 {
+            Metrics::counter(METRICS, "rows_read").inc_by(rows_read);
+        }
+        Ok(continuation)
     }
 
     /// Emits a permanent stream error and selects the continuation that reads the rest of the
@@ -197,18 +209,24 @@ impl<O: ReadOutput> SplittableDoFn for ReadRangesFn<O> {
             return Ok(ProcessContinuation::Stop);
         }
 
+        Lineage::sources().add(METRICS, self.options.target.lineage_segments());
+
+        let waits = Arc::new(RetryWaits::default());
         let (mut rx, _abort_guard) = spawn_range_reader(
             self.client.clone(),
             Arc::clone(&self.options),
             current.start_key,
             current.end_key,
             tracker.split_notifier(),
+            Arc::clone(&waits),
         )?;
 
         let mut silent_scan_start = Instant::now();
 
         loop {
-            let batch = match recv_blocking(&mut rx) {
+            let received = recv_blocking(&mut rx);
+            waits.record(METRICS);
+            let batch = match received {
                 Some(Some(batch)) => batch,
                 Some(None) => {
                     tracker.mark_done();
@@ -233,10 +251,12 @@ impl<O: ReadOutput> SplittableDoFn for ReadRangesFn<O> {
                     if let Some(continuation) =
                         self.process_events(events, tracker, &mut silent_scan_start, ctx)?
                     {
+                        waits.record(METRICS);
                         return Ok(continuation);
                     }
                 }
                 StreamBatch::Error { last_key, message } => {
+                    waits.record(METRICS);
                     return self.on_stream_error(tracker, &last_key, message, ctx);
                 }
             }

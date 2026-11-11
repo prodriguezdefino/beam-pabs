@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! BigQuery benchmark in a Rust pipeline, with the native Storage Read and Storage Write
+//! BigQuery benchmark in a Rust pipeline, with the Storage Read and Storage Write
 //! connectors.
 //!
 //! - `count` reads `--table` (or `--query`), counts the rows, and adds the total to `e2e/rows`.
@@ -26,8 +26,8 @@
 //!
 //! All steps run in one Rust SDK harness.
 
-use beam::io::gcp::bigquery::storage::read::{ArrowCompression, ReadOptions, ReadRows};
-use beam::io::gcp::bigquery::storage::write::{self, WriteOptions, WriteRows};
+use beam::io::gcp::bigquery::read::{ArrowCompression, ReadOptions, ReadRows};
+use beam::io::gcp::bigquery::write::{self, WriteOptions, WriteRows};
 use beam::options::PipelineOptionGroup;
 use beam::prelude::*;
 use beam_benchmark_io::{Connector, RecordRowsFn, TouchFn};

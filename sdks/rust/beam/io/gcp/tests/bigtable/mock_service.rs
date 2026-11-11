@@ -19,7 +19,6 @@
 
 //! End-to-end execution tests for [`SampleKeyRangesFn`], [`ReadRangesFn`], [`ReadRows`],
 //! [`WriteMutationsFn`], and [`WriteMutations`] against an in-process mock Bigtable gRPC server.
-#![expect(clippy::unwrap_used, reason = "mock gRPC test fixtures")]
 
 use std::collections::VecDeque;
 use std::convert::Infallible;
@@ -36,7 +35,6 @@ use beam::pipeline::Pipeline;
 use beam::schema::{Row, RowElement};
 use beam::transforms::sdf::{ProcessContinuation, RestrictionTracker, SplittableDoFn};
 use beam::transforms::{Create, DoFn};
-use bytes::Bytes;
 use beam_io_gcp::bigtable::RowFilterExt as _;
 use beam_io_gcp::bigtable::proto::mutate_rows_response::Entry as MutateRespEntry;
 use beam_io_gcp::bigtable::proto::read_rows_response::CellChunk;
@@ -53,7 +51,10 @@ use beam_io_gcp::bigtable::target::{ReadTarget, WriteTarget};
 use beam_io_gcp::bigtable::write::decode::MutationInputKind;
 use beam_io_gcp::bigtable::write::writer::WriteMutationsFn;
 use beam_io_gcp::bigtable::write::{WriteMutations, WriteOptions, error_schema};
-use beam_io_gcp::bigtable::{BigtableColumn, BigtableMutation, flattened_row_schema, mutation_schema};
+use beam_io_gcp::bigtable::{
+    BigtableColumn, BigtableMutation, flattened_row_schema, mutation_schema,
+};
+use bytes::Bytes;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tonic::codegen::http::{Request as HttpRequest, Response as HttpResponse};
@@ -106,6 +107,7 @@ struct MockBigtableState {
     read_scripts: Mutex<VecDeque<Vec<Result<ReadRowsResponse, Status>>>>,
     read_delay: Option<Duration>,
     mutate_calls: AtomicUsize,
+    flaky_calls: AtomicUsize,
 }
 
 #[derive(Clone)]
@@ -224,7 +226,7 @@ impl ServerStreamingService<MutateRowsRequest> for MutateSvc {
                     .push(h.to_str().unwrap().to_string());
             }
             let req = request.into_inner();
-            let call_num = state.mutate_calls.fetch_add(1, Ordering::SeqCst);
+            state.mutate_calls.fetch_add(1, Ordering::SeqCst);
             state.mutate_requests.lock().unwrap().push(req.clone());
 
             let entries = req
@@ -238,7 +240,9 @@ impl ServerStreamingService<MutateRowsRequest> for MutateSvc {
                             message: "bad row key".to_string(),
                             ..Default::default()
                         }
-                    } else if entry.row_key.as_ref() == b"flaky-key" && call_num == 0 {
+                    } else if entry.row_key.as_ref() == b"flaky-key"
+                        && state.flaky_calls.fetch_add(1, Ordering::SeqCst) == 0
+                    {
                         RpcStatus {
                             code: 14, // UNAVAILABLE (transient on first call)
                             message: "tablet busy".to_string(),
@@ -395,11 +399,16 @@ fn sample_and_read_materialized_view_with_databoost_and_value_bitmask_filter() {
         .collect();
     assert_eq!(emitted_ranges.len(), 2);
 
+    let read_container = Arc::new(beam::internals::MetricsContainer::new());
     let mut read_fn: ReadRangesFn<RowElement> = ReadRangesFn::new(options, false, None);
     let restriction = KeyRangeRestriction::new(Vec::new(), b"k5".to_vec(), 1000);
     let tracker = read_fn.create_tracker(&restriction);
     let mut row_sink = VecSink::default();
     {
+        let _scope = beam::internals::MetricsScope::enter(
+            Arc::clone(&read_container),
+            Arc::from("ReadRanges"),
+        );
         let mut hctx = HandlerContext::new(&mut row_sink);
         let mut read_ctx = hctx.as_process_context::<RowElement>();
         let cont = read_fn
@@ -408,6 +417,19 @@ fn sample_and_read_materialized_view_with_databoost_and_value_bitmask_filter() {
         assert_eq!(cont, ProcessContinuation::Stop);
     }
     tracker.check_done().unwrap();
+
+    let read_metrics = beam::metrics::MetricResults::from_container(&read_container);
+    assert_eq!(
+        read_metrics.counter_for_transform("ReadRanges", "bigtable", "rows_read"),
+        Some(1)
+    );
+    let sources = read_metrics
+        .string_set(
+            beam::metrics::LINEAGE_NAMESPACE,
+            beam::metrics::LINEAGE_SOURCES,
+        )
+        .expect("source lineage recorded");
+    assert!(sources.values().contains("bigtable:proj.inst.daily_mv"));
 
     assert_eq!(row_sink.0.len(), 1);
     let decoded_row = Row::from_row_bytes(&flattened_row_schema(), &row_sink.0[0]).unwrap();
@@ -579,7 +601,7 @@ fn write_mutations_retries_transient_per_row_errors_and_routes_permanent_rejecti
     let in_schema = mutation_schema();
     let err_schema = Arc::new(error_schema(&in_schema));
     let write_fn = WriteMutationsFn::new(
-        options,
+        Arc::new(options),
         MutationInputKind::Flat,
         Arc::clone(&in_schema),
         Arc::clone(&err_schema),
@@ -593,15 +615,20 @@ fn write_mutations_retries_transient_per_row_errors_and_routes_permanent_rejecti
         Row::from(BigtableMutation::set_cell("bad-key", "cf", "q", "v3")),
     ];
 
+    let write_container = Arc::new(beam::internals::MetricsContainer::new());
     let mut sink = VecSink::default();
-    handler.start_bundle().unwrap();
-    for r in rows {
-        let mut hctx = HandlerContext::new(&mut sink);
-        handler
-            .process(&r.to_row_bytes().unwrap(), &mut hctx)
-            .unwrap();
-    }
     {
+        let _scope = beam::internals::MetricsScope::enter(
+            Arc::clone(&write_container),
+            Arc::from("WriteMutations"),
+        );
+        handler.start_bundle().unwrap();
+        for r in rows {
+            let mut hctx = HandlerContext::new(&mut sink);
+            handler
+                .process(&r.to_row_bytes().unwrap(), &mut hctx)
+                .unwrap();
+        }
         let mut hctx = HandlerContext::new(&mut sink);
         handler.finish_bundle(&mut hctx).unwrap();
     }
@@ -612,15 +639,57 @@ fn write_mutations_retries_transient_per_row_errors_and_routes_permanent_rejecti
     let msg = err_row.get_string("error_message").unwrap().unwrap();
     assert!(msg.contains("bad row key"), "msg = {msg}");
     assert!(state.mutate_calls.load(Ordering::SeqCst) >= 2);
+
+    let write_metrics = beam::metrics::MetricResults::from_container(&write_container);
+    assert_eq!(
+        write_metrics.counter_for_transform("WriteMutations", "bigtable", "mutations_written"),
+        Some(2)
+    );
+    assert!(
+        write_metrics
+            .counter_for_transform("WriteMutations", "bigtable", "bytes_written")
+            .unwrap_or(0)
+            > 0
+    );
+    assert_eq!(
+        write_metrics.counter_for_transform("WriteMutations", "bigtable", "write_retries"),
+        Some(1)
+    );
+    // UNAVAILABLE is not server push-back: the wait is a retry wait, not throttling.
+    assert!(
+        write_metrics
+            .counter_for_transform(
+                "WriteMutations",
+                "bigtable",
+                beam::metrics::RETRY_WAIT_COUNTER_NAME,
+            )
+            .unwrap_or(0)
+            >= 100
+    );
+    assert_eq!(
+        write_metrics.counter_for_transform(
+            "WriteMutations",
+            beam::metrics::THROTTLE_TIME_NAMESPACE,
+            beam::metrics::THROTTLE_TIME_COUNTER_NAME,
+        ),
+        None
+    );
+    let sinks = write_metrics
+        .string_set(
+            beam::metrics::LINEAGE_NAMESPACE,
+            beam::metrics::LINEAGE_SINKS,
+        )
+        .expect("sink lineage recorded");
+    assert!(sinks.values().contains("bigtable:p.i.t"));
 }
 
 #[test]
-fn pipeline_construction_for_native_read_and_write_transforms() {
+fn pipeline_construction_for_read_and_write_transforms() {
     let pipeline = Pipeline::new();
     let read_opts = ReadOptions::new(ReadTarget::table("p", "i", "t"));
     let read_outputs = pipeline
         .try_apply(
-            "NativeRead",
+            "ReadRows",
             ReadRows::new(read_opts).with_encoded_rows().with_failures(),
         )
         .unwrap();
@@ -639,7 +708,7 @@ fn pipeline_construction_for_native_read_and_write_transforms() {
         .with_row_schema(&mutation_schema());
     let write_opts = WriteOptions::new(WriteTarget::table("p", "i", "t"));
     let write_errors = mutations
-        .try_apply("NativeWrite", WriteMutations::new(write_opts))
+        .try_apply("WriteMutations", WriteMutations::new(write_opts))
         .unwrap();
     assert_eq!(
         write_errors.row_schema().unwrap(),
