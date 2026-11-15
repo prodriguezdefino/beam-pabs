@@ -50,6 +50,7 @@ class RustIoTasks {
     io.registerGcp()
     io.registerKafka()
     io.registerKafkaCopyBenchmark()
+    io.registerIceberg()
     return io
   }
 
@@ -318,6 +319,52 @@ class RustIoTasks {
             removeContainer(host, container)
           }
         }
+      }
+    }
+  }
+
+  private void registerIceberg() {
+    Project project = build.project
+    containers.registerExpansionImageTasks([
+      buildTask       : 'buildIcebergExpansionService',
+      imageTask       : 'icebergExpansionServiceImage',
+      bin             : 'beam-iceberg-expansion-service',
+      arch            : config.workerArch,
+      image           : containers.rustImageName('iceberg_expansion_service'),
+      buildDescription: 'Build the Linux expansion service binary of the Iceberg connector of the Rust SDK (-PexampleArch=amd64)',
+      imageDescription: 'Build the expansion service image of the Iceberg connector of the Rust SDK, beam_rust_iceberg_expansion_service ([-PbaseImage=<image>] [-PexampleArch=amd64] [-Ppush-containers])',
+    ])
+
+    xlang.registerDataflowExpansionImageTasks([
+      buildTask       : 'buildIcebergExpansionServiceDataflow',
+      imageTask       : 'icebergExpansionServiceDataflowImage',
+      bin             : 'beam-iceberg-expansion-service',
+      imageName       : 'iceberg_expansion_service',
+      root            : connectorDataflowRoot,
+      buildDescription: 'Build the linux/amd64 expansion service binary of the Iceberg connector for Dataflow',
+      imageDescription: 'Build and push the linux/amd64 beam_rust_iceberg_expansion_service image for Dataflow ([-PdataflowRepositoryRoot=<registry>])',
+    ])
+
+    String icebergTestingImage = containers.rustImageName('iceberg_expansion_service_testing')
+    File icebergTestsDir = new File(build.rustDir, 'beam/io/iceberg/expansion-service/tests/python')
+
+    containers.registerExpansionImageTasks([
+      buildTask       : 'buildIcebergExpansionServiceTesting',
+      imageTask       : 'icebergExpansionServiceTestingImage',
+      bin             : 'beam-iceberg-expansion-service',
+      arch            : xlang.xlangArch,
+      image           : icebergTestingImage,
+      buildDescription: 'Build the Linux expansion service binary of the Iceberg connector of the Rust SDK for its Python tests ([-PexampleArch=<arch>])',
+      imageDescription: 'Build the image of the Iceberg connector of the Rust SDK for its Python tests, beam_rust_iceberg_expansion_service_testing ([-PexampleArch=<arch>])',
+    ])
+
+    project.tasks.register('icebergExpansionServicePythonTest') { Task task ->
+      task.group = 'Verification'
+      task.description = 'Run the Python tests of the Rust Iceberg provider on Prism, against a local mock ' +
+          'REST catalog ([-Ptests=iceberg] [-PtestFilter=<pytest -k>] [-PpythonVersion=3.12])'
+      task.dependsOn('icebergExpansionServiceTestingImage', 'fetchPrism', 'setupXlangPythonEnv')
+      task.doLast {
+        runProviderPythonTests(icebergTestingImage, icebergTestsDir, new LinkedHashMap<String, String>(), null, false)
       }
     }
   }

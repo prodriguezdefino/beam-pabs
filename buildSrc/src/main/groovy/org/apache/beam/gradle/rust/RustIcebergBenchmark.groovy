@@ -28,6 +28,16 @@ class RustIcebergBenchmark {
   static void register(RustIoBenchmarkSupport support) {
     Project project = support.build.project
 
+    support.xlang.registerDataflowExpansionImageTasks([
+      buildTask       : 'buildIcebergBenchmarkExpansionServiceDataflow',
+      imageTask       : 'icebergBenchmarkExpansionServiceDataflowImage',
+      bin             : 'beam-iceberg-benchmark-expansion-service',
+      imageName       : 'iceberg_benchmark_expansion_service',
+      root            : support.ioTasks.connectorDataflowRoot,
+      buildDescription: 'Build the linux/amd64 Kafka and Iceberg expansion service binary of icebergBenchmark for Dataflow',
+      imageDescription: 'Build and push the linux/amd64 beam_rust_iceberg_benchmark_expansion_service image for Dataflow ([-PdataflowRepositoryRoot=<registry>])',
+    ])
+
     support.registerDataflowBenchmark(new RustIoBenchmarkSupport.BenchmarkSpec(
         task: 'icebergBenchmark',
         compileTask: 'compileIcebergJavaBenchmark',
@@ -49,13 +59,15 @@ class RustIcebergBenchmark {
         },
         rustPackage: 'apache-beam-benchmark-iceberg',
         rustShapes: ['ingest'],
+        expansionImageTask: 'icebergBenchmarkExpansionServiceDataflowImage',
+        expansionImageName: 'iceberg_benchmark_expansion_service',
         defaultShape: 'ingest',
         shapes: ['ingest'],
         readShapes: [],
         writeShapes: ['ingest'],
         writers: [
-          python: ['java'],
-          java  : ['java-native'],
+          python: ['java', 'rust'],
+          java  : ['java-native', 'rust'],
           rust  : ['rust'],
         ],
         hasProducer: { String shape -> support.kafkaProducerRequested() },
@@ -71,7 +83,7 @@ class RustIcebergBenchmark {
           ])
         },
         description: 'Stream DeviceMetric records from Kafka to a BigLake Iceberg table on Dataflow ' +
-            '([-Ppipeline=rust|java|python] -Pwriter=rust (Rust) or java-native (Java) or java ' +
+            '([-Ppipeline=rust|java|python] -Pwriter=rust (Rust) or java-native|rust (Java) or java|rust ' +
             '(Python) [-PbootstrapServers=<host:port>] [-Ptopic=device-metrics] ' +
             '[-Pcatalog=<BigLake catalog>] [-Pnamespace=iceberg_bench] [-PtriggeringFrequency=60] ' +
             '[-PnumShards=<n>] [-PobjectStorage] [-PautoOffsetReset=earliest|latest] [-PgroupId=<id>] ' +

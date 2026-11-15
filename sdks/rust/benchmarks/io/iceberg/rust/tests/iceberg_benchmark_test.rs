@@ -94,3 +94,25 @@ fn a_local_run_with_an_end_builds_a_bounded_write() {
     let p = build_pipeline(&options, &args).expect("a pipeline");
     p.validate().expect("a valid pipeline");
 }
+
+#[tokio::test]
+async fn benchmark_expansion_service_discovers_kafka_and_iceberg_providers() {
+    use beam::model::expansion::DiscoverSchemaTransformRequest;
+    use beam::model::expansion::expansion_service_server::ExpansionService;
+    use beam_expansion::ExpansionServiceServer;
+    use beam_io_iceberg_expansion::URN_ICEBERG_WRITE;
+    use beam_io_kafka_expansion::URN_KAFKA_READ;
+    use tonic::Request;
+
+    let resp = ExpansionServiceServer::new()
+        .discover_schema_transform(Request::new(DiscoverSchemaTransformRequest {}))
+        .await
+        .expect("discovery succeeds")
+        .into_inner();
+    assert_eq!(resp.error, "");
+    assert!(resp.schema_transform_configs.contains_key(URN_KAFKA_READ));
+    assert!(
+        resp.schema_transform_configs
+            .contains_key(URN_ICEBERG_WRITE)
+    );
+}

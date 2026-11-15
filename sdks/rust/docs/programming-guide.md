@@ -1236,6 +1236,7 @@ Other SDKs can expand Rust transforms over gRPC:
 - The `beam-expansion-service` binary ([main.rs](../beam/expansion/src/main.rs)) serves them over TCP (`--port`, default `8097`; `--host`; `--docker_image`). When a container boot program starts it with `--worker`, the same binary runs as the SDK worker for the transforms that it expanded.
 - `beam-gcp-expansion-service` (crate `apache-beam-io-gcp-expansion-service`) serves the GCP connectors (BigQuery Storage Read and Write, Bigtable). See [beam/io/gcp/expansion-service](../beam/io/gcp/expansion-service/src/lib.rs).
 - `beam-kafka-expansion-service` (crate `apache-beam-io-kafka-expansion-service`) serves the Kafka read and write connectors. See [beam/io/kafka/expansion-service](../beam/io/kafka/expansion-service/src/lib.rs).
+- `beam-iceberg-expansion-service` (crate `apache-beam-io-iceberg-expansion-service`) serves the Iceberg write connector. See [beam/io/iceberg/expansion-service](../beam/io/iceberg/expansion-service/src/lib.rs).
 
 ### Managed I/O (`beam::io::managed`)
 

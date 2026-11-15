@@ -31,7 +31,7 @@ This page gives the tasks that measure the performance of the SDK: local profile
 ./gradlew :sdks:rust:bigQueryBenchmark           # BigQuery benchmark on Dataflow ([-Ppipeline=python|java|rust] [-Pshape=count|per_key|copy] -Preader=...|-Preaders=a,b [-Pwriter=...] [-PnumWorkers=4] [-PmaxNumWorkers=10] [-Pruns=1] [-PdryRun])
 ./gradlew :sdks:rust:bigtableBenchmark           # Bigtable benchmark on Dataflow ([-Ppipeline=python|java|rust] [-Pshape=bt_to_gcs|gcs_to_bt] -Preader=...|-Pwriter=... [-Pruns=1] [-PdryRun])
 ./gradlew :sdks:rust:kafkaBenchmark              # Kafka benchmark on Dataflow ([-Ppipeline=python|java|rust] [-Pshape=load|copy] [-Pformat=BYTES|RAW|JSON|AVRO] [-Pruns=1] [-PdryRun])
-./gradlew :sdks:rust:icebergBenchmark            # Iceberg streaming ingest benchmark on Dataflow ([-Ppipeline=python|java|rust] [-Pwriter=...] [-Pruns=1] [-PdryRun])
+./gradlew :sdks:rust:icebergBenchmark            # Iceberg streaming ingest benchmark on Dataflow ([-Ppipeline=python|java|rust] -Pwriter=java|rust|java-native [-Pwriters=java,rust] [-Pruns=1] [-PdryRun])
 ./gradlew :sdks:rust:setupBenchmarkPythonEnv   # Python virtualenv with a released SDK for Dataflow I/O benchmarks
 ```
 
@@ -103,3 +103,15 @@ The readers depend on the pipeline:
 - `-Ppipeline=rust`: `rust`.
 
 The default reader is `rust`. `-Preaders=java,rust` runs one job for each reader in each round. `copy` also needs `-Pwriter` (or `-Pwriters`). The writers are `java` or `rust` for `-Ppipeline=python`, `java-native`, `java-managed` or `rust` for `-Ppipeline=java`, and `rust` for `-Ppipeline=rust`. The Rust pipeline ([`apache-beam-benchmark-bigquery`](io/bigquery/rust)) runs `count` and `copy` in one Rust SDK harness. Its `count` adds the total to the `e2e/rows` counter, and the script checks `-PexpectedRows` against it. `-ProwRestriction` limits the rows for a smoke run. Every shape runs on fixed workers (`-PnumWorkers=4`) or with autoscaling (`-PnumWorkers=1 -PmaxNumWorkers=10`). See [`RustBigQueryBenchmark.groovy`](../../../buildSrc/src/main/groovy/org/apache/beam/gradle/rust/RustBigQueryBenchmark.groovy) for the other properties.
+
+### Iceberg benchmark
+
+`icebergBenchmark` runs the streaming `ingest` shape from a Kafka topic to a BigLake REST Iceberg table. After each job, the task checks the committed table rows against the Kafka topic offsets and drops the table unless `-PkeepTable` is set.
+
+The writers depend on the pipeline:
+
+- `-Ppipeline=python` (the default): `java` (Managed Kafka read and Managed Iceberg write) or `rust` (`rust:kafka_read:v1` and `rust:iceberg_write:v1` served from `icebergBenchmarkExpansionServiceDataflowImage`).
+- `-Ppipeline=java`: `java-native` (`KafkaIO` and `IcebergIO`) or `rust` (`rust:kafka_read:v1` and `rust:iceberg_write:v1`; pass `-Pexperiments=data_buffer_size_limit=10000000`).
+- `-Ppipeline=rust`: `rust` (`apache-beam-benchmark-iceberg` in one Rust SDK harness).
+
+See [`RustIcebergBenchmark.groovy`](../../../buildSrc/src/main/groovy/org/apache/beam/gradle/rust/RustIcebergBenchmark.groovy) for the other properties.

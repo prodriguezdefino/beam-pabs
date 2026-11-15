@@ -18,14 +18,20 @@
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import org.apache.beam.model.pipeline.v1.ExternalTransforms.SchemaTransformPayload;
 import org.apache.beam.runners.dataflow.DataflowPipelineJob;
 import org.apache.beam.runners.dataflow.options.DataflowPipelineOptions;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.PipelineResult;
+import org.apache.beam.sdk.coders.ByteArrayCoder;
+import org.apache.beam.sdk.coders.RowCoder;
 import org.apache.beam.sdk.io.iceberg.IcebergCatalogConfig;
 import org.apache.beam.sdk.io.iceberg.IcebergIO;
 import org.apache.beam.sdk.io.kafka.KafkaIO;
@@ -36,11 +42,17 @@ import org.apache.beam.sdk.options.Default;
 import org.apache.beam.sdk.options.Description;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.schemas.Schema;
+import org.apache.beam.sdk.schemas.SchemaTranslation;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.ParDo;
 import org.apache.beam.sdk.transforms.Values;
+import org.apache.beam.sdk.util.construction.External;
+import org.apache.beam.sdk.values.PBegin;
 import org.apache.beam.sdk.values.PCollection;
+import org.apache.beam.sdk.values.PCollectionTuple;
 import org.apache.beam.sdk.values.Row;
+import org.apache.beam.sdk.values.TupleTag;
+import org.apache.beam.vendor.grpc.v1p69p0.com.google.protobuf.ByteString;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.joda.time.Duration;
@@ -49,22 +61,29 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Iceberg benchmark in a Java pipeline: the streaming {@code ingest} shape with {@code KafkaIO}
- * and {@code IcebergIO} ({@code --writer=java-native}).
+ * Iceberg benchmark in a Java pipeline: the streaming {@code ingest} shape with {@code KafkaIO} and
+ * {@code IcebergIO} ({@code --writer=java-native}), or with the Rust Kafka read and Rust Iceberg
+ * write providers through the Rust expansion service ({@code --writer=rust}).
  *
  * <p>The pipeline reads the DeviceMetric JSON records of {@code --topic}, counts each record in
  * {@code e2e/rows} and {@code e2e/latency_ms} (the same step as the Kafka benchmark), parses it as
  * the Python reference job does, and appends the rows to {@code --table} of the BigLake REST
- * catalog. The table is partitioned by the hour of {@code timestamp_ms}. {@code IcebergIO} takes
- * no table properties, so the catalog sets them with its {@code table-default.} properties.
+ * catalog. The table is partitioned by the hour of {@code timestamp_ms}. {@code IcebergIO} takes no
+ * table properties, so the catalog sets them with its {@code table-default.} properties; the Rust
+ * provider sets {@code table_properties} directly.
  *
- * <p>{@code ./gradlew :sdks:rust:icebergBenchmark -Ppipeline=java -Pwriter=java-native} runs this
- * class; {@code benchmarks/tools/job_wait.py} waits for and drains the submitted job.
+ * <p>{@code ./gradlew :sdks:rust:icebergBenchmark -Ppipeline=java -Pwriters=java-native,rust} runs
+ * this class; {@code benchmarks/tools/job_wait.py} waits for and drains the submitted job.
  */
 public class IcebergBenchmark {
   private static final Logger LOG = LoggerFactory.getLogger(IcebergBenchmark.class);
 
   static final String BIGLAKE = "https://biglake.googleapis.com/iceberg/v1/restcatalog";
+  static final String RUST_KAFKA_READ_URN =
+      "beam:schematransform:org.apache.beam:rust:kafka_read:v1";
+  static final String RUST_ICEBERG_WRITE_URN =
+      "beam:schematransform:org.apache.beam:rust:iceberg_write:v1";
+  static final String SCHEMA_TRANSFORM_URN = "beam:expansion:payload:schematransform:v1";
 
   static final Schema DEVICE_METRIC =
       Schema.builder()
@@ -84,7 +103,7 @@ public class IcebergBenchmark {
   };
 
   public interface Options extends DataflowPipelineOptions {
-    @Description("Writer: java-native (IcebergIO).")
+    @Description("Writer: java-native (IcebergIO) or rust (Rust expansion service).")
     @Default.String("java-native")
     String getWriter();
 
@@ -150,11 +169,22 @@ public class IcebergBenchmark {
 
     void setTriggeringFrequencySeconds(int value);
 
+    @Description("Number of write shards for --writer=rust. Unset or <= 0 uses the default.")
+    Integer getNumShards();
+
+    void setNumShards(Integer value);
+
     @Description("Hash-prefixed data file paths (write.object-storage.enabled).")
     @Default.Boolean(false)
     boolean getObjectStorage();
 
     void setObjectStorage(boolean value);
+
+    @Description("Address of the Rust expansion service.")
+    @Default.String("localhost:8097")
+    String getExpansionService();
+
+    void setExpansionService(String value);
   }
 
   static Map<String, Object> managedKafkaAuth() {
@@ -236,6 +266,31 @@ public class IcebergBenchmark {
     }
   }
 
+  /** Encodes a {@code SchemaTransformPayload}, as Python's {@code SchemaAwareExternalTransform}. */
+  static byte[] schemaTransformPayload(String urn, Schema configSchema, Row config)
+      throws IOException {
+    ByteArrayOutputStream row = new ByteArrayOutputStream();
+    RowCoder.of(configSchema).encode(config, row);
+    return SchemaTransformPayload.newBuilder()
+        .setIdentifier(urn)
+        .setConfigurationSchema(SchemaTranslation.schemaToProto(configSchema, true))
+        .setConfigurationRow(ByteString.copyFrom(row.toByteArray()))
+        .build()
+        .toByteArray();
+  }
+
+  /** Extracts the {@code payload} bytes of a {@code RAW} Kafka row, keeping its timestamp. */
+  static class ExtractPayloadFn extends DoFn<Row, byte[]> {
+    @ProcessElement
+    public void process(@Element Row row, OutputReceiver<byte[]> out) {
+      byte[] bytes = row.getBytes("payload");
+      if (bytes == null) {
+        throw new IllegalArgumentException("Null payload bytes in RAW Kafka row");
+      }
+      out.output(bytes);
+    }
+  }
+
   static PCollection<byte[]> readValues(Pipeline p, Options options) {
     Map<String, Object> consumerConfig = managedKafkaAuth();
     consumerConfig.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, options.getAutoOffsetReset());
@@ -257,8 +312,48 @@ public class IcebergBenchmark {
         .apply("Values", Values.create());
   }
 
-  /** The catalog of the Python reference job, with the table properties as table defaults. */
-  static IcebergCatalogConfig catalog(Options options) {
+  static PCollection<byte[]> readRustValues(Pipeline p, Options options) throws IOException {
+    String groupId =
+        options.getGroupId().isEmpty()
+            ? "iceberg-bench-java-rust-" + System.currentTimeMillis()
+            : options.getGroupId();
+    Map<String, String> consumerUpdates = new HashMap<>();
+    consumerUpdates.put("group.id", groupId);
+
+    Schema configSchema =
+        Schema.builder()
+            .addStringField("bootstrap_servers")
+            .addStringField("topic")
+            .addStringField("format")
+            .addStringField("auto_offset_reset_config")
+            .addBooleanField("with_gcp_adc")
+            .addMapField(
+                "consumer_config_updates", Schema.FieldType.STRING, Schema.FieldType.STRING)
+            .build();
+    Row config =
+        Row.withSchema(configSchema)
+            .addValues(
+                options.getBootstrapServers(),
+                options.getTopic(),
+                "RAW",
+                options.getAutoOffsetReset(),
+                true,
+                consumerUpdates)
+            .build();
+    byte[] payload = schemaTransformPayload(RUST_KAFKA_READ_URN, configSchema, config);
+    PCollectionTuple outputs =
+        p.apply(
+            "Read",
+            External.<PBegin, Row>of(SCHEMA_TRANSFORM_URN, payload, options.getExpansionService())
+                .withMultiOutputs());
+    @SuppressWarnings("unchecked")
+    PCollection<Row> rawRows = (PCollection<Row>) outputs.get(new TupleTag<Row>("output"));
+    return rawRows
+        .apply("PayloadBytes", ParDo.of(new ExtractPayloadFn()))
+        .setCoder(ByteArrayCoder.of());
+  }
+
+  static Map<String, String> catalogProperties(Options options) {
     Map<String, String> props = new HashMap<>();
     props.put("type", "rest");
     props.put("uri", options.getCatalogUri());
@@ -267,17 +362,31 @@ public class IcebergBenchmark {
     props.put("io-impl", "org.apache.iceberg.gcp.gcs.GCSFileIO");
     props.put("header.X-Iceberg-Access-Delegation", "vended-credentials");
     props.put("rest-metrics-reporting-enabled", "true");
-    if (options.getUserProject() != null) {
+    if (options.getUserProject() != null && !options.getUserProject().isEmpty()) {
       props.put("header.x-goog-user-project", options.getUserProject());
     }
-    if (options.getGcpLocation() != null) {
+    if (options.getGcpLocation() != null && !options.getGcpLocation().isEmpty()) {
       props.put("gcp_location", options.getGcpLocation());
     }
-    props.put("table-default.gcp.biglake.table-management.enabled", "true");
-    props.put("table-default.gcp.biglake.bigquery-dml.enabled", "true");
-    props.put("table-default.write.parquet.compression-codec", "zstd");
+    return props;
+  }
+
+  static Map<String, String> tableProperties(Options options) {
+    Map<String, String> props = new HashMap<>();
+    props.put("gcp.biglake.table-management.enabled", "true");
+    props.put("gcp.biglake.bigquery-dml.enabled", "true");
+    props.put("write.parquet.compression-codec", "zstd");
     if (options.getObjectStorage()) {
-      props.put("table-default.write.object-storage.enabled", "true");
+      props.put("write.object-storage.enabled", "true");
+    }
+    return props;
+  }
+
+  /** The catalog of the Python reference job, with the table properties as table defaults. */
+  static IcebergCatalogConfig catalog(Options options) {
+    Map<String, String> props = catalogProperties(options);
+    for (Map.Entry<String, String> entry : tableProperties(options).entrySet()) {
+      props.put("table-default." + entry.getKey(), entry.getValue());
     }
     return IcebergCatalogConfig.builder()
         .setCatalogName("biglake")
@@ -285,10 +394,43 @@ public class IcebergBenchmark {
         .build();
   }
 
+  static void writeRust(PCollection<Row> rows, Options options) throws IOException {
+    Schema.Builder schema =
+        Schema.builder()
+            .addStringField("table")
+            .addStringField("catalog_name")
+            .addMapField("catalog_properties", Schema.FieldType.STRING, Schema.FieldType.STRING)
+            .addMapField("table_properties", Schema.FieldType.STRING, Schema.FieldType.STRING)
+            .addArrayField("partition_fields", Schema.FieldType.STRING)
+            .addInt32Field("triggering_frequency_seconds");
+    List<Object> values = new ArrayList<>();
+    values.add(options.getTable());
+    values.add("biglake");
+    values.add(catalogProperties(options));
+    values.add(tableProperties(options));
+    values.add(Arrays.asList("hour(timestamp_ms)"));
+    values.add(options.getTriggeringFrequencySeconds());
+    if (options.getNumShards() != null && options.getNumShards() > 0) {
+      schema.addInt32Field("num_shards");
+      values.add(options.getNumShards());
+    }
+    Schema configSchema = schema.build();
+    Row config = Row.withSchema(configSchema).addValues(values).build();
+    byte[] payload = schemaTransformPayload(RUST_ICEBERG_WRITE_URN, configSchema, config);
+    PCollectionTuple.of(new TupleTag<Row>("input"), rows)
+        .apply(
+            "Write",
+            External.<PCollectionTuple, Row>of(
+                    SCHEMA_TRANSFORM_URN, payload, options.getExpansionService())
+                .withMultiOutputs());
+  }
+
   public static void main(String[] args) throws IOException {
     Options options = PipelineOptionsFactory.fromArgs(args).withValidation().as(Options.class);
-    if (!"ingest".equals(options.getShape()) || !"java-native".equals(options.getWriter())) {
-      throw new IllegalArgumentException("Use --shape=ingest --writer=java-native");
+    if (!"ingest".equals(options.getShape())
+        || (!"java-native".equals(options.getWriter()) && !"rust".equals(options.getWriter()))) {
+      throw new IllegalArgumentException(
+          "Use --shape=ingest --writer=java-native or --writer=rust");
     }
     for (String required :
         new String[] {
@@ -303,17 +445,24 @@ public class IcebergBenchmark {
     options.setStreaming(true);
 
     Pipeline p = Pipeline.create(options);
-    readValues(p, options)
-        .apply("Touch", ParDo.of(new TouchFn()))
-        .apply("Parse", ParDo.of(new ParseFn()))
-        .setRowSchema(DEVICE_METRIC)
-        .apply(
-            "Write",
-            IcebergIO.writeRows(catalog(options))
-                .to(TableIdentifier.parse(options.getTable()))
-                .withPartitionFields(Arrays.asList("hour(timestamp_ms)"))
-                .withTriggeringFrequency(
-                    Duration.standardSeconds(options.getTriggeringFrequencySeconds())));
+    PCollection<byte[]> rawBytes =
+        "rust".equals(options.getWriter()) ? readRustValues(p, options) : readValues(p, options);
+    PCollection<Row> parsed =
+        rawBytes
+            .apply("Touch", ParDo.of(new TouchFn()))
+            .apply("Parse", ParDo.of(new ParseFn()))
+            .setRowSchema(DEVICE_METRIC);
+    if ("rust".equals(options.getWriter())) {
+      writeRust(parsed, options);
+    } else {
+      parsed.apply(
+          "Write",
+          IcebergIO.writeRows(catalog(options))
+              .to(TableIdentifier.parse(options.getTable()))
+              .withPartitionFields(Arrays.asList("hour(timestamp_ms)"))
+              .withTriggeringFrequency(
+                  Duration.standardSeconds(options.getTriggeringFrequencySeconds())));
+    }
     PipelineResult result = p.run();
     if (result instanceof DataflowPipelineJob) {
       System.out.println("JOB_ID=" + ((DataflowPipelineJob) result).getJobId());

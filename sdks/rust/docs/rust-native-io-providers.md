@@ -29,7 +29,7 @@ This document describes the native I/O connectors of the Rust SDK, the libraries
 | **BigQuery Storage Write** | `gcp::bigquery::write` (`gcp-bigquery`) | `beam:schematransform:org.apache.beam:rust:bigquery_storage_write:v1` | Default stream (at least once), pending streams + `BatchCommitWriteStreams` (bounded exactly once), sharded buffered streams + timers (unbounded exactly once), field projection (`keep`, `drop`, `only`, `ignore_unknown_values`), dead-letter `errors` output | `WRITE_TRUNCATE`, dynamic destinations, CDC writes: use `ManagedWrite` |
 | **Bigtable Read & Write** | `gcp::bigtable::{read, write}` (`gcp-bigtable`) | `beam:schematransform:org.apache.beam:rust:bigtable_read:v1`, `...:bigtable_write:v1` | `ReadRows` with `SampleRowKeys` initial splits, dynamic split notifications, materialized and authorized views, app profiles, `RowFilter`s; `MutateRows` batching, partial-failure retries, `RateLimitInfo` flow control, flat and batched schemas, dead-letter `errors` output | A server-assigned `SetCell` timestamp (`-1`) can write duplicate cells on stream retry |
 | **Kafka Read & Write** | `kafka::{read, write, codec}` (`kafka`) | `beam:schematransform:org.apache.beam:rust:kafka_read:v1`, `...:kafka_write:v1` | Bounded and unbounded SDF reads, consumer pool, parked partition leases, bundle-finalizer offset commits, `Redistribute` (`Off`, `Random`, `Keys`), Managed Kafka `SASL/OAUTHBEARER` ADC auth, `Raw`, `Utf8`, `Json`, `Avro` (plain and Confluent `SchemaRegistry`), `Proto`, `BeamRow`, `WithMetadata`, dead-letter outputs | Exactly-once transactional writes, multi-topic patterns, dynamic destination topics |
-| **Iceberg Write** | `iceberg` (`iceberg`) | — (native Rust; Managed I/O for xlang) | REST catalog (`BigLake` and standard REST), `BearerAuth` per-request token refresh, vended GCS credentials, partitioned Parquet data files, bounded and periodic (`triggering_frequency`) snapshot commits | Read, dynamic table routing, upserts: use `ManagedRead` / `ManagedWrite` |
+| **Iceberg Write** | `iceberg` (`iceberg`) | `beam:schematransform:org.apache.beam:rust:iceberg_write:v1` | REST catalog (`BigLake` and standard REST), `BearerAuth` per-request token refresh, vended GCS credentials, partitioned Parquet data files, bounded and periodic (`triggering_frequency`) snapshot commits, dead-letter `errors` output | Read, dynamic table routing, upserts: use `ManagedRead` / `ManagedWrite` |
 | **Cloud Storage (`gs://`)** | `gcp::gcs` (`gcp-gcs`) | — (`FileSystem` registry) | Async reads and writes (`GcsFileSystem`, `GcsAsyncWriter`), 8 MiB buffered single-shot uploads, resumable streaming uploads above 8 MiB | — |
 | **Pub/Sub** | `gcp::pubsub` (`gcp-pubsub`) | — (consumes Java expansion service) | Cross-language `PubsubRead` / `PubsubWrite` (`try_apply`) | Native read and write: the transforms need the Java expansion service |
 
@@ -45,6 +45,7 @@ Format codecs live in standalone crates under `beam/io/` so file, messaging, and
 | `apache-beam-io-kafka` | `beam_io_kafka` | Native Kafka read, write, auth, and codecs |
 | `apache-beam-io-kafka-expansion-service` | — (`beam-kafka-expansion-service`) | Serves Kafka `SchemaTransform` providers |
 | `apache-beam-io-iceberg` | `beam_io_iceberg` | Native Iceberg REST catalog write |
+| `apache-beam-io-iceberg-expansion-service` | `beam_io_iceberg_expansion` (`beam-iceberg-expansion-service`) | Serves the Iceberg write `SchemaTransform` provider |
 | `apache-beam-io-arrow` | `beam_io_arrow` | Beam `Schema` / `Row` / `RowElement` ⇄ Arrow `RecordBatch` |
 | `apache-beam-io-avro` | `beam_io_avro` | Block-splittable Avro OCF files and single-record `datum` codecs |
 | `apache-beam-io-parquet` | `beam_io_parquet` | Row-group-splittable Parquet reads and sharded writes |
@@ -137,17 +138,18 @@ The `report.md` of a run gives vCPU time, element counts and rates, memory, shuf
 
 ### Expansion and worker execution
 
-`beam-gcp-expansion-service` and `beam-kafka-expansion-service` expose the native connectors to Python (`SchemaAwareExternalTransform`), Java (`External`), and Go (`xlangx`) with no changes outside `sdks/rust`:
+`beam-gcp-expansion-service`, `beam-kafka-expansion-service`, and `beam-iceberg-expansion-service` expose the native connectors to Python (`SchemaAwareExternalTransform`), Java (`External`), and Go (`xlangx`) with no changes outside `sdks/rust`:
 
 - **Payloads:** [`beam_expansion`](../beam/expansion/src/lib.rs) accepts both `SchemaTransformPayload` and `ExternalConfigurationPayload`, maps fields by name, and widens integer config fields (such as Python `INT64` into `INT32`) when values fit.
 - **Deterministic replay (`ReplayEntry`):** Foreign drivers do not run a Rust `main` binary on the worker. The expansion server rewrites expanded `DoFn`s to `beam:dofn:rust:expanded:v1` with a `ReplayEntry` (`provider`, `config`, `namespace`, `expansion_id`), and the Rust worker replays `build_transform` once per `expansion_id` to populate its handler map ([`replay.rs`](../beam/harness/src/replay.rs)).
-- **Single container image:** `gcpExpansionServiceImage` and `kafkaExpansionServiceImage` bake the service binary into the Rust SDK base image (`--port` runs the expansion server; `--worker` via `boot` runs the Fn API worker). All expansions from one service emit identical environment protos, so Python merges them into one Rust container per VM.
+- **Single container image:** `gcpExpansionServiceImage`, `kafkaExpansionServiceImage`, and `icebergExpansionServiceImage` bake the service binary into the Rust SDK base image (`--port` runs the expansion server; `--worker` through `boot` runs the Fn API worker). All expansions from one service emit identical environment protos, so Python merges them into one Rust container per VM. `beam-iceberg-benchmark-expansion-service` links both `beam_io_kafka_expansion` and `beam_io_iceberg_expansion` so `icebergBenchmark` runs one Rust container per VM for `-Ppipeline=python -Pwriter=rust` and `-Ppipeline=java -Pwriter=rust`.
 - **Java step between Rust steps:** When a Java step sits between a Rust source and a Rust sink in one fused Dataflow stage (`Rust → Java → Rust`), the Java harness can stall. Pass `--experiments=data_buffer_size_limit=10000000` to the job.
 
 ### Validation tasks
 
 ```bash
-# Prism (uses testcontainers for Kafka; GCP Python tests use configured tables)
+# Prism (local mock REST catalog for Iceberg; testcontainers for Kafka; GCP uses configured tables)
+./gradlew :sdks:rust:icebergExpansionServicePythonTest
 ./gradlew :sdks:rust:kafkaExpansionServicePythonTest
 ./gradlew :sdks:rust:gcpExpansionServicePythonTest -Ptests=bigquery_storage
 

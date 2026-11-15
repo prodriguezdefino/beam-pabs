@@ -15,16 +15,17 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Iceberg benchmark in a Python pipeline: the reference job on a Kafka topic.
+"""Iceberg benchmark in a Python pipeline: Managed Java or native Rust connectors.
 
-The pipeline is ``ingest_pipeline.py`` of the reference job (``dataflow_iceberg_lrc``) with
-one change: it reads ``--topic`` with Managed Kafka (``RAW`` format) instead of Pub/Sub. The
-parse, the ``DeviceMetric`` row and the Managed Iceberg write keep their configuration. A
-step before the parse counts ``e2e/rows`` and records ``e2e/latency_ms``, as in the other
-pipelines of the benchmark.
+Writers (``--writer``):
 
-``./gradlew :sdks:rust:icebergBenchmark -Ppipeline=python -Pwriter=java`` runs this script;
-``benchmarks/tools/job_wait.py`` waits for and drains the submitted job.
+* ``java``: ``ingest_pipeline.py`` of the reference job (``dataflow_iceberg_lrc``) reading
+  ``--topic`` with Managed Kafka (``RAW`` format) and writing with Managed Iceberg.
+* ``rust``: the Rust Kafka read and Iceberg write providers through the Rust expansion
+  service, keeping the Python ``Touch`` and ``ParseAndValidateMessage`` steps between them.
+
+``./gradlew :sdks:rust:icebergBenchmark -Ppipeline=python -Pwriters=java,rust`` runs this
+script; ``benchmarks/tools/job_wait.py`` waits for and drains the submitted job.
 """
 
 import argparse
@@ -40,8 +41,13 @@ from apache_beam import managed
 from apache_beam.metrics import Metrics
 from apache_beam.options.pipeline_options import PipelineOptions
 from apache_beam.options.pipeline_options import StandardOptions
+from apache_beam.transforms.external import SchemaAwareExternalTransform
 from apache_beam.typehints import schemas
 from apache_beam.utils.timestamp import Timestamp as BeamTimestamp
+
+RUST_KAFKA_READ_URN = "beam:schematransform:org.apache.beam:rust:kafka_read:v1"
+RUST_ICEBERG_WRITE_URN = (
+    "beam:schematransform:org.apache.beam:rust:iceberg_write:v1")
 
 MANAGED_KAFKA_AUTH = {
     "security.protocol": "SASL_SSL",
@@ -49,12 +55,14 @@ MANAGED_KAFKA_AUTH = {
     "sasl.login.callback.handler.class": (
         "com.google.cloud.hosted.kafka.auth.GcpLoginCallbackHandler"),
     "sasl.jaas.config": (
-        "org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required;"),
+        "org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required;"
+    ),
 }
 
 # Keep in sync with LATENCY_BOUNDS_MS of the Kafka benchmark and of io_report.py.
 LATENCY_BOUNDS_MS = (
-    50, 100, 250, 500, 1_000, 2_000, 5_000, 10_000, 30_000, 60_000, 120_000, 300_000)
+    50, 100, 250, 500, 1_000, 2_000, 5_000, 10_000, 30_000, 60_000, 120_000,
+    300_000)
 
 
 class DeviceMetric(NamedTuple):
@@ -75,8 +83,9 @@ class Touch(beam.DoFn):
   def __init__(self):
     self.rows = Metrics.counter("e2e", "rows")
     self.latency_ms = Metrics.distribution("e2e", "latency_ms")
-    self.buckets = [Metrics.counter("e2e", f"latency_le_{b}") for b in LATENCY_BOUNDS_MS
-                    ] + [Metrics.counter("e2e", "latency_le_inf")]
+    self.buckets = [
+        Metrics.counter("e2e", f"latency_le_{b}") for b in LATENCY_BOUNDS_MS
+    ] + [Metrics.counter("e2e", "latency_le_inf")]
 
   def process(self, row, timestamp=beam.DoFn.TimestampParam):
     self.rows.inc()
@@ -111,34 +120,40 @@ class ParseAndValidateMessage(beam.DoFn):
       )
     except Exception as e:  # pylint: disable=broad-except
       self.parse_errors.inc()
-      logging.warning("Skipping malformed message: %s | Raw element: %s", e, element)
+      logging.warning(
+          "Skipping malformed message: %s | Raw element: %s", e, element)
 
 
 def main(argv):
   parser = argparse.ArgumentParser(description=__doc__)
-  parser.add_argument("--writer", choices=["java"], required=True)
+  parser.add_argument("--writer", choices=["java", "rust"], required=True)
   parser.add_argument("--shape", choices=["ingest"], default="ingest")
   parser.add_argument("--bootstrap_servers", required=True)
   parser.add_argument("--topic", required=True)
-  parser.add_argument("--auto_offset_reset", choices=["earliest", "latest"], default="latest")
+  parser.add_argument(
+      "--auto_offset_reset", choices=["earliest", "latest"], default="latest")
   parser.add_argument("--group_id", default="")
-  parser.add_argument("--catalog_uri",
-                      default="https://biglake.googleapis.com/iceberg/v1/restcatalog")
+  parser.add_argument(
+      "--catalog_uri",
+      default="https://biglake.googleapis.com/iceberg/v1/restcatalog")
   parser.add_argument("--warehouse", required=True)
   parser.add_argument("--table", required=True)
   parser.add_argument("--user_project", required=True)
   parser.add_argument("--gcp_location", required=True)
   parser.add_argument("--triggering_frequency_seconds", type=int, default=60)
+  parser.add_argument("--num_shards", type=int, default=0)
   parser.add_argument("--object_storage", action="store_true")
   parser.add_argument("--billing_project", required=True)
+  parser.add_argument("--expansion_service", default="localhost:8097")
   args, pipeline_args = parser.parse_known_args(argv)
 
   options = PipelineOptions(pipeline_args)
   options.view_as(StandardOptions).streaming = True
   # A new group for each job, as in the Java pipeline, so a job does not resume from the
   # offsets that an earlier job committed.
-  consumer = dict(MANAGED_KAFKA_AUTH)
-  consumer["group.id"] = args.group_id or f"iceberg-bench-python-{int(time.time() * 1000)}"
+  group_id = (
+      args.group_id or
+      f"iceberg-bench-python-{args.writer}-{int(time.time() * 1000)}")
   catalog_props = {
       "type": "rest",
       "uri": args.catalog_uri,
@@ -158,27 +173,57 @@ def main(argv):
   if args.object_storage:
     table_props["write.object-storage.enabled"] = "true"
 
+  write_config = {
+      "table": args.table,
+      "catalog_name": "biglake",
+      "catalog_properties": catalog_props,
+      "table_properties": table_props,
+      "partition_fields": ["hour(timestamp_ms)"],
+      "triggering_frequency_seconds": args.triggering_frequency_seconds,
+  }
+
+  if args.writer == "rust":
+    if args.num_shards > 0:
+      write_config["num_shards"] = args.num_shards
+    read_transform = SchemaAwareExternalTransform(
+        RUST_KAFKA_READ_URN,
+        args.expansion_service,
+        rearrange_based_on_discovery=True,
+        bootstrap_servers=args.bootstrap_servers,
+        topic=args.topic,
+        format="RAW",
+        auto_offset_reset_config=args.auto_offset_reset,
+        with_gcp_adc=True,
+        consumer_config_updates={"group.id": group_id},
+    )
+    write_transform = SchemaAwareExternalTransform(
+        RUST_ICEBERG_WRITE_URN,
+        args.expansion_service,
+        rearrange_based_on_discovery=True,
+        **write_config,
+    )
+  else:
+    consumer = dict(MANAGED_KAFKA_AUTH)
+    consumer["group.id"] = group_id
+    read_transform = managed.Read(
+        managed.KAFKA,
+        config={
+            "bootstrap_servers": args.bootstrap_servers,
+            "topic": args.topic,
+            "format": "RAW",
+            "auto_offset_reset_config": args.auto_offset_reset,
+            "consumer_config_updates": consumer,
+        })
+    write_transform = managed.Write(managed.ICEBERG, config=write_config)
+
   p = beam.Pipeline(options=options)
   _ = (
       p
-      | "Read" >> managed.Read(managed.KAFKA, config={
-          "bootstrap_servers": args.bootstrap_servers,
-          "topic": args.topic,
-          "format": "RAW",
-          "auto_offset_reset_config": args.auto_offset_reset,
-          "consumer_config_updates": consumer,
-      })
+      | "Read" >> read_transform
       | "Touch" >> beam.ParDo(Touch())
       | "ParseAndValidateMessage" >> beam.ParDo(
           ParseAndValidateMessage()).with_output_types(DeviceMetric)
-      | "WriteToIcebergLakehouse" >> managed.Write(managed.ICEBERG, config={
-          "table": args.table,
-          "catalog_name": "biglake",
-          "catalog_properties": catalog_props,
-          "table_properties": table_props,
-          "partition_fields": ["hour(timestamp_ms)"],
-          "triggering_frequency_seconds": args.triggering_frequency_seconds,
-      }))
+      | "WriteToIcebergLakehouse" >> write_transform)
   result = p.run()
   print(f"JOB_ID={result.job_id()}", flush=True)
 

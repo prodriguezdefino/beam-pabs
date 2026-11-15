@@ -73,6 +73,10 @@ Run builds and tests through Gradle. The rest of the Beam repository uses it too
 ./gradlew :sdks:rust:kafkaExpansionServiceDataflowImage # The same image for linux/amd64, pushed for Dataflow
 ./gradlew :sdks:rust:kafkaExpansionServiceTestingImage  # Kafka expansion service image for its Python tests on Prism
 ./gradlew :sdks:rust:kafkaExpansionServicePythonTest  # Python pipelines on Prism against the Kafka expansion service and a local broker in Docker
+./gradlew :sdks:rust:icebergExpansionServiceImage  # Expansion service image of the Iceberg connector of the Rust SDK
+./gradlew :sdks:rust:icebergExpansionServiceDataflowImage # The same image for linux/amd64, pushed for Dataflow
+./gradlew :sdks:rust:icebergExpansionServiceTestingImage  # Iceberg expansion service image for its Python tests on Prism
+./gradlew :sdks:rust:icebergExpansionServicePythonTest  # Python pipelines on Prism against the Iceberg expansion service and a local mock REST catalog
 
 # Tasks that other tasks use
 ./gradlew :sdks:rust:buildWorkspace            # cargo build of the workspace, for `build`
