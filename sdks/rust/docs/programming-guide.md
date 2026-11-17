@@ -155,10 +155,13 @@ let upper = p
 | `apply(name, TryMap::new(f))` | `.try_map(name, f)` |
 | `apply(name, MapAsync::new(f))` | None: use `apply`. `f` returns a future, and up to `with_max_in_flight(n)` calls run at the same time. |
 | `Map` producing `(key_fn(&x), x)` | `.key_by(name, key_fn)` |
+| `apply(name, WithTimestamps::new(f))` | `.with_timestamps(name, f)` (to move timestamps back, `apply(name, WithTimestamps::new(f).with_allowed_timestamp_skew(d))`) |
 | `apply(name, CountPerElement::new())` | `.count_per_element(name)` |
 | `apply(name, CountGlobally::new())` | `.count_globally(name)` |
 | `apply(name, CombineGlobally::new(fn))` | `.combine_globally(name, fn)` |
 | `apply(name, Reshuffle::new())` | `.reshuffle(name)` (for a fixed number of keys, `apply(name, Reshuffle::new().with_num_buckets(n))`) |
+| `apply(name, RedistributeArbitrarily::new())` | `.redistribute_arbitrarily(name)` (to permit duplicates, `apply(name, RedistributeArbitrarily::new().with_allow_duplicates(true))`) |
+| `apply(name, RedistributeByKey::new())` | `.redistribute_by_key(name)` |
 | `apply(name, Partition::new(n, f))` | `.partition(name, n, f)` |
 | `apply(name, Flatten::new())` on a `PCollectionList` | `.flatten(name, &[&other])`, or `list.flatten(name)` |
 | `apply(name, WindowInto::new(window_fn))` | `.window_into(name, window_fn)` |
@@ -301,6 +304,18 @@ Some functions must see the same input on a retry, for example a sink that commi
 | `ctx.output(v).at(ts).emit()` | Main output with event timestamp `ts`, a `beam::Instant` |
 
 The builder also offers `.with_pane(..)`, `.with_metadata(..)` and, for single metadata fields, `.with_drain(..)`, `.with_value_kind(..)` and `.with_trace(traceparent, tracestate)`. Per-element facts: `ctx.timestamp()`, `ctx.pane()`, `ctx.metadata()`, `ctx.is_draining()`.
+
+The timestamp of `.at(ts)` must not be earlier than the timestamp of the current element. In `on_timer` and `on_window_expiration`, it must not be earlier than `ctx.timestamp()`, which is the hold of the timer. An earlier timestamp makes `emit()` return an error, and the bundle fails. To permit earlier timestamps, implement `allowed_timestamp_skew` on the `DoFn`, `StatefulDoFn`, `SplittableDoFn` or `BatchedDoFn`:
+
+```rust
+fn allowed_timestamp_skew(&self) -> Duration {
+    Duration::from_secs(60)
+}
+```
+
+`Duration::MAX` permits each timestamp from `Instant::MIN`. A closure function (`ParDo::from_fn`, `.par_do_fn`) has zero skew. An output before the watermark is late, and a later step can drop it. Outputs without `.at(ts)` and outputs of `finish_bundle` have no check.
+
+`WithTimestamps::new(f)` (`.with_timestamps(name, f)`) gives each element the timestamp `f(&element)`. The elements stay in their windows, so apply `WindowInto` after it. It has the same check; set `with_allowed_timestamp_skew(d)` to move timestamps back.
 
 Event time is a [`beam::Instant`](../beam/core/src/time.rs) (milliseconds since the epoch); add a `std::time::Duration` to move it, and `window.max_timestamp()` is the last instant of a window. `Instant::MIN` and `Instant::MAX` are the bounds of the Runner API. The runner gives `Instant::MIN` to the output of `Impulse`. A watermark at `Instant::MAX` closes all windows. The global window ends at `Instant::END_OF_GLOBAL_WINDOW`, one day before `Instant::MAX`. Arithmetic saturates at the bounds.
 
@@ -566,7 +581,7 @@ let sessions = events.window_into("Sessions", Sessions::of(Duration::from_secs(3
 - **Window functions**: `FixedWindows`, `SlidingWindows`, `Sessions` (merged per key at `GroupByKey`), `GlobalWindows` (the default).
 - **Triggers**: `after_end_of_window()`, which alone takes `.with_early_firings(..)` / `.with_late_firings(..)` (it returns an `AfterWatermark`), `after_count(n)`, `after_processing_time(d)`, `repeatedly(t)`, `after_each`, `after_all`, `after_any`, `or_finally`, `always`, `never`.
 - **`WindowInto` builders**: `with_trigger`, `with_accumulation_mode` (`beam::windowing::AccumulationMode::{Accumulating, Discarding}`), `with_allowed_lateness`, `with_output_time` (`beam::windowing::OutputTime::{EndOfWindow, EarliestInPane, LatestInPane}`), `with_closing_behavior`, `with_on_time_behavior`.
-- **Timestamps**: assign event time with `ctx.output(v).at(ts).emit()`.
+- **Timestamps**: assign event time with `.with_timestamps(name, f)` (`WithTimestamps`) or with `ctx.output(v).at(ts).emit()`.
 
 A root trigger that finishes closes the window. Then the runner drops all later data for the window with no error. So `Pipeline::validate` rejects a `GroupByKey` or `CombinePerKey` input with a trigger that can finish before the window expires (`PipelineError::UnsafeTrigger`). `Trigger::may_finish` gives this property:
 

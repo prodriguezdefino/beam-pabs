@@ -476,6 +476,72 @@ pub fn build_flatten_many(p: &TestPipeline) {
     passert::that("AssertMerged", &merged).contains_in_any_order([1, 2, 2, 3, 4]);
 }
 
+/// A transform that spreads the elements of a keyed collection and keeps each element.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Shuffle {
+    Reshuffle,
+    RedistributeArbitrarily,
+    RedistributeByKey,
+}
+
+impl Shuffle {
+    /// The two `Redistribute` transforms.
+    pub(crate) const REDISTRIBUTE: [Self; 2] =
+        [Self::RedistributeArbitrarily, Self::RedistributeByKey];
+
+    /// The name of the transform. It is the name scope of the steps of one case.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Reshuffle => "Reshuffle",
+            Self::RedistributeArbitrarily => "RedistributeArbitrarily",
+            Self::RedistributeByKey => "RedistributeByKey",
+        }
+    }
+
+    /// Applies the transform to `input` with the step name `name`.
+    pub(crate) fn apply<K, V>(
+        self,
+        name: impl Into<String>,
+        input: &PCollection<(K, V)>,
+    ) -> PCollection<(K, V)>
+    where
+        K: DefaultCoder + Clone,
+        V: DefaultCoder,
+    {
+        match self {
+            Self::Reshuffle => input.reshuffle(name),
+            Self::RedistributeArbitrarily => input.redistribute_arbitrarily(name),
+            Self::RedistributeByKey => input.redistribute_by_key(name),
+        }
+    }
+}
+
+/// Checks that `shuffle` keeps each keyed element, also equal ones, and its timestamp.
+fn assert_shuffle_keeps_timestamps(p: &TestPipeline, shuffle: Shuffle) {
+    let name = shuffle.name();
+    let timestamped = p
+        .apply(
+            format!("{name}/Keyed"),
+            Create::new(vec![
+                ("a".to_string(), (1i64, 1_000i64)),
+                ("a".to_string(), (1, 2_000)),
+                ("b".to_string(), (2, 3_000)),
+            ]),
+        )
+        .par_do(format!("{name}/TimestampKeyed"), AssignTimestampDoFn);
+    let keyed = shuffle
+        .apply(format!("{name}/ShuffleKeyed"), &timestamped)
+        .par_do_fn(
+            format!("{name}/ReadTimestamp"),
+            |(k, v): (String, i64), ctx| ctx.emit((k, (v, ctx.timestamp()))),
+        );
+    passert::that(format!("{name}/AssertKeyed"), &keyed).contains_in_any_order([
+        ("a".to_string(), (1, Instant::from_millis(1_000))),
+        ("a".to_string(), (1, Instant::from_millis(2_000))),
+        ("b".to_string(), (2, Instant::from_millis(3_000))),
+    ]);
+}
+
 /// Validates that `Reshuffle` redistributes elements without dropping, duplicating or
 /// altering any, for both keyed and unkeyed input.
 pub fn build_reshuffle(p: &TestPipeline) {
@@ -485,25 +551,24 @@ pub fn build_reshuffle(p: &TestPipeline) {
         .reshuffle("Reshuffle");
     passert::that("Unkeyed", &reshuffled).contains_in_any_order(numbers);
 
-    let keyed = p
-        .apply(
-            "Keyed",
-            Create::new(vec![
-                ("a".to_string(), (1i64, 1_000i64)),
-                ("a".to_string(), (1, 2_000)),
-                ("b".to_string(), (2, 3_000)),
-            ]),
-        )
-        .par_do("TimestampKeyed", AssignTimestampDoFn)
-        .reshuffle("ReshuffleKeyed")
-        .par_do_fn("ReadTimestamp", |(k, v): (String, i64), ctx| {
-            ctx.emit((k, (v, ctx.timestamp())))
-        });
-    passert::that("AssertKeyed", &keyed).contains_in_any_order([
-        ("a".to_string(), (1, Instant::from_millis(1_000))),
-        ("a".to_string(), (1, Instant::from_millis(2_000))),
-        ("b".to_string(), (2, Instant::from_millis(3_000))),
-    ]);
+    assert_shuffle_keeps_timestamps(p, Shuffle::Reshuffle);
+}
+
+/// Validates that `RedistributeArbitrarily` and `RedistributeByKey` keep each element and
+/// its timestamp, for unkeyed and keyed input.
+///
+/// Covers `RedistributeTest.testJustRedistribute` and
+/// `RedistributeTest.testRedistributePreservesTimestamps`.
+pub fn build_redistribute(p: &TestPipeline) {
+    let numbers: Vec<i64> = (0..200).chain([7, 7]).collect();
+    let redistributed = p
+        .apply("Numbers", Create::new(numbers.clone()))
+        .redistribute_arbitrarily("Redistribute");
+    passert::that("Unkeyed", &redistributed).contains_in_any_order(numbers);
+
+    for shuffle in Shuffle::REDISTRIBUTE {
+        assert_shuffle_keeps_timestamps(p, shuffle);
+    }
 }
 
 /// Validates `Partition` routing: each element lands in exactly the partition its
@@ -772,21 +837,22 @@ fn element_metadata<T>(ctx: &ProcessContext<'_, T>, window: &BoundedWindow) -> S
     format!("{:?} {window:?} {:?}", ctx.timestamp(), ctx.pane())
 }
 
-/// Records the metadata of each element, reshuffles, and emits each value with the metadata
-/// that changed (empty if none changed).
-fn reshuffle_and_compare_metadata(
+/// Records the metadata of each element, applies `shuffle`, and emits each value with the
+/// metadata that changed (empty if none changed).
+fn shuffle_and_compare_metadata(
     input: &PCollection<(String, i64)>,
+    shuffle: Shuffle,
     name: &str,
 ) -> PCollection<((String, i64), String)> {
-    input
-        .par_do_fn(
-            format!("{name}/Record"),
-            |Windowed { value, window }: Windowed<(String, i64)>, ctx| {
-                let before = element_metadata(ctx, &window);
-                ctx.emit((value, before))
-            },
-        )
-        .reshuffle(format!("{name}/Reshuffle"))
+    let recorded = input.par_do_fn(
+        format!("{name}/Record"),
+        |Windowed { value, window }: Windowed<(String, i64)>, ctx| {
+            let before = element_metadata(ctx, &window);
+            ctx.emit((value, before))
+        },
+    );
+    shuffle
+        .apply(format!("{name}/Shuffle"), &recorded)
         .par_do_fn(
             format!("{name}/Compare"),
             |Windowed {
@@ -805,16 +871,15 @@ fn reshuffle_and_compare_metadata(
         )
 }
 
-/// Validates that `Reshuffle` keeps the timestamp, the window and the pane of each element.
+/// Checks that `shuffle` keeps the timestamp, the window and the pane of each element.
 ///
 /// The global window input has timestamps at both ends of time. The fixed window input comes
 /// from a `CombinePerKey`, so its elements have an on-time pane and an interval window.
-///
-/// Covers `ReshuffleTest.testReshufflePreservesMetadata`.
-pub fn build_reshuffle_keeps_element_metadata(p: &TestPipeline) {
+fn assert_shuffle_keeps_element_metadata(p: &TestPipeline, shuffle: Shuffle) {
+    let name = shuffle.name();
     let global = p
         .apply(
-            "Global",
+            format!("{name}/Global"),
             Create::new(vec![
                 ("foo".to_string(), (0i64, Instant::MIN.as_millis())),
                 ("foo".to_string(), (1, 0)),
@@ -825,10 +890,10 @@ pub fn build_reshuffle_keeps_element_metadata(p: &TestPipeline) {
                 ),
             ]),
         )
-        .par_do("GlobalTimestamps", AssignTimestampDoFn);
+        .par_do(format!("{name}/GlobalTimestamps"), AssignTimestampDoFn);
     passert::that(
-        "AssertGlobal",
-        &reshuffle_and_compare_metadata(&global, "GlobalWindow"),
+        format!("{name}/AssertGlobal"),
+        &shuffle_and_compare_metadata(&global, shuffle, &format!("{name}/GlobalWindow")),
     )
     .contains_in_any_order(
         [("foo", 0), ("foo", 1), ("bar", 2), ("bar", 3)]
@@ -837,24 +902,41 @@ pub fn build_reshuffle_keeps_element_metadata(p: &TestPipeline) {
 
     let fixed = p
         .apply(
-            "Fixed",
+            format!("{name}/Fixed"),
             Create::new(vec![
                 ("a".to_string(), (1i64, 1_000i64)),
                 ("a".to_string(), (2, 2_000)),
                 ("a".to_string(), (4, 11_000)),
             ]),
         )
-        .par_do("FixedTimestamps", AssignTimestampDoFn)
+        .par_do(format!("{name}/FixedTimestamps"), AssignTimestampDoFn)
         .apply(
-            "FixedWindows",
+            format!("{name}/FixedWindows"),
             WindowInto::new(FixedWindows::of(std::time::Duration::from_secs(10))),
         )
-        .combine_per_key("SumPerWindow", Sum::new());
+        .combine_per_key(format!("{name}/SumPerWindow"), Sum::new());
     passert::that(
-        "AssertFixed",
-        &reshuffle_and_compare_metadata(&fixed, "FixedWindow"),
+        format!("{name}/AssertFixed"),
+        &shuffle_and_compare_metadata(&fixed, shuffle, &format!("{name}/FixedWindow")),
     )
     .contains_in_any_order([("a", 3), ("a", 4)].map(|(k, v)| ((k.to_string(), v), String::new())));
+}
+
+/// Validates that `Reshuffle` keeps the timestamp, the window and the pane of each element.
+///
+/// Covers `ReshuffleTest.testReshufflePreservesMetadata`.
+pub fn build_reshuffle_keeps_element_metadata(p: &TestPipeline) {
+    assert_shuffle_keeps_element_metadata(p, Shuffle::Reshuffle);
+}
+
+/// Validates that `RedistributeArbitrarily` and `RedistributeByKey` keep the timestamp, the
+/// window and the pane of each element.
+///
+/// Covers `RedistributeTest.testRedistributePreservesMetadata`.
+pub fn build_redistribute_keeps_element_metadata(p: &TestPipeline) {
+    for shuffle in Shuffle::REDISTRIBUTE {
+        assert_shuffle_keeps_element_metadata(p, shuffle);
+    }
 }
 
 /// Validates `Flatten` of inputs that are all empty, then a `ParDo`: no element comes out.

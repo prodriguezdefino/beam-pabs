@@ -146,15 +146,17 @@ async fn failures_to_applies_the_sink_and_continues_on_output() {
 }
 
 #[tokio::test]
-async fn inspect_and_reshuffle_pass_elements_through_unchanged() {
+async fn inspect_reshuffle_and_redistribute_pass_elements_through_unchanged() {
     let p = TestPipeline::new();
     let numbers = p.apply("Numbers", Create::new(vec![3i64, 1, 2, 2]));
 
     let inspected = numbers.inspect("Inspect", |_| {});
     let reshuffled = inspected.reshuffle("Reshuffle");
+    let redistributed = inspected.redistribute_arbitrarily("Redistribute");
 
     passert::that("AssertInspected", &inspected).contains_in_any_order([1, 2, 2, 3]);
     passert::that("AssertReshuffled", &reshuffled).contains_in_any_order([1, 2, 2, 3]);
+    passert::that("AssertRedistributed", &redistributed).contains_in_any_order([1, 2, 2, 3]);
 
     p.run().await.expect("pipeline + assertions");
 }
@@ -174,6 +176,23 @@ async fn key_by_pairs_each_element_with_its_computed_key() {
         (2, "bb".to_string()),
         (2, "cc".to_string()),
     ]);
+
+    p.run().await.expect("pipeline + assertions");
+}
+
+#[tokio::test]
+async fn with_timestamps_gives_each_element_its_computed_timestamp() {
+    let p = TestPipeline::new();
+    let millis = p.apply("Millis", Create::new(vec![1_000i64, 2_500]));
+
+    let timestamps = millis
+        .with_timestamps("Timestamps", |ms: &i64| Instant::from_millis(*ms))
+        .par_do_fn("Reify", |ms: i64, ctx| {
+            ctx.emit((ms, ctx.timestamp().as_millis()))
+        });
+
+    passert::that("AssertTimestamps", &timestamps)
+        .contains_in_any_order([(1_000, 1_000), (2_500, 2_500)]);
 
     p.run().await.expect("pipeline + assertions");
 }

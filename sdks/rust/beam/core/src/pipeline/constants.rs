@@ -52,6 +52,14 @@ pub const URN_TEST_STREAM: &str = "beam:transform:teststream:v1";
 /// it with its own shuffle; other runners run its subtransforms.
 pub const URN_RESHUFFLE: &str = "beam:transform:reshuffle:v1";
 
+/// Composite that spreads elements across workers with no rule for the placement. Its
+/// payload is a `RedistributePayload`.
+pub const URN_REDISTRIBUTE_ARBITRARILY: &str = "beam:transform:redistribute_arbitrarily:v1";
+
+/// Composite that spreads key-value elements across workers by key. Its payload is a
+/// `RedistributePayload`.
+pub const URN_REDISTRIBUTE_BY_KEY: &str = "beam:transform:redistribute_by_key:v1";
+
 /// Composite that writes elements to files.
 pub const URN_WRITE_FILES: &str = "beam:transform:write_files:v1";
 

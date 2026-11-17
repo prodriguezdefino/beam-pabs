@@ -39,9 +39,9 @@ This page compares the Rust SDK with the other Beam SDKs.
 | CoGroupByKey | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Combine (global + per-key) | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Reshuffle (random keys, fixed number of key buckets) | ✅ | ✅ | 🟡 (no buckets) | ❌ | ✅ |
-| Redistribute (standalone transform) | ✅ | ❌ | ❌ | ❌ | 🔜 |
-| WithTimestamps (standalone transform) | ✅ | ❌ | ❌ | ✅ | 🔜 |
-| Allowed timestamp skew (check of output timestamps) | ✅ | ❌ | ❌ | ❌ | 🔜 |
+| Redistribute (arbitrarily, by key) | ✅ | ❌ | ❌ | ❌ | ✅ |
+| WithTimestamps (standalone transform) | ✅ | ❌ | ❌ | ✅ | ✅ |
+| Allowed timestamp skew (check of output timestamps) | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Flatten / Partition | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Flatten of an empty list (gives an empty collection) | ✅ | ✅ | ❌ | ✅ | ✅ |
 | Distinct | ✅ | ✅ | ✅ | ❌ | ✅ |
@@ -62,8 +62,8 @@ This page compares the Rust SDK with the other Beam SDKs.
 Notes:
 - **Combine**: Java, Python and Rust also split skewed keys across intermediate shards (`withHotKeyFanout` / `withFanout`, `with_hot_key_fanout` / `with_fanout`).
 - **Distinct**: Java and Rust also keep one element per representative value (`Distinct.withRepresentativeValueFn`, `DistinctBy`). Python `Distinct` and Go `filter.Distinct` compare whole elements.
-- **Redistribute and WithTimestamps**: Rust uses `Reshuffle` to spread elements across workers. It sets event time in a `ParDo` with `ctx.output(v).at(ts).emit()`. TypeScript has `assignTimestamps`.
-- **Allowed timestamp skew**: Java rejects an output timestamp earlier than the input timestamp minus `getAllowedTimestampSkew`. The other SDKs and Rust do not check output timestamps.
+- **Redistribute and WithTimestamps**: Rust has `RedistributeArbitrarily` and `RedistributeByKey`, each with `with_allow_duplicates`. `RedistributeArbitrarily` has no option for the number of key buckets: use `Reshuffle::with_num_buckets`. `RedistributeByKey` shuffles in the global window; Java shuffles in the windows of the input. Rust has `WithTimestamps` with `with_allowed_timestamp_skew`, and also sets event time in a `ParDo` with `ctx.output(v).at(ts).emit()`. TypeScript has `assignTimestamps`.
+- **Allowed timestamp skew**: Java and Rust reject an output timestamp or timer hold earlier than the timestamp of the input or timer minus the allowed skew of the function (`getAllowedTimestampSkew`, `allowed_timestamp_skew`). The other SDKs do not check output timestamps.
 - **Flatten of an empty list**: the caller names the pipeline: Java `PCollectionList.empty(p)`, Python `pipeline=`, TypeScript `root`, Rust `PCollectionList::empty(pipeline)`. Go fails at construction. Rust expands an empty flatten to an empty `Create`, so the runner gets no Flatten without inputs.
 - **Keys / Values / Latest / Reify**: Go has `DropValue` and `DropKey`, but no `Latest` or `Reify`. In Rust, use `map` or `par_do_fn`.
 - **Deduplicate**: Java and Python `Deduplicate` drop a repeated element during a processing-time or event-time duration. `Distinct` keeps one element per window.

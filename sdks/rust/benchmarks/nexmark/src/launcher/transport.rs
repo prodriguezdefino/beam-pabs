@@ -25,6 +25,7 @@
 
 use std::fmt::Debug;
 use std::sync::Once;
+use std::time::Duration;
 
 use beam::coders::{Coder, CoderError, Context, DefaultCoder};
 use beam::io::gcp::pubsub::{
@@ -33,6 +34,7 @@ use beam::io::gcp::pubsub::{
 use beam::io::kafka::{self, KafkaRead, KafkaWrite, OffsetReset};
 use beam::metrics::Metrics;
 use beam::prelude::*;
+use beam::transforms::WithTimestamps;
 
 use super::NexmarkArgs;
 use super::error::LauncherError;
@@ -311,10 +313,11 @@ where
     })
 }
 
-/// Gives each event its own `date_time` as timestamp, for sources without event time.
+/// Gives each event its own `date_time` as timestamp, for sources without event time. The
+/// `date_time` can be before the timestamp that the source gave, so the skew has no limit.
 pub(super) fn with_event_time_from_data(events: &PCollection<Event>) -> PCollection<Event> {
-    events.par_do_fn("EventTimeFromData", |event: Event, ctx| {
-        let timestamp = event.date_time();
-        ctx.output(event).at(timestamp).emit()
-    })
+    events.apply(
+        "EventTimeFromData",
+        WithTimestamps::new(Event::date_time).with_allowed_timestamp_skew(Duration::MAX),
+    )
 }

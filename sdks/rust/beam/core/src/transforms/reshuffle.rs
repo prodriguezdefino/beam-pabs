@@ -33,13 +33,14 @@ use serde::{Deserialize, Serialize};
 
 use super::ProcessContext;
 use super::dofn::registered::{FnRegistration, build_registered, encode_registered};
-use super::dofn::{DoFn, ParDo};
+use super::dofn::{DoFn, Outputs, ParDo};
 use super::group_by_key::GroupByKey;
 use crate::coders::{
-    BeamIterable, Coder, CoderError, CoderRegistry, Context, DefaultCoder, PaneInfo, URN_BYTES,
-    WindowedHeader,
+    BeamIterable, Coder, CoderError, CoderRegistry, Context, DefaultCoder, FieldMap, PaneInfo,
+    StateStreamReader, URN_BYTES, WindowedHeader,
 };
-use crate::pipeline::URN_RESHUFFLE;
+use crate::pipeline::{Pipeline, URN_RESHUFFLE};
+use crate::schema::Schema;
 use crate::transforms::PTransform;
 use crate::transforms::display_data::{DisplayDataBuilder, HasDisplayData};
 use crate::values::PCollection;
@@ -134,9 +135,9 @@ impl DefaultCoder for EncodedElement {
 
     fn decode_whole_stream_with_context(
         reader: &mut &[u8],
-        _schema: Option<&Arc<crate::schema::Schema>>,
-        _field_map: Option<&crate::coders::FieldMap>,
-        _state_reader: Option<&Arc<dyn crate::coders::StateStreamReader>>,
+        _schema: Option<&Arc<Schema>>,
+        _field_map: Option<&FieldMap>,
+        _state_reader: Option<&Arc<dyn StateStreamReader>>,
     ) -> Result<Self, CoderError> {
         Self::coder().decode(reader, Context::WholeStream)
     }
@@ -149,7 +150,7 @@ impl DefaultCoder for EncodedElement {
 
 /// The windowed header of an element as a value: the pane offset and the wire bytes. The
 /// header holds the timestamp, the windows, the pane and the metadata.
-type ReifiedHeader = (i64, Vec<u8>);
+pub(super) type ReifiedHeader = (i64, Vec<u8>);
 
 /// An element in the shuffle: its header and its encoded bytes. The bytes coder encodes the
 /// element bytes, so the shuffle does not decode the element. Do not use a `length_prefix`
@@ -170,6 +171,32 @@ fn reify(header: &WindowedHeader) -> ReifiedHeader {
 /// Rebuilds the header that [`reify`] stored.
 fn restore((pane_start, bytes): &ReifiedHeader) -> WindowedHeader {
     WindowedHeader::from_wire(bytes, usize::try_from(*pane_start).unwrap_or_default())
+}
+
+/// Emits the value that `build` makes from the header of the current element. The output is
+/// in the global window at the timestamp of the element, as the shuffle strategy needs.
+pub(super) fn emit_reified<T: Outputs>(
+    out: &mut ProcessContext<'_, T>,
+    build: impl FnOnce(ReifiedHeader) -> T,
+) -> crate::Result {
+    let value = build(reify(out.header()));
+    // The wire coder of the shuffle is the global window coder.
+    let global = WindowedHeader::global_at(out.timestamp(), PaneInfo::NO_FIRING);
+    out.output(value).windowed(&global).emit()
+}
+
+/// Emits `value` with the header that [`emit_reified`] stored in `reified`.
+pub(super) fn emit_restored<T: Outputs>(
+    out: &mut ProcessContext<'_, T>,
+    reified: &ReifiedHeader,
+    value: T,
+) -> crate::Result {
+    let header = restore(reified);
+    if header.is_empty() {
+        out.emit(value)
+    } else {
+        out.output(value).windowed(&header).emit()
+    }
 }
 
 /// The shard key of bucket shard `shard`: Java's `AssignShardFn` hash for `numBuckets`.
@@ -242,13 +269,7 @@ impl DoFn for PairWithRandomKeyFn {
             Some(num_buckets) => reshuffle_bucket(shard as i32, num_buckets),
             None => shard,
         };
-        let reified = reify(out.header());
-        // The shuffle runs in the global window, so the output header must encode the global
-        // window: its wire coder is the global window coder.
-        let global = WindowedHeader::global_at(out.timestamp(), PaneInfo::NO_FIRING);
-        out.output((key, (reified, element)))
-            .windowed(&global)
-            .emit()
+        emit_reified(out, |reified| (key, (reified, element)))
     }
 }
 
@@ -268,12 +289,7 @@ impl DoFn for ExpandShardFn {
         elements.try_into_iter().try_for_each(|elem| {
             let (reified, element) =
                 elem.map_err(|e| format!("Reshuffle failed to read a grouped element: {e}"))?;
-            let header = restore(&reified);
-            if header.is_empty() {
-                out.emit(EncodedElement(element))
-            } else {
-                out.output(EncodedElement(element)).windowed(&header).emit()
-            }
+            emit_restored(out, &reified, EncodedElement(element))
         })
     }
 }
@@ -308,70 +324,85 @@ fn shuffle_strategy(global: &proto::WindowingStrategy) -> proto::WindowingStrate
     }
 }
 
+/// Registers the [`shuffle_strategy`] of `pipeline` and returns its id.
+pub(super) fn shuffle_strategy_id(pipeline: &Pipeline) -> String {
+    let mut lock = pipeline.lock();
+    #[expect(
+        clippy::expect_used,
+        reason = "pipeline registers its default windowing strategy on creation"
+    )]
+    let strategy = lock
+        .components
+        .windowing_strategies
+        .get(&lock.default_windowing_strategy_id)
+        .map(shuffle_strategy)
+        .expect("the pipeline registers its default strategy when it is created");
+    lock.register_windowing_strategy(strategy)
+}
+
+/// Shuffles the elements of `input` on random keys, in `num_buckets` keys if it is set. The
+/// output has the coder and the windowing strategy of `input`.
+pub(super) fn shuffle_on_random_keys<T: DefaultCoder>(
+    input: &PCollection<T>,
+    num_buckets: Option<u32>,
+) -> PCollection<T> {
+    let pipeline = input.pipeline();
+    let shuffle_ws_id = shuffle_strategy_id(pipeline);
+
+    // Each element keeps its coder through the shuffle, so a row keeps its schema. The
+    // output of a cross-language transform has no coder yet: the Rust type gives it.
+    let element_coder_id = input
+        .registered_coder_id()
+        .unwrap_or_else(|| T::register_coder(pipeline));
+    let shuffled_coder_id = <(i64, Shuffled)>::register_coder(pipeline);
+
+    let input_bytes = PCollection::<EncodedElement>::new(
+        input.id().to_string(),
+        element_coder_id.clone(),
+        pipeline.clone(),
+    );
+    let paired = input_bytes
+        .apply(
+            "PairWithRandomKey",
+            ParDo::new(PairWithRandomKeyFn::new(num_buckets)),
+        )
+        .with_windowing_strategy_id(shuffle_ws_id)
+        .with_coder_id(shuffled_coder_id);
+
+    let grouped = paired.apply("GroupByKey", GroupByKey::new());
+
+    let expanded = grouped
+        .apply("Expand", ParDo::new(ExpandShardFn))
+        .with_coder_id(element_coder_id.clone())
+        .with_windowing_strategy_of(&input_bytes);
+    PCollection::<T>::new(
+        expanded.id().to_string(),
+        element_coder_id,
+        pipeline.clone(),
+    )
+}
+
+/// Gives the composite that is expanding the spec `urn` with `payload`, for a runner that
+/// replaces it, and the display data of `transform`.
+pub(super) fn describe_composite(
+    pipeline: &Pipeline,
+    urn: &str,
+    payload: Vec<u8>,
+    transform: &impl HasDisplayData,
+) {
+    pipeline.set_scope_spec(proto::FunctionSpec {
+        urn: urn.to_string(),
+        payload,
+    });
+    pipeline.record_display_data(transform);
+}
+
 impl<T: DefaultCoder> PTransform<PCollection<T>> for Reshuffle<T> {
     type Output = PCollection<T>;
 
     fn expand(self, input: &PCollection<T>) -> PCollection<T> {
-        let pipeline = input.pipeline();
-        let name = pipeline.scope_name().unwrap_or_default();
-
-        let shuffle_ws_id = {
-            let mut lock = pipeline.lock();
-            #[expect(
-                clippy::expect_used,
-                reason = "pipeline registers its default windowing strategy on creation"
-            )]
-            let strategy = lock
-                .components
-                .windowing_strategies
-                .get(&lock.default_windowing_strategy_id)
-                .map(shuffle_strategy)
-                .expect("the pipeline registers its default strategy when it is created");
-            lock.register_windowing_strategy(strategy)
-        };
-
-        // Each element keeps its coder through the shuffle, so a row keeps its schema. The
-        // output of a cross-language transform has no coder yet: the Rust type gives it.
-        let element_coder_id = input
-            .registered_coder_id()
-            .unwrap_or_else(|| T::register_coder(pipeline));
-        let shuffled_coder_id = <(i64, Shuffled)>::register_coder(pipeline);
-
-        let input_bytes = PCollection::<EncodedElement>::new(
-            input.id().to_string(),
-            element_coder_id.clone(),
-            pipeline.clone(),
-        );
-        let output = {
-            let paired = input_bytes
-                .apply(
-                    "PairWithRandomKey",
-                    ParDo::new(PairWithRandomKeyFn::new(self.num_buckets)),
-                )
-                .with_windowing_strategy_id(shuffle_ws_id)
-                .with_coder_id(shuffled_coder_id);
-
-            let grouped = paired.apply("GroupByKey", GroupByKey::new());
-
-            let expanded = grouped
-                .apply("Expand", ParDo::new(ExpandShardFn))
-                .with_coder_id(element_coder_id.clone())
-                .with_windowing_strategy_of(&input_bytes);
-            PCollection::<T>::new(
-                expanded.id().to_string(),
-                element_coder_id,
-                pipeline.clone(),
-            )
-        };
-        pipeline.set_scope_spec(beam_model::pipeline::FunctionSpec {
-            urn: URN_RESHUFFLE.to_string(),
-            payload: Vec::new(),
-        });
-
-        let mut builder = DisplayDataBuilder::with_namespace(name);
-        self.populate_display_data(&mut builder);
-        pipeline.set_scope_display_data(builder.into_proto());
-
+        let output = shuffle_on_random_keys(input, self.num_buckets);
+        describe_composite(input.pipeline(), URN_RESHUFFLE, Vec::new(), &self);
         output
     }
 }

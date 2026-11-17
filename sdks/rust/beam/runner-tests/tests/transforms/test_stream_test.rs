@@ -412,3 +412,14 @@ async fn test_test_stream_bundle_finalization_with_state() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn test_test_stream_redistribute() {
+    run_pipeline(
+        "test_stream_redistribute",
+        build_test_stream_redistribute,
+        Expectation::Succeeds,
+        &runner(),
+    )
+    .await;
+}

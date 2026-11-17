@@ -25,7 +25,8 @@ use std::hash::Hash;
 use beam::coders::{BeamIterable, DefaultCoder};
 use beam::transforms::{
     BroadcastInnerJoin, BroadcastLeftJoin, CoGbkResult, CoGroupByKey, FullOuterJoin, GroupByKey,
-    GroupIntoBatches, InnerJoin, KeyedPCollectionTuple, LeftJoin, RightJoin,
+    GroupIntoBatches, InnerJoin, KeyedPCollectionTuple, LeftJoin, RedistributeByKey, RightJoin,
+    TupleTag,
 };
 use beam::values::PCollection;
 
@@ -44,6 +45,11 @@ pub trait PCollectionKeyedExt<K: DefaultCoder, V: DefaultCoder> {
     fn group_by_key(&self, name: impl Into<String>) -> PCollection<(K, BeamIterable<V>)>
     where
         K: Eq + Hash;
+
+    /// Hints to the runner to spread the elements across workers by key.
+    fn redistribute_by_key(&self, name: impl Into<String>) -> PCollection<(K, V)>
+    where
+        K: Clone;
 
     /// Batches the values of each key and window, `batch_size` values at most per batch.
     /// See [`GroupIntoBatches`] for the byte size, buffering duration and sharded keys.
@@ -141,6 +147,13 @@ impl<K: DefaultCoder, V: DefaultCoder> PCollectionKeyedExt<K, V> for PCollection
         self.apply(name, GroupByKey::new())
     }
 
+    fn redistribute_by_key(&self, name: impl Into<String>) -> PCollection<(K, V)>
+    where
+        K: Clone,
+    {
+        self.apply(name, RedistributeByKey::new())
+    }
+
     fn group_into_batches(
         &self,
         name: impl Into<String>,
@@ -166,8 +179,8 @@ impl<K: DefaultCoder, V: DefaultCoder> PCollectionKeyedExt<K, V> for PCollection
             ("right".to_string(), other.id().to_string()),
         ]);
         composite(self.pipeline(), &name.into(), inputs, || {
-            let left_tag = beam::transforms::TupleTag::<V>::new("left");
-            let right_tag = beam::transforms::TupleTag::<V2>::new("right");
+            let left_tag = TupleTag::<V>::new("left");
+            let right_tag = TupleTag::<V2>::new("right");
             let tuple = KeyedPCollectionTuple::of(&left_tag, self).and(&right_tag, other);
             let grouped = tuple.apply("CoGbk", CoGroupByKey::new());
             grouped.par_do_fn(

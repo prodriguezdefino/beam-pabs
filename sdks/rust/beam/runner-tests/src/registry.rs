@@ -78,7 +78,7 @@ validates_runner_tests! {
                 group_by_key_large_iterable => build_group_by_key_large_iterable
                     [Expectation::Custom(check_group_by_key_large_iterable)],
                 combine_composed_accumulators => build_combine_composed_accumulators,
-                // Collection operations (Flatten, Partition, Reshuffle, KV).
+                // Collection operations (Flatten, Partition, Reshuffle, Redistribute, KV).
                 flatten_many => build_flatten_many,
                 flatten_singleton_list => build_flatten_singleton_list,
                 flatten_then_pardo => build_flatten_then_pardo,
@@ -86,6 +86,7 @@ validates_runner_tests! {
                 create_empty => build_create_empty,
                 kv_swap => build_kv_swap,
                 reshuffle => build_reshuffle,
+                redistribute => build_redistribute,
                 partition => build_partition,
                 partition_many => build_partition_many,
                 // Keyed batching on a sharded key (`beam:coder:sharded_key:v1`).
@@ -209,7 +210,7 @@ validates_runner_tests! {
                 global_combine_with_defaults_and_trigger =>
                     build_global_combine_with_defaults_and_trigger,
             }
-            /// Core transforms: empty and large-key grouping, reshuffle metadata, empty
+            /// Core transforms: empty and large-key grouping, shuffle metadata, empty
             /// flattens, batching limits, an empty global combine and schema'd DoFns.
             core_more {
                 group_by_key_empty => build_group_by_key_empty,
@@ -219,6 +220,8 @@ validates_runner_tests! {
                 group_by_key_large_keys_10mb => build_group_by_key_large_keys_10mb,
                 group_by_key_large_keys_100mb => build_group_by_key_large_keys_100mb,
                 reshuffle_keeps_element_metadata => build_reshuffle_keeps_element_metadata,
+                redistribute_keeps_element_metadata =>
+                    build_redistribute_keeps_element_metadata,
                 flatten_empty_inputs_then_pardo => build_flatten_empty_inputs_then_pardo,
                 flatten_empty_list => build_flatten_empty_list,
                 flatten_empty_list_then_pardo => build_flatten_empty_list_then_pardo,
@@ -232,7 +235,7 @@ validates_runner_tests! {
                     build_schema_dofn_writes_rows_to_tagged_outputs,
                 schema_kept_through_filter => build_schema_kept_through_filter,
             }
-            /// Windowing: output times, re-windowing, windowed CoGroupByKey, reshuffle of
+            /// Windowing: output times, re-windowing, windowed CoGroupByKey, shuffles of
             /// windowed data, session merging, `finish_bundle` output, windowed combines and
             /// flatten.
             windowing_more {
@@ -241,6 +244,9 @@ validates_runner_tests! {
                 reshuffle_keeps_windows => build_reshuffle_keeps_windows,
                 reshuffle_after_group_by_key_keeps_windows =>
                     build_reshuffle_after_group_by_key_keeps_windows,
+                redistribute_keeps_windows => build_redistribute_keeps_windows,
+                redistribute_after_group_by_key_keeps_windows =>
+                    build_redistribute_after_group_by_key_keeps_windows,
                 session_windows_merge_in_group_by_key =>
                     build_session_windows_merge_in_group_by_key,
                 group_by_key_output_time => build_group_by_key_output_time,
