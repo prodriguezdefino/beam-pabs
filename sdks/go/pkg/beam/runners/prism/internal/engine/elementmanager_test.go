@@ -1377,6 +1377,53 @@ func TestElementManager_AccumulatingTriggerPanes(t *testing.T) {
 			},
 		},
 		{
+			name: "closing_emit_always_after_triggered_late_panes",
+			strat: WinStrat{
+				AllowedLateness:   60 * time.Millisecond,
+				Accumulating:      true,
+				ClosingEmitAlways: true,
+				Trigger: &TriggerAfterEndOfWindow{
+					Early: &TriggerAfterProcessingTime{
+						Transforms: []TimestampTransform{{Delay: 20 * time.Millisecond}},
+					},
+					Late: &TriggerElementCount{ElementCount: 1},
+				},
+			},
+			steps: []tsStep{
+				{key: 'k', vals: []byte{1, 2, 3}, eventTime: 1},
+				{watermark: 20},
+				{key: 'k', vals: []byte{4}, eventTime: 2},
+				{key: 'k', vals: []byte{5}, eventTime: 3},
+				{watermark: 70},
+			},
+			want: []gotPane{
+				{
+					Win:    win0to10,
+					Key:    "k",
+					Pane:   typex.PaneInfo{Timing: typex.PaneOnTime, Index: 0, NonSpeculativeIndex: 0, IsFirst: true, IsLast: false},
+					Values: []int{1, 2, 3},
+				},
+				{
+					Win:    win0to10,
+					Key:    "k",
+					Pane:   typex.PaneInfo{Timing: typex.PaneLate, Index: 1, NonSpeculativeIndex: 1, IsFirst: false, IsLast: false},
+					Values: []int{1, 2, 3, 4},
+				},
+				{
+					Win:    win0to10,
+					Key:    "k",
+					Pane:   typex.PaneInfo{Timing: typex.PaneLate, Index: 2, NonSpeculativeIndex: 2, IsFirst: false, IsLast: false},
+					Values: []int{1, 2, 3, 4, 5},
+				},
+				{
+					Win:    win0to10,
+					Key:    "k",
+					Pane:   typex.PaneInfo{Timing: typex.PaneLate, Index: 3, NonSpeculativeIndex: 3, IsFirst: false, IsLast: true},
+					Values: []int{1, 2, 3, 4, 5},
+				},
+			},
+		},
+		{
 			name: "processing_time_accumulating_early_and_late",
 			strat: WinStrat{
 				AllowedLateness: 60 * time.Millisecond,
@@ -1688,6 +1735,9 @@ func TestElementManager_AccumulatingTriggerPanes(t *testing.T) {
 			if gotOnTime := len(aggStage.pendingOnTime); gotOnTime != 0 {
 				t.Errorf("len(agg.pendingOnTime) = %d, want 0", gotOnTime)
 			}
+			if gotClosing := len(aggStage.pendingClosing); gotClosing != 0 {
+				t.Errorf("len(agg.pendingClosing) = %d, want 0", gotClosing)
+			}
 			if dump := em.DumpStages(); dump == "" {
 				t.Errorf("em.DumpStages() returned empty string")
 			}
@@ -1703,8 +1753,9 @@ func TestEmptyPendingOnTimeCleanup(t *testing.T) {
 	em.AddStage("ts", nil, []string{"tsOut"}, nil)
 	em.AddStage("agg", []string{"tsOut"}, []string{"aggOut"}, nil)
 	em.StageAggregates("agg", WinStrat{
-		AllowedLateness: 60 * time.Millisecond,
-		Accumulating:    true,
+		AllowedLateness:   60 * time.Millisecond,
+		Accumulating:      true,
+		ClosingEmitAlways: true,
 		Trigger: &TriggerAfterEndOfWindow{
 			Early: &TriggerElementCount{ElementCount: 1},
 			Late:  &TriggerElementCount{ElementCount: 1},
@@ -1718,6 +1769,7 @@ func TestEmptyPendingOnTimeCleanup(t *testing.T) {
 	aggStage := em.stages["agg"]
 	aggStage.mu.Lock()
 	delta := aggStage.addPendingOnTimeLocked(window.IntervalWindow{Start: 0, End: 10}, "k")
+	delta += aggStage.addPendingClosingLocked(window.IntervalWindow{Start: 0, End: 10}, "k")
 	aggStage.mu.Unlock()
 	em.addPending(delta)
 
@@ -1740,5 +1792,8 @@ func TestEmptyPendingOnTimeCleanup(t *testing.T) {
 	}
 	if gotOnTime := len(aggStage.pendingOnTime); gotOnTime != 0 {
 		t.Errorf("len(agg.pendingOnTime) = %d, want 0", gotOnTime)
+	}
+	if gotClosing := len(aggStage.pendingClosing); gotClosing != 0 {
+		t.Errorf("len(agg.pendingClosing) = %d, want 0", gotClosing)
 	}
 }

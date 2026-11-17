@@ -561,7 +561,7 @@ func (em *ElementManager) DumpStages() string {
 		if upS == "" {
 			upS = "IMPULSE  " // (extra spaces to allow print to align better.)
 		}
-		stageState = append(stageState, fmt.Sprintln(id, "watermark in", inW, "out", outW, "upstream", upW, "from", upS, "pending", ss.pending, "byKey", ss.pendingByKeys, "pendingOnTime", ss.pendingOnTime, "inprogressKeys", ss.inprogressKeys, "byBundle", ss.inprogressKeysByBundle, "holds", ss.watermarkHolds.heap, "holdCounts", ss.watermarkHolds.counts, "holdsInBundle", ss.inprogressHoldsByBundle, "pttEvents", ss.processingTimeTimers.toFire, "bundlesToInject", ss.bundlesToInject, "delayedResiduals", ss.delayedResiduals))
+		stageState = append(stageState, fmt.Sprintln(id, "watermark in", inW, "out", outW, "upstream", upW, "from", upS, "pending", ss.pending, "byKey", ss.pendingByKeys, "pendingOnTime", ss.pendingOnTime, "pendingClosing", ss.pendingClosing, "inprogressKeys", ss.inprogressKeys, "byBundle", ss.inprogressKeysByBundle, "holds", ss.watermarkHolds.heap, "holdCounts", ss.watermarkHolds.counts, "holdsInBundle", ss.inprogressHoldsByBundle, "pttEvents", ss.processingTimeTimers.toFire, "bundlesToInject", ss.bundlesToInject, "delayedResiduals", ss.delayedResiduals))
 
 		var outputConsumers, sideConsumers []string
 		for _, col := range ss.outputIDs {
@@ -1305,6 +1305,7 @@ type stageState struct {
 	bundlesToInject        []RunBundle                                           // bundlesToInject are triggered bundles that will be injected by the watermark loop to avoid premature pipeline termination.
 	bundlePanes            map[string]map[typex.Window]map[string]typex.PaneInfo // PaneInfo snapshot for bundles, from BundleID -> window -> userKey
 	pendingOnTime          map[string]set[typex.Window]                          // Keys and windows that fired an early accumulating pane and owe an ON_TIME pane.
+	pendingClosing         map[string]set[typex.Window]                          // Keys and windows that owe a closing pane under ClosingBehavior_EMIT_ALWAYS.
 
 	// Whether the stage requires its input sorted by event time, and the
 	// allowed lateness of that input. See timeSortedDataReadyLocked.
@@ -1536,7 +1537,42 @@ func (ss *stageState) takePendingOnTimeLocked(win typex.Window, key string, hold
 	return 1
 }
 
-// hasPendingWatermarkReadyLocked reports whether a free key owes an ON_TIME firing at watermark.
+// addPendingClosingLocked schedules a closing firing for key and win if not already present.
+// It returns 1 when added and 0 when already present.
+// Callers must hold ss.mu.
+func (ss *stageState) addPendingClosingLocked(win typex.Window, key string) int {
+	if ss.pendingClosing == nil {
+		ss.pendingClosing = map[string]set[typex.Window]{}
+	}
+	wins, ok := ss.pendingClosing[key]
+	if !ok {
+		wins = set[typex.Window]{}
+		ss.pendingClosing[key] = wins
+	}
+	if wins.present(win) {
+		return 0
+	}
+	wins.insert(win)
+	ss.watermarkHolds.Add(ss.closingDeadline(win), 1)
+	return 1
+}
+
+// takePendingClosingLocked transfers a scheduled closing hold for key and win into holdsInBundle.
+// Callers must hold ss.mu.
+func (ss *stageState) takePendingClosingLocked(win typex.Window, key string, holdsInBundle map[mtime.Time]int) int {
+	wins, ok := ss.pendingClosing[key]
+	if !ok || !wins.present(win) {
+		return 0
+	}
+	wins.remove(win)
+	if len(wins) == 0 {
+		delete(ss.pendingClosing, key)
+	}
+	holdsInBundle[ss.closingDeadline(win)]++
+	return 1
+}
+
+// hasPendingWatermarkReadyLocked reports whether a free key owes an ON_TIME or closing firing at watermark.
 // Callers must hold ss.mu.
 func (ss *stageState) hasPendingWatermarkReadyLocked(watermark mtime.Time) bool {
 	for k, wins := range ss.pendingOnTime {
@@ -1545,6 +1581,16 @@ func (ss *stageState) hasPendingWatermarkReadyLocked(watermark mtime.Time) bool 
 		}
 		for win := range wins {
 			if win.MaxTimestamp() < watermark && !(ss.strat.IsNeverTrigger() && watermark <= ss.closingDeadline(win)) {
+				return true
+			}
+		}
+	}
+	for k, wins := range ss.pendingClosing {
+		if ss.inprogressKeys.present(k) {
+			continue
+		}
+		for win := range wins {
+			if ss.closingDeadline(win) < watermark {
 				return true
 			}
 		}
@@ -1871,9 +1917,13 @@ func (ss *stageState) buildTriggeredBundle(key string, win typex.Window, endOfWi
 		} else if endOfWindowReached {
 			pendingWatermarkDelta -= ss.takePendingOnTimeLocked(win, key, holdsInBundle)
 		}
+		if ss.strat.ClosingEmitAlways && ss.strat.AllowedLateness > 0 && ss.input <= ss.closingDeadline(win) {
+			pendingWatermarkDelta += ss.addPendingClosingLocked(win, key)
+		}
 	} else {
 		state.Accumulated = nil
 		pendingWatermarkDelta -= ss.takePendingOnTimeLocked(win, key, holdsInBundle)
+		pendingWatermarkDelta -= ss.takePendingClosingLocked(win, key, holdsInBundle)
 	}
 	ss.state[LinkID{}][win][key] = state
 
@@ -2197,6 +2247,9 @@ func (*aggregateStageKind) buildEventTimeBundle(ss *stageState, watermark mtime.
 	for k := range ss.pendingOnTime {
 		candidateKeys.insert(k)
 	}
+	for k := range ss.pendingClosing {
+		candidateKeys.insert(k)
+	}
 
 keysPerBundle:
 	for k := range candidateKeys {
@@ -2263,14 +2316,28 @@ keysPerBundle:
 			}
 		}
 
+		for win := range ss.pendingClosing[k] {
+			if watermark <= ss.closingDeadline(win) {
+				continue
+			}
+			if !firingSet.present(win) {
+				firingSet.insert(win)
+				firingWindows = append(firingWindows, win)
+			}
+		}
+
 		var toProcessForKey []element
 		for _, win := range firingWindows {
 			ss.initAggStateLocked(win, k)
 			state := ss.state[LinkID{}][win][k]
 			removed := ss.takePendingOnTimeLocked(win, k, holdsInBundle)
+			if watermark > ss.closingDeadline(win) {
+				removed += ss.takePendingClosingLocked(win, k, holdsInBundle)
+			}
 			newElems := newByWin[win]
 			priorCount := len(state.Accumulated)
 			if priorCount+len(newElems) == 0 {
+				removed += ss.takePendingClosingLocked(win, k, holdsInBundle)
 				accumulatingPendingAdjustment -= removed
 				continue
 			}
@@ -2287,12 +2354,17 @@ keysPerBundle:
 			if ss.strat.AllowedLateness == 0 || ss.strat.IsNeverTrigger() || (ss.strat.Trigger != nil && state.getTriggerState(ss.strat.Trigger).finished) {
 				state.Pane.IsLast = true
 			}
+			added := 0
 			if ss.strat.Accumulating && !state.Pane.IsLast && watermark <= ss.closingDeadline(win) {
 				nextAcc := make([]element, len(winElems))
 				copy(nextAcc, winElems)
 				state.Accumulated = nextAcc
+				if ss.strat.ClosingEmitAlways {
+					added = ss.addPendingClosingLocked(win, k)
+				}
 			} else {
 				state.Accumulated = nil
+				removed += ss.takePendingClosingLocked(win, k, holdsInBundle)
 			}
 			ss.state[LinkID{}][win][k] = state
 
@@ -2301,7 +2373,7 @@ keysPerBundle:
 				key:  k,
 				pane: state.Pane,
 			})
-			accumulatingPendingAdjustment += priorCount - removed
+			accumulatingPendingAdjustment += priorCount - removed + added
 			toProcessForKey = append(toProcessForKey, winElems...)
 		}
 
