@@ -19,7 +19,6 @@
 
 //! Windowing and window-aware grouping.
 
-use std::fmt::Debug;
 use std::time::Duration;
 
 use beam::coders::DefaultCoder;
@@ -28,7 +27,7 @@ use beam::testing::{TestPipeline, passert};
 use beam::transforms::Sum;
 use beam::windowing::OutputTime;
 
-use super::core_transforms::sorted_groups;
+use super::core_transforms::{Shuffle, sorted_groups};
 use crate::dofns::*;
 
 /// Validates windowed grouping with `WindowInto` and `group_by_key`: each window's values
@@ -395,22 +394,23 @@ pub fn build_cogroup_by_key_windowed(p: &TestPipeline) {
     ]);
 }
 
-/// Reshuffles `windowed` and checks that the output keeps its windowing strategy and holds
-/// the `(element, window)` pairs `expected`.
-fn assert_reshuffle_keeps_windows<T>(
-    windowed: &PCollection<T>,
+/// Applies `shuffle` to `windowed` and checks that the output keeps its windowing strategy.
+fn shuffle_in_same_windows<K, V>(
+    shuffle: Shuffle,
+    windowed: &PCollection<(K, V)>,
     label: &str,
-    expected: Vec<(T, IntervalWindow)>,
-) where
-    T: DefaultCoder + Clone + PartialEq + Debug,
+) -> PCollection<(K, V)>
+where
+    K: DefaultCoder + Clone,
+    V: DefaultCoder,
 {
-    let reshuffled = windowed.reshuffle(format!("{label}/Reshuffle"));
+    let shuffled = shuffle.apply(format!("{label}/Shuffle"), windowed);
     assert_eq!(
-        reshuffled.windowing_strategy_id(),
+        shuffled.windowing_strategy_id(),
         windowed.windowing_strategy_id(),
-        "{label}: Reshuffle must keep the windowing strategy"
+        "{label}: the shuffle must keep the windowing strategy"
     );
-    passert::that_windowed(format!("{label}/Assert"), &reshuffled).contains_in_any_order(expected);
+    shuffled
 }
 
 /// Values of [`build_reshuffle_keeps_windows`], with the extremes of `i64`.
@@ -424,13 +424,18 @@ const RESHUFFLE_ROWS: &[(&str, i64, i64)] = &[
     ("k3", 0, 9_999),
 ];
 
-/// Validates that `Reshuffle` keeps the windows of its elements: fixed, sliding (each element
-/// in two windows) and unmerged sessions.
-///
-/// Covers `ReshuffleTest.testReshuffleAfterFixedWindows` and
-/// `ReshuffleTest.testReshuffleAfterSlidingWindows`.
-pub fn build_reshuffle_keeps_windows(p: &TestPipeline) {
-    let input = timestamped_rows(p, "Input", RESHUFFLE_ROWS);
+/// Checks that `shuffle` keeps the windows of its elements: fixed, sliding (each element in
+/// two windows) and unmerged sessions.
+fn assert_shuffle_keeps_windows(p: &TestPipeline, shuffle: Shuffle) {
+    let name = shuffle.name();
+    let input = timestamped_rows(p, &format!("{name}/Input"), RESHUFFLE_ROWS);
+    let check = |label: &str,
+                 windowed: PCollection<(String, i64)>,
+                 expected: Vec<((String, i64), IntervalWindow)>| {
+        let shuffled = shuffle_in_same_windows(shuffle, &windowed, label);
+        passert::that_windowed(format!("{label}/Assert"), &shuffled)
+            .contains_in_any_order(expected);
+    };
     let pairs = |windows: fn(i64) -> Vec<IntervalWindow>| -> Vec<((String, i64), IntervalWindow)> {
         RESHUFFLE_ROWS
             .iter()
@@ -442,25 +447,25 @@ pub fn build_reshuffle_keeps_windows(p: &TestPipeline) {
             .collect()
     };
 
-    assert_reshuffle_keeps_windows(
-        &input.apply(
-            "Fixed/Window",
+    check(
+        &format!("{name}/Fixed"),
+        input.apply(
+            format!("{name}/Fixed/Window"),
             WindowInto::new(FixedWindows::of(Duration::from_secs(10))),
         ),
-        "Fixed",
         pairs(|ts| {
             let start = ts - ts.rem_euclid(10_000);
             vec![interval(start, start + 10_000)]
         }),
     );
-    assert_reshuffle_keeps_windows(
-        &input.apply(
-            "Sliding/Window",
+    check(
+        &format!("{name}/Sliding"),
+        input.apply(
+            format!("{name}/Sliding/Window"),
             WindowInto::new(
                 SlidingWindows::of(Duration::from_secs(10)).every(Duration::from_secs(5)),
             ),
         ),
-        "Sliding",
         pairs(|ts| {
             let last = ts - ts.rem_euclid(5_000);
             vec![
@@ -469,26 +474,42 @@ pub fn build_reshuffle_keeps_windows(p: &TestPipeline) {
             ]
         }),
     );
-    assert_reshuffle_keeps_windows(
-        &input.apply(
-            "Sessions/Window",
+    check(
+        &format!("{name}/Sessions"),
+        input.apply(
+            format!("{name}/Sessions/Window"),
             WindowInto::new(Sessions::with_gap_duration(Duration::from_secs(5))),
         ),
-        "Sessions",
         pairs(|ts| vec![interval(ts, ts + 5_000)]),
     );
 }
 
-/// Validates that `Reshuffle` after a `GroupByKey` keeps the groups and their windows: fixed,
-/// sliding and merged sessions.
+/// Validates that `Reshuffle` keeps the windows of its elements.
 ///
-/// Covers `ReshuffleTest.testReshuffleAfterFixedWindowsAndGroupByKey`,
-/// `ReshuffleTest.testReshuffleAfterSlidingWindowsAndGroupByKey` and
-/// `ReshuffleTest.testReshuffleAfterSessionsAndGroupByKey`.
-pub fn build_reshuffle_after_group_by_key_keeps_windows(p: &TestPipeline) {
+/// Covers `ReshuffleTest.testReshuffleAfterFixedWindows` and
+/// `ReshuffleTest.testReshuffleAfterSlidingWindows`.
+pub fn build_reshuffle_keeps_windows(p: &TestPipeline) {
+    assert_shuffle_keeps_windows(p, Shuffle::Reshuffle);
+}
+
+/// Validates that `RedistributeArbitrarily` and `RedistributeByKey` keep the windows of
+/// their elements.
+///
+/// Covers `RedistributeTest.testRedistributeAfterFixedWindows` and
+/// `RedistributeTest.testRedistributeAfterSlidingWindows`.
+pub fn build_redistribute_keeps_windows(p: &TestPipeline) {
+    for shuffle in Shuffle::REDISTRIBUTE {
+        assert_shuffle_keeps_windows(p, shuffle);
+    }
+}
+
+/// Checks that `shuffle` after a `GroupByKey` keeps the groups and their windows: fixed,
+/// sliding and merged sessions.
+fn assert_shuffle_after_group_by_key_keeps_windows(p: &TestPipeline, shuffle: Shuffle) {
+    let name = shuffle.name();
     let input = timestamped_rows(
         p,
-        "Input",
+        &format!("{name}/Input"),
         &[("k1", 3, 1_000), ("k1", 5, 3_000), ("k2", 4, 12_000)],
     );
     let group = |k: &str, values: &[i64]| (k.to_string(), values.to_vec());
@@ -496,20 +517,15 @@ pub fn build_reshuffle_after_group_by_key_keeps_windows(p: &TestPipeline) {
                  windowed: PCollection<(String, i64)>,
                  expected: Vec<((String, Vec<i64>), IntervalWindow)>| {
         let grouped = windowed.group_by_key(format!("{label}/Group"));
-        let reshuffled = grouped.reshuffle(format!("{label}/Reshuffle"));
-        assert_eq!(
-            reshuffled.windowing_strategy_id(),
-            grouped.windowing_strategy_id(),
-            "{label}: Reshuffle must keep the windowing strategy"
-        );
-        let sorted = sorted_groups(&reshuffled, &format!("{label}/Sort"));
+        let shuffled = shuffle_in_same_windows(shuffle, &grouped, label);
+        let sorted = sorted_groups(&shuffled, &format!("{label}/Sort"));
         passert::that_windowed(format!("{label}/Assert"), &sorted).contains_in_any_order(expected);
     };
 
     check(
-        "Fixed",
+        &format!("{name}/Fixed"),
         input.apply(
-            "Fixed/Window",
+            format!("{name}/Fixed/Window"),
             WindowInto::new(FixedWindows::of(Duration::from_secs(10))),
         ),
         vec![
@@ -518,9 +534,9 @@ pub fn build_reshuffle_after_group_by_key_keeps_windows(p: &TestPipeline) {
         ],
     );
     check(
-        "Sliding",
+        &format!("{name}/Sliding"),
         input.apply(
-            "Sliding/Window",
+            format!("{name}/Sliding/Window"),
             WindowInto::new(
                 SlidingWindows::of(Duration::from_secs(10)).every(Duration::from_secs(5)),
             ),
@@ -533,9 +549,9 @@ pub fn build_reshuffle_after_group_by_key_keeps_windows(p: &TestPipeline) {
         ],
     );
     check(
-        "Sessions",
+        &format!("{name}/Sessions"),
         input.apply(
-            "Sessions/Window",
+            format!("{name}/Sessions/Window"),
             WindowInto::new(Sessions::with_gap_duration(Duration::from_secs(5))),
         ),
         vec![
@@ -543,6 +559,27 @@ pub fn build_reshuffle_after_group_by_key_keeps_windows(p: &TestPipeline) {
             (group("k2", &[4]), interval(12_000, 17_000)),
         ],
     );
+}
+
+/// Validates that `Reshuffle` after a `GroupByKey` keeps the groups and their windows.
+///
+/// Covers `ReshuffleTest.testReshuffleAfterFixedWindowsAndGroupByKey`,
+/// `ReshuffleTest.testReshuffleAfterSlidingWindowsAndGroupByKey` and
+/// `ReshuffleTest.testReshuffleAfterSessionsAndGroupByKey`.
+pub fn build_reshuffle_after_group_by_key_keeps_windows(p: &TestPipeline) {
+    assert_shuffle_after_group_by_key_keeps_windows(p, Shuffle::Reshuffle);
+}
+
+/// Validates that `RedistributeArbitrarily` and `RedistributeByKey` after a `GroupByKey` keep
+/// the groups and their windows.
+///
+/// Covers `RedistributeTest.testRedistributeAfterFixedWindowsAndGroupByKey`,
+/// `RedistributeTest.testRedistributeAfterSlidingWindowsAndGroupByKey` and
+/// `RedistributeTest.testRedistributeAfterSessionsAndGroupByKey`.
+pub fn build_redistribute_after_group_by_key_keeps_windows(p: &TestPipeline) {
+    for shuffle in Shuffle::REDISTRIBUTE {
+        assert_shuffle_after_group_by_key_keeps_windows(p, shuffle);
+    }
 }
 
 /// Validates that `GroupByKey` merges session windows: values closer than the gap share one

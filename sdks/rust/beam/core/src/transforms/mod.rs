@@ -52,11 +52,13 @@ mod join;
 mod map;
 mod partition;
 mod periodic_impulse;
+mod redistribute;
 pub(crate) mod reshuffle;
 mod sets;
 mod to_rows;
 mod try_map;
 mod with_keys;
+mod with_timestamps;
 
 pub use batch_elements::{BatchElements, ExplodeBatch};
 pub use co_group_by_key::{CoGbkResult, CoGroupByKey, KeyedPCollectionTuple};
@@ -97,11 +99,13 @@ pub use join::{
 pub use map::Map;
 pub use partition::Partition;
 pub use periodic_impulse::PeriodicImpulse;
+pub use redistribute::{RedistributeArbitrarily, RedistributeByKey};
 pub use reshuffle::Reshuffle;
 pub use sets::Sets;
 pub use to_rows::{FromRows, ToRows};
 pub use try_map::TryMap;
 pub use with_keys::WithKeys;
+pub use with_timestamps::WithTimestamps;
 
 pub(crate) use display_data::{DisplayDataBuilder, HasDisplayData};
 

@@ -29,5 +29,6 @@ mod sets_test;
 mod side_input_test;
 mod test_stream_test;
 mod timer_bounds_test;
+mod timestamp_skew_test;
 mod user_metrics_test;
 mod windowing_runner_test;

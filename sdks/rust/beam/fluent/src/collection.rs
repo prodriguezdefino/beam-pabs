@@ -21,13 +21,15 @@
 
 use std::collections::HashMap;
 
+use beam::Instant;
 use beam::coders::DefaultCoder;
 use beam::internals::IntoParDoFn;
 use beam::schema::{BeamRow, Row};
 use beam::transforms::{
     BatchElements, BatchedDoFn, BatchedDoFnAdapter, DoFnInput, ExplodeBatch, Failure, Filter,
     FlatMap, Flatten, FromRows, Inspect, Map, Outputs, PTransform, ParDo, Partition,
-    ProcessContext, Reshuffle, ToRows, TryMap, VecBatchConverter, WithFailures, WithKeys,
+    ProcessContext, RedistributeArbitrarily, Reshuffle, ToRows, TryMap, VecBatchConverter,
+    WithFailures, WithKeys, WithTimestamps,
 };
 #[cfg(doc)]
 use beam::transforms::{DoFn, StatefulDoFn, Windowed};
@@ -132,6 +134,9 @@ pub trait PCollectionExt<T: DefaultCoder> {
     /// Inserts a redistribution barrier between pipeline stages.
     fn reshuffle(&self, name: impl Into<String>) -> PCollection<T>;
 
+    /// Hints to the runner to spread the elements across workers.
+    fn redistribute_arbitrarily(&self, name: impl Into<String>) -> PCollection<T>;
+
     /// Partitions elements into `num_partitions` output collections.
     fn partition<F>(
         &self,
@@ -147,6 +152,11 @@ pub trait PCollectionExt<T: DefaultCoder> {
     where
         K: DefaultCoder,
         F: Fn(&T) -> K + Send + Sync + 'static;
+
+    /// Gives each element the event timestamp `timestamp_fn(&element)`.
+    fn with_timestamps<F>(&self, name: impl Into<String>, timestamp_fn: F) -> PCollection<T>
+    where
+        F: Fn(&T) -> Instant + Send + Sync + 'static;
 
     /// Assigns elements into windows using the specified [`WindowFn`].
     fn window_into<W: WindowFn + Clone>(
@@ -306,6 +316,10 @@ impl<T: DefaultCoder> PCollectionExt<T> for PCollection<T> {
         self.apply(name, Reshuffle::new())
     }
 
+    fn redistribute_arbitrarily(&self, name: impl Into<String>) -> PCollection<T> {
+        self.apply(name, RedistributeArbitrarily::new())
+    }
+
     fn partition<F>(
         &self,
         name: impl Into<String>,
@@ -324,6 +338,13 @@ impl<T: DefaultCoder> PCollectionExt<T> for PCollection<T> {
         F: Fn(&T) -> K + Send + Sync + 'static,
     {
         self.apply(name, WithKeys::new(key_fn))
+    }
+
+    fn with_timestamps<F>(&self, name: impl Into<String>, timestamp_fn: F) -> PCollection<T>
+    where
+        F: Fn(&T) -> Instant + Send + Sync + 'static,
+    {
+        self.apply(name, WithTimestamps::new(timestamp_fn))
     }
 
     fn window_into<W: WindowFn + Clone>(

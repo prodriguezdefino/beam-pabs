@@ -38,6 +38,22 @@ async fn group_by_key_collects_every_value_under_its_key() {
 }
 
 #[tokio::test]
+async fn redistribute_by_key_passes_elements_through_unchanged() {
+    let p = TestPipeline::new();
+    let pairs = pairs(&p);
+
+    let redistributed = pairs.redistribute_by_key("RedistributeByKey");
+
+    passert::that("AssertRedistributed", &redistributed).contains_in_any_order([
+        kv("a", 10),
+        kv("a", 20),
+        kv("b", 30),
+    ]);
+
+    p.run().await.expect("pipeline + assertions");
+}
+
+#[tokio::test]
 async fn combine_per_key_and_count_per_element_aggregate_each_key_separately() {
     let p = TestPipeline::new();
     let pairs = pairs(&p);

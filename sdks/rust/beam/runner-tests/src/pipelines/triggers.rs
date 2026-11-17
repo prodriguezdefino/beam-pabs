@@ -29,7 +29,7 @@ use beam::prelude::*;
 use beam::testing::{TestPipeline, TestStream, passert};
 use beam::windowing::{ClosingBehavior, OnTimeBehavior, OutputTime};
 
-use super::core_transforms::sorted_groups;
+use super::core_transforms::{Shuffle, sorted_groups};
 use crate::dofns::TimeSortedDeltaDoFn;
 
 /// The one window every element here falls into.
@@ -464,6 +464,38 @@ pub fn build_test_stream_elements_at_end_of_global_window(p: &TestPipeline) {
     passert::that("AssertLastWindow", &values)
         .in_window(window)
         .contains_in_any_order(["foo", "bar"].map(String::from));
+}
+
+/// Validates that `RedistributeArbitrarily` and `RedistributeByKey` keep the elements of a
+/// `TestStream` in fixed windows, also an element behind the watermark.
+///
+/// Covers `RedistributeTest.testRedistributeWithTimestampsStreaming`.
+pub fn build_test_stream_redistribute(p: &TestPipeline) {
+    let span = Duration::from_secs(48 * 86_400);
+    let input = p
+        .apply(
+            "TestStream",
+            TestStream::new()
+                .advance_watermark_to(Instant::EPOCH + span)
+                .add_timestamped_elements([
+                    (0i64, Instant::EPOCH),
+                    (1, Instant::EPOCH + span),
+                    (2, Instant::MAX - span),
+                ])
+                .advance_watermark_to_infinity(),
+        )
+        .key_by("WithKeys", |_: &i64| String::new())
+        .apply(
+            "FixedWindows",
+            WindowInto::new(FixedWindows::of(Duration::from_secs(600))),
+        );
+    for shuffle in Shuffle::REDISTRIBUTE {
+        let name = shuffle.name();
+        let values = shuffle
+            .apply(name, &input)
+            .map(format!("{name}/Values"), |(_, value)| value);
+        passert::that(format!("{name}/Assert"), &values).contains_in_any_order([0, 1, 2]);
+    }
 }
 
 /// Validates that a watermark one millisecond past [`Instant::END_OF_GLOBAL_WINDOW`] fires
