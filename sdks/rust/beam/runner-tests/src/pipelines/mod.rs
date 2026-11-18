@@ -39,6 +39,7 @@
 //! [`run_test`]: crate::run_test
 
 pub(crate) mod assertions;
+pub(crate) mod combine_with_context;
 pub(crate) mod core_transforms;
 pub(crate) mod finalization;
 pub(crate) mod io;
@@ -58,6 +59,7 @@ pub(crate) mod windowing;
 pub(crate) mod xlang;
 
 pub use assertions::*;
+pub use combine_with_context::*;
 pub use core_transforms::*;
 pub use finalization::*;
 pub use io::*;

@@ -27,10 +27,10 @@ use std::sync::Arc;
 use beam_model::pipeline as proto;
 use prost::Message;
 
-use super::CombineFn;
 use super::fanout::expand_fanout;
 use super::partial::PartialCombineHandler;
 use super::registered::{CombinePhase, CombineSpecs, CombineStage};
+use super::{CombineFn, CombineFnWithContext, NoSideInputs};
 use crate::coders::{BeamIterable, DefaultCoder};
 use crate::pipeline::{
     URN_COMBINE_GROUPED_VALUES, URN_COMBINE_PER_KEY, URN_RUST_COMBINE_FN, stage_key,
@@ -39,7 +39,7 @@ use crate::transforms::dofn::DoFnHandler;
 use crate::transforms::{
     DisplayDataBuilder, DoFn, GroupByKey, HasDisplayData, PTransform, ProcessContext, TransformFn,
 };
-use crate::values::PCollection;
+use crate::values::{IntoSideInputs, PCollection};
 
 /// Aggregates the values of each key with a [`CombineFn`].
 ///
@@ -50,13 +50,18 @@ use crate::values::PCollection;
 /// The composite carries a `CombinePayload`, so a runner that lifts it combines the values of
 /// each key before the shuffle: about one accumulator per key and bundle goes through the
 /// shuffle. The lifted stages run in this SDK, with the same functions as the stages above.
-pub struct CombinePerKey<K, CF> {
-    combine_fn: Arc<CF>,
+///
+/// With [`with_side_inputs`](Self::with_side_inputs), the function is a
+/// [`CombineFnWithContext`] that reads side inputs `S`, and the runner does not lift the
+/// combine.
+pub struct CombinePerKey<K, CF, S = NoSideInputs> {
+    pub(super) combine_fn: Arc<CF>,
     fanout: usize,
+    pub(super) side_inputs: S,
     _marker: PhantomData<K>,
 }
 
-impl<K, CF: CombineFn> CombinePerKey<K, CF> {
+impl<K, CF> CombinePerKey<K, CF> {
     /// Creates a transform that combines the values of each key and window with `combine_fn`.
     pub fn new(combine_fn: CF) -> Self {
         Self::shared(Arc::new(combine_fn))
@@ -64,13 +69,32 @@ impl<K, CF: CombineFn> CombinePerKey<K, CF> {
 
     /// Creates a per-key transform that shares its combine function with the caller.
     pub(super) fn shared(combine_fn: Arc<CF>) -> Self {
+        Self::with_context(combine_fn, NoSideInputs)
+    }
+
+    /// Gives the side inputs `views` to the [`CombineFnWithContext`] of this transform.
+    pub fn with_side_inputs<V>(self, views: V) -> CombinePerKey<K, CF, V::Owned>
+    where
+        V: IntoSideInputs,
+        CF: CombineFnWithContext<V::Owned>,
+    {
+        CombinePerKey::with_context(self.combine_fn, views.into_side_inputs())
+    }
+}
+
+impl<K, CF, S> CombinePerKey<K, CF, S> {
+    /// A per-key transform of `combine_fn` with side inputs `side_inputs`.
+    pub(super) fn with_context(combine_fn: Arc<CF>, side_inputs: S) -> Self {
         Self {
             combine_fn,
             fanout: 1,
+            side_inputs,
             _marker: PhantomData,
         }
     }
+}
 
+impl<K, CF: CombineFn> CombinePerKey<K, CF> {
     /// Splits each key across `fanout` intermediate shards before the final merge.
     ///
     /// Each bundle picks one shard in `0..fanout`, so the spread grows with the number of

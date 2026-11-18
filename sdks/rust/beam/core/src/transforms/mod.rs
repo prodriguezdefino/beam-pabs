@@ -66,9 +66,10 @@ pub use as_list::AsList;
 pub use batch_elements::{BatchElements, ExplodeBatch};
 pub use co_group_by_key::{CoGbkResult, CoGroupByKey, KeyedPCollectionTuple, TupleTag};
 pub use combine::{
-    AnySample, ApproximateQuantiles, ApproximateUnique, CombineFn, CombineGlobally, CombinePerKey,
-    CombiningState, Compare, Compose, ComposePart, MapOutput, Max, Mean, Min, Natural, Numeric, On,
-    Reversed, Sample, Sum, Top,
+    AnySample, ApproximateQuantiles, ApproximateUnique, CombineContext, CombineFn,
+    CombineFnWithContext, CombineGlobally, CombinePerKey, CombiningState, Compare, Compose,
+    ComposePart, MapOutput, Max, Mean, Min, Natural, NoSideInputs, Numeric, On, Reversed, Sample,
+    Sum, Top,
 };
 pub use count::{CountGlobally, CountPerElement};
 pub use create::Create;

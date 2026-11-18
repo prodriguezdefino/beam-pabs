@@ -469,7 +469,19 @@ let stats = trips.combine_per_key(
 
 For a custom aggregation, implement [`CombineFn`](../beam/core/src/transforms/combine.rs). Each hook returns `beam::Result`; an error fails the bundle, and the runner retries it.
 
-`CombinePerKey` expands to `GroupByKey` → `combine_grouped_values` and carries the `CombineFn` in its payload. A runner that lifts it (Prism, Dataflow) runs a partial combine before the shuffle. Then about one accumulator per key per bundle crosses the shuffle. On windowed input, use `.apply(name, CombineGlobally::new(..).without_defaults())`. For skewed keys, call `.with_hot_key_fanout(n)` on `CombinePerKey` or `.with_fanout(n)` on `CombineGlobally`. Each bundle picks one of the `n` shards, so the spread grows with the number of bundles. The fluent `fold_per_key` / `fold_globally` build a `CombineFn` from a zero, a fold closure and a merge closure. `fold_values(name, zero, fold)` has no merge closure: it groups with `GroupByKey` and folds each group in sequence, so all elements cross the shuffle.
+`CombinePerKey` expands to `GroupByKey` → `combine_grouped_values` and carries the `CombineFn` in its payload. A runner that lifts it (Prism, Dataflow) runs a partial combine before the shuffle. Then about one accumulator per key per bundle crosses the shuffle. On windowed input, use `.apply(name, CombineGlobally::new(..).without_defaults())`. For skewed keys, call `.with_hot_key_fanout(n)` on `CombinePerKey` or `.with_fanout(n)` on `CombineGlobally`. Each bundle picks one of the `n` shards, so the spread grows with the number of bundles. A combine function that reads side inputs implements `CombineFnWithContext<S>`, where `S` is the type of the views. Each hook also gets a `CombineContext`, and `ctx.side_inputs()` gives the values for the window of the combine. Give the views with `.with_side_inputs(views)`:
+
+```rust
+let threshold = limits.as_singleton(); // SingletonView<i64>
+let totals = scores.apply(
+    "SumAboveLimit",
+    CombinePerKey::new(SumAbove).with_side_inputs(&threshold),
+);
+```
+
+This combine expands to `GroupByKey` and a `ParDo`. The runner does not lift it, so all values of a key and window cross the shuffle, and the fanout options do not apply.
+
+The fluent `fold_per_key` / `fold_globally` build a `CombineFn` from a zero, a fold closure and a merge closure. `fold_values(name, zero, fold)` has no merge closure: it groups with `GroupByKey` and folds each group in sequence, so all elements cross the shuffle.
 
 ### Batches per key
 

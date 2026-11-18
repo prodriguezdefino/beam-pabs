@@ -21,7 +21,7 @@
 
 use std::sync::Arc;
 
-use super::{CombineFn, CombinePerKey};
+use super::{CombineFn, CombineFnWithContext, CombinePerKey, NoSideInputs};
 use crate::pipeline::{URN_COMBINE_GLOBALLY, URN_COMBINE_PER_KEY};
 use crate::transforms::{
     Create, DisplayDataBuilder, DoFn, Flatten, HasDisplayData, Map, PTransform, ParDo,
@@ -29,7 +29,7 @@ use crate::transforms::{
 };
 use beam_model::pipeline::FunctionSpec;
 
-use crate::values::{AnySideInput, IsBounded, IterView, PCollection};
+use crate::values::{AnySideInput, IntoSideInputs, IsBounded, IterView, PCollection};
 use crate::windowing::is_globally_windowed;
 
 /// Aggregates all values of a [`PCollection`] with a [`CombineFn`].
@@ -40,22 +40,44 @@ use crate::windowing::is_globally_windowed;
 /// instead.
 /// With defaults, an input outside the global window or an unbounded input is a construction
 /// error, which [`Pipeline::validate`](crate::pipeline::Pipeline::validate) returns.
-pub struct CombineGlobally<CF> {
-    combine_fn: Arc<CF>,
-    insert_default: bool,
+///
+/// With [`with_side_inputs`](Self::with_side_inputs), the function is a
+/// [`CombineFnWithContext`] that reads side inputs `S`, and the runner does not lift the
+/// combine.
+pub struct CombineGlobally<CF, S = NoSideInputs> {
+    pub(super) combine_fn: Arc<CF>,
+    pub(super) insert_default: bool,
     fanout: usize,
+    pub(super) side_inputs: S,
 }
 
-impl<CF: CombineFn> CombineGlobally<CF> {
+impl<CF> CombineGlobally<CF> {
     /// Creates a transform that combines all elements in each window with `combine_fn`.
     pub fn new(combine_fn: CF) -> Self {
         Self {
             combine_fn: Arc::new(combine_fn),
             insert_default: true,
             fanout: 1,
+            side_inputs: NoSideInputs,
         }
     }
 
+    /// Gives the side inputs `views` to the [`CombineFnWithContext`] of this transform.
+    pub fn with_side_inputs<V>(self, views: V) -> CombineGlobally<CF, V::Owned>
+    where
+        V: IntoSideInputs,
+        CF: CombineFnWithContext<V::Owned>,
+    {
+        CombineGlobally {
+            combine_fn: self.combine_fn,
+            insert_default: self.insert_default,
+            fanout: 1,
+            side_inputs: views.into_side_inputs(),
+        }
+    }
+}
+
+impl<CF, S> CombineGlobally<CF, S> {
     /// Emits nothing for an empty input rather than the identity value.
     ///
     /// Call this for input outside the global window or for unbounded input. Only the global
@@ -66,7 +88,9 @@ impl<CF: CombineFn> CombineGlobally<CF> {
         self.insert_default = false;
         self
     }
+}
 
+impl<CF: CombineFn> CombineGlobally<CF> {
     /// Splits the input across `fanout` intermediate shards before the final merge.
     ///
     /// Each bundle picks one shard in `0..fanout`, so the spread grows with the number of
@@ -185,26 +209,7 @@ impl<CF: CombineFn> CombineGlobally<CF> {
         if !self.insert_default {
             return combined;
         }
-
-        // A default value only means something in the global window: a non-global window
-        // that nothing arrived in does not exist, so there is nowhere to put the default.
-        // The default branch reads the result as a side input in the global window. That
-        // side input is ready only when the input ends, so the input must be bounded.
-        // Both are configuration errors: record them and return the combined values.
-        let reason = if !is_globally_windowed(input) {
-            Some(
-                "a default value for an empty input needs the global window. Call \
-                 .without_defaults() to emit nothing for an empty window instead.",
-            )
-        } else if input.is_bounded() != IsBounded::Bounded {
-            Some(
-                "a default value for an empty input needs a bounded input. Call \
-                 .without_defaults() to emit only the combined values.",
-            )
-        } else {
-            None
-        };
-        if let Some(reason) = reason {
+        if let Some(reason) = default_error(input) {
             input.pipeline().record_invalid_construction(reason);
             return combined;
         }
@@ -224,5 +229,27 @@ impl<CF: CombineFn> CombineGlobally<CF> {
                 }),
             );
         Flatten::pcollections("WithDefault", &[&combined, &default])
+    }
+}
+
+/// Why `input` cannot get a default value for an empty input, or `None` if it can.
+///
+/// A default value only means something in the global window: a non-global window that
+/// nothing arrived in does not exist, so there is nowhere to put the default. The default
+/// branch reads the result as a side input in the global window. That side input is ready
+/// only when the input ends, so the input must be bounded.
+pub(super) fn default_error<T: 'static>(input: &PCollection<T>) -> Option<&'static str> {
+    if !is_globally_windowed(input) {
+        Some(
+            "a default value for an empty input needs the global window. Call \
+             .without_defaults() to emit nothing for an empty window instead.",
+        )
+    } else if input.is_bounded() != IsBounded::Bounded {
+        Some(
+            "a default value for an empty input needs a bounded input. Call \
+             .without_defaults() to emit only the combined values.",
+        )
+    } else {
+        None
     }
 }
