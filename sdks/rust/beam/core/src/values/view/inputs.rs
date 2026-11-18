@@ -23,14 +23,15 @@ use std::marker::PhantomData;
 
 use super::access::{SideDict, SideInputScope, SideIter, SideMap, decode_side_input};
 use super::{
-    AnySideInput, IterView, MapView, MultimapView, PCollectionView, SingletonView, ViewKind, sealed,
+    AnySideInput, IterView, ListView, MapView, MultimapView, PCollectionView, SideList,
+    SingletonView, ViewKind, sealed,
 };
 use crate::coders::DefaultCoder;
 
 /// Side input views and the values read from them: [`SingletonView<T>`] gives `T`,
 /// [`IterView<T>`] a [`SideIter`], [`MultimapView<K, V>`] a [`SideMap`], [`MapView<K, V>`] a
-/// [`SideDict`]. Tuples of 2 to 6 views, arrays and `Vec`s give their values in the same shape.
-/// Sealed.
+/// [`SideDict`], [`ListView<T>`] a [`SideList`]. Tuples of 2 to 6 views, arrays and `Vec`s
+/// give their values in the same shape. Sealed.
 pub trait SideInputs: sealed::Sealed + Clone + Send + Sync + 'static {
     /// What the function reads in the current window.
     type Values<'s>
@@ -146,6 +147,18 @@ where
         Ok(SideDict {
             map: self.side_map(scope)?,
         })
+    }
+}
+
+impl<T: DefaultCoder> SideInputs for ListView<T> {
+    type Values<'s> = SideList<'s, T>;
+
+    fn views(&self) -> Vec<&dyn AnySideInput> {
+        vec![self]
+    }
+
+    fn read<'s>(&'s self, scope: SideInputScope<'s>) -> crate::Result<SideList<'s, T>> {
+        SideList::new(self.side_map(scope)?)
     }
 }
 

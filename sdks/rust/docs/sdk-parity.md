@@ -52,7 +52,7 @@ This page compares the Rust SDK with the other Beam SDKs.
 | Composite transforms | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Hierarchical transform names (composite scopes, duplicate sibling names rejected) | ✅ | ✅ | ✅ (Scope) | ✅ | ✅ |
 | Side inputs (singleton / iterable / multimap) | ✅ | ✅ | ✅ | 🟡 | ✅ |
-| List side input with index access | ✅ | ✅ | ✅ | ❌ | 🔜 |
+| List side input with index access | ✅ | ✅ | ✅ | ❌ | ✅ |
 | Singleton side input with a default value | ✅ | ✅ | ❌ | ✅ | ✅ |
 | Map side input that rejects duplicate keys (`as_map`) | ✅ | ✅ | ❌ | ❌ | ✅ |
 | Multimap keys side input (`MultimapKeysSideInput`) | ✅ | ❌ | ❌ | ❌ | ✅ |
@@ -68,7 +68,7 @@ Notes:
 - **Keys / Values / Latest / Reify**: Go has `DropValue` and `DropKey`, but no `Latest` or `Reify`. In Rust, use `map` or `par_do_fn`.
 - **Deduplicate**: Java and Python `Deduplicate` drop a repeated element during a processing-time or event-time duration. `Distinct` keeps one element per window.
 - **`as_map`**: Java `View.asMap`, Python `AsDict` and Rust `as_map` fail on a duplicate key. Java and Rust fail when a read finds a second value for the key. Rust has no `inMemory` form. For a key coder that is not deterministic, Java compares structural values; Rust looks up keys by their encoding.
-- **List side input**: a function gets elements by index. Java `View.asList`, Python `AsList`, Go a `[]T` parameter. Rust `IterView` gives a lazy iterator.
+- **List side input**: a function gets elements by index. Java `View.asList`, Python `AsList`, Go a `[]T` parameter. Rust `apply("AsList", AsList::new()).as_list()`, as Java `withRandomAccess`: elements keyed by position in a multimap, so a read by index does not load the window. The order of elements across bundles is not defined, as in Java.
 - **Singleton default**: an empty singleton side input gives a default value (Java `withDefaultValue`, Python `default_value`, TypeScript `defaultValue`, Rust `with_default`). Go fails when the side input does not have exactly one value.
 - **Multimap keys side input**: a function reads only the keys of a multimap side input. The Java and Rust harnesses read them with the `MultimapKeysSideInput` state key (Rust `keys` and `entries` on `SideMap` and `SideDict`).
 - **Per-key element order**: Java `PerKeyOrderingTest` checks that a runner keeps the order of the elements of a key between steps. The other SDKs have no such test.

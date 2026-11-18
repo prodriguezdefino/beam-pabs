@@ -26,11 +26,13 @@
 
 mod access;
 mod inputs;
+mod list;
 mod windowing;
 mod wire;
 
 pub use access::{SideDict, SideInputScope, SideIter, SideMap};
 pub use inputs::{IntoSideInputs, SideInputs};
+pub use list::{LIST_RANGES_KEY, ListEntry, ListEntryCoder, SideList};
 pub use windowing::SideInputWindowing;
 
 use std::marker::PhantomData;
@@ -75,6 +77,9 @@ pub const URN_VIEW_FN_MULTIMAP: &str = "beam:view_fn:multimap:v1";
 /// Rust SDK URN for the map view fn: a multimap with one value per key.
 pub const URN_VIEW_FN_MAP: &str = "beam:rust:view_fn:map:v1";
 
+/// Rust SDK URN for the list view fn: a multimap of list positions.
+pub const URN_VIEW_FN_LIST: &str = "beam:rust:view_fn:list:v1";
+
 /// Distinguishes the consumption pattern of a side input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SideInputKind {
@@ -86,6 +91,8 @@ pub enum SideInputKind {
     Multimap,
     /// Keyed lookup of the one value for a key in the window.
     Map,
+    /// Lookup by index of the elements in the window.
+    List,
 }
 
 impl SideInputKind {
@@ -95,13 +102,14 @@ impl SideInputKind {
             Self::Iter => "side_iter",
             Self::Multimap => "side_multimap",
             Self::Map => "side_map",
+            Self::List => "side_list",
         }
     }
 
     const fn access_pattern(self) -> &'static str {
         match self {
             Self::Singleton | Self::Iter => URN_SIDE_INPUT_ITERABLE,
-            Self::Multimap | Self::Map => URN_SIDE_INPUT_MULTIMAP,
+            Self::Multimap | Self::Map | Self::List => URN_SIDE_INPUT_MULTIMAP,
         }
     }
 
@@ -111,12 +119,13 @@ impl SideInputKind {
             Self::Iter => URN_VIEW_FN_ITERABLE,
             Self::Multimap => URN_VIEW_FN_MULTIMAP,
             Self::Map => URN_VIEW_FN_MAP,
+            Self::List => URN_VIEW_FN_LIST,
         }
     }
 }
 
-/// How a [`PCollectionView`] is read: [`Singleton`], [`Iter`], [`Multimap`] or [`Dict`].
-/// Sealed.
+/// How a [`PCollectionView`] is read: [`Singleton`], [`Iter`], [`Multimap`], [`Dict`] or
+/// [`List`]. Sealed.
 pub trait ViewKind: sealed::Sealed + Send + Sync + 'static {
     /// The consumption pattern written into the transform graph.
     const KIND: SideInputKind;
@@ -138,6 +147,10 @@ pub struct Multimap;
 #[derive(Clone, Copy, Debug)]
 pub struct Dict;
 
+/// Read by index.
+#[derive(Clone, Copy, Debug)]
+pub struct List;
+
 impl ViewKind for Singleton {
     const KIND: SideInputKind = SideInputKind::Singleton;
 }
@@ -154,6 +167,10 @@ impl ViewKind for Dict {
     const KIND: SideInputKind = SideInputKind::Map;
 }
 
+impl ViewKind for List {
+    const KIND: SideInputKind = SideInputKind::List;
+}
+
 /// A view read as `T`. See [`PCollection::as_singleton`].
 pub type SingletonView<T> = PCollectionView<T, Singleton>;
 
@@ -165,6 +182,9 @@ pub type MultimapView<K, V> = PCollectionView<(K, V), Multimap>;
 
 /// A view read as a [`SideDict`] lookup. See [`PCollection::as_map`].
 pub type MapView<K, V> = PCollectionView<(K, V), Dict>;
+
+/// A view read as a [`SideList`] by index. See [`PCollection::as_list`].
+pub type ListView<T> = PCollectionView<(i64, ListEntry<T>), List>;
 
 /// The encoded default value of a singleton view, or the error from its encoding.
 type EncodedDefault = Result<Arc<[u8]>, String>;
@@ -305,6 +325,7 @@ impl sealed::Sealed for Singleton {}
 impl sealed::Sealed for Iter {}
 impl sealed::Sealed for Multimap {}
 impl sealed::Sealed for Dict {}
+impl sealed::Sealed for List {}
 
 impl<T: DefaultCoder> PCollection<T> {
     /// A view read through `Kind`. The tag derives from `Kind` and the PCollection id, so two
