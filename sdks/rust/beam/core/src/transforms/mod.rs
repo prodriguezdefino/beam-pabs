@@ -29,6 +29,7 @@
 use crate::pipeline::ResourceHints;
 use crate::values::{PInput, POutput};
 
+mod as_list;
 mod batch_elements;
 pub(crate) mod co_group_by_key;
 pub(crate) mod combine;
@@ -61,6 +62,7 @@ mod try_map;
 mod with_keys;
 mod with_timestamps;
 
+pub use as_list::AsList;
 pub use batch_elements::{BatchElements, ExplodeBatch};
 pub use co_group_by_key::{CoGbkResult, CoGroupByKey, KeyedPCollectionTuple, TupleTag};
 pub use combine::{

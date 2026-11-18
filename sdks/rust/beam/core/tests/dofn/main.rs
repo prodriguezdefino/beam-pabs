@@ -27,6 +27,7 @@ mod finish_bundle_context_test;
 mod registered_dofn_test;
 mod schema_mapping_test;
 mod side_input_test;
+mod side_list_test;
 mod state_row_schema_test;
 mod state_test;
 mod stateful_dofn_test;

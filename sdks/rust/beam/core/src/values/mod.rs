@@ -33,9 +33,10 @@ pub use pvalue::{PBegin, PDone, PInput, POutput};
 #[doc(hidden)]
 pub use view::SideInputScope;
 pub use view::{
-    AnySideInput, Dict, IntoSideInputs, Iter, IterView, MapView, Multimap, MultimapView,
-    PCollectionView, SideDict, SideInputKind, SideInputWindowing, SideInputs, SideIter, SideMap,
-    Singleton, SingletonView, URN_SIDE_INPUT_ITERABLE, URN_SIDE_INPUT_MULTIMAP,
-    URN_VIEW_FN_ITERABLE, URN_VIEW_FN_MAP, URN_VIEW_FN_MULTIMAP, URN_VIEW_FN_SINGLETON,
+    AnySideInput, Dict, IntoSideInputs, Iter, IterView, LIST_RANGES_KEY, List, ListEntry,
+    ListEntryCoder, ListView, MapView, Multimap, MultimapView, PCollectionView, SideDict,
+    SideInputKind, SideInputWindowing, SideInputs, SideIter, SideList, SideMap, Singleton,
+    SingletonView, URN_SIDE_INPUT_ITERABLE, URN_SIDE_INPUT_MULTIMAP, URN_VIEW_FN_ITERABLE,
+    URN_VIEW_FN_LIST, URN_VIEW_FN_MAP, URN_VIEW_FN_MULTIMAP, URN_VIEW_FN_SINGLETON,
     URN_WINDOW_MAPPING_GLOBAL, URN_WINDOW_MAPPING_IDENTITY, URN_WINDOW_MAPPING_WINDOW_FN, ViewKind,
 };

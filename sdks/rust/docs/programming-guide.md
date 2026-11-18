@@ -356,8 +356,9 @@ A view says how the function reads a side `PCollection`, and so what it receives
 | `IterView<T>` | `as_iter()` | `SideIter<T>`: `iter()` (lazy), `to_vec()` |
 | `MultimapView<K, V>` | `as_multimap()` | `SideMap<K, V>`: `get(&k)`, `get_all(&k)`, `keys()`, `entries()` |
 | `MapView<K, V>` | `as_map()` | `SideDict<K, V>`: `get(&k)`, `keys()`, `entries()` |
+| `ListView<T>` | `apply("AsList", AsList::new()).as_list()` | `SideList<T>`: `len()`, `get(i)`, `iter()`, `to_vec()` |
 
-A read of a key with more than one value fails on a `MapView`. `keys()` and `entries()` read the keys of the window from the runner (`MultimapKeysSideInput`). An empty singleton window is an error, unless the view has a default: `as_singleton().with_default(&0)`.
+A read of a key with more than one value fails on a `MapView`. `keys()` and `entries()` read the keys of the window from the runner (`MultimapKeysSideInput`). An empty singleton window is an error, unless the view has a default: `as_singleton().with_default(&0)`. `AsList` keys each element by a list position, so `get(i)` reads one position and not the whole window. The order of a list across bundles is not defined.
 
 Tuples of 2 to 6 views, arrays and `Vec`s of views give their values in the same shape. A function with side inputs runs once per window, in that window.
 

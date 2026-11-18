@@ -138,3 +138,45 @@ async fn test_singleton_with_none_default() {
     )
     .await;
 }
+
+/// A list side input reads every element by index and in order.
+///
+/// Java: `ViewTest.testListSideInput`, `ViewTest.testListWithRandomAccessSideInput`.
+#[tokio::test]
+async fn test_list_side_input() {
+    run_pipeline(
+        "list_side_input",
+        build_list_side_input,
+        Expectation::Succeeds,
+        &prism_runner_from_env(),
+    )
+    .await;
+}
+
+/// A list side input in fixed windows reads the list of the main window.
+///
+/// Java: `ViewTest.testWindowedListSideInput`.
+#[tokio::test]
+async fn test_windowed_list_side_input() {
+    run_pipeline(
+        "windowed_list_side_input",
+        build_windowed_list_side_input,
+        Expectation::Succeeds,
+        &prism_runner_from_env(),
+    )
+    .await;
+}
+
+/// An empty list side input has no element.
+///
+/// Java: `ViewTest.testEmptyListSideInput`.
+#[tokio::test]
+async fn test_empty_list_side_input() {
+    run_pipeline(
+        "empty_list_side_input",
+        build_empty_list_side_input,
+        Expectation::Succeeds,
+        &prism_runner_from_env(),
+    )
+    .await;
+}

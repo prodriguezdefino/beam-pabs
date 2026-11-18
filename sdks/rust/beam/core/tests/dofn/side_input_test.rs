@@ -30,68 +30,13 @@ use beam_core::pipeline::{PipelineError, URN_PAR_DO};
 use beam_core::prelude::*;
 use beam_core::schema::{FieldType, FieldValue};
 use beam_core::values::{
-    SideInputKind, SideInputWindowing, URN_SIDE_INPUT_ITERABLE, URN_SIDE_INPUT_MULTIMAP,
-    URN_WINDOW_MAPPING_GLOBAL, URN_WINDOW_MAPPING_WINDOW_FN,
+    AnySideInput, SideInputKind, SideInputWindowing, URN_SIDE_INPUT_ITERABLE,
+    URN_SIDE_INPUT_MULTIMAP, URN_WINDOW_MAPPING_GLOBAL, URN_WINDOW_MAPPING_WINDOW_FN,
 };
 use beam_core::windowing::{BoundedWindow, WindowFn};
 use beam_testing::{TestPipeline, passert};
 
-struct MockSideInputReader {
-    iterables: HashMap<String, Vec<Vec<u8>>>,
-    multimaps: HashMap<(String, Vec<u8>), Vec<Vec<u8>>>,
-}
-
-impl SideInputReader for MockSideInputReader {
-    fn get_iterable<'a>(
-        &'a self,
-        tag: &str,
-        _window: &[u8],
-    ) -> Result<SideInputElements<'a>, SideInputError> {
-        let data = self.iterables.get(tag).cloned().unwrap_or_default();
-        Ok(Box::new(
-            data.into_iter().map(|v| Ok(bytes::Bytes::from(v))),
-        ))
-    }
-
-    fn get_multimap<'a>(
-        &'a self,
-        tag: &str,
-        _window: &[u8],
-        key: &[u8],
-    ) -> Result<SideInputElements<'a>, SideInputError> {
-        let data = self
-            .multimaps
-            .get(&(tag.to_string(), key.to_vec()))
-            .cloned()
-            .unwrap_or_default();
-        Ok(Box::new(
-            data.into_iter().map(|v| Ok(bytes::Bytes::from(v))),
-        ))
-    }
-
-    fn get_multimap_keys<'a>(
-        &'a self,
-        tag: &str,
-        _window: &[u8],
-    ) -> Result<SideInputElements<'a>, SideInputError> {
-        let mut keys = self
-            .multimaps
-            .keys()
-            .filter(|(t, _)| t == tag)
-            .map(|(_, key)| key.clone())
-            .collect::<Vec<_>>();
-        keys.sort();
-        Ok(Box::new(
-            keys.into_iter().map(|k| Ok(bytes::Bytes::from(k))),
-        ))
-    }
-
-    fn window_mapping(&self, tag: &str) -> Result<&SideInputWindowing, SideInputError> {
-        Err(SideInputError::MissingReader {
-            tag: tag.to_string(),
-        })
-    }
-}
+use crate::common::{MockSideInputReader, MultimapCell, read_keyed};
 
 #[test]
 fn test_pcollection_view_proto_generation() {
@@ -351,28 +296,6 @@ fn test_unified_dofn_and_process_context_execution() {
     drop(hctx);
     assert_eq!(sink.len(), 1);
     assert_eq!(i32::decode(&sink[0]).unwrap(), 99);
-}
-
-/// One multimap cell of [`MockSideInputReader`]: `(tag, encoded key)` and the encoded values.
-type MultimapCell = ((String, Vec<u8>), Vec<Vec<u8>>);
-
-/// Reads `views` in the global window from a reader with `multimaps` and no iterables.
-fn read_keyed<S: SideInputs, R>(
-    views: &S,
-    multimaps: Vec<MultimapCell>,
-    read: impl FnOnce(S::Values<'_>) -> R,
-) -> R {
-    let reader = MockSideInputReader {
-        iterables: HashMap::new(),
-        multimaps: multimaps.into_iter().collect(),
-    };
-    let mut sink: Vec<Vec<u8>> = Vec::new();
-    let header = WindowedHeader::global(0, PaneInfo::NO_FIRING);
-    let mut hctx = HandlerContext::new(&mut sink)
-        .with_side_inputs(Some(&reader))
-        .with_header(&header);
-    let ctx = hctx.as_process_context::<()>();
-    read(ctx.side_input(views).unwrap())
 }
 
 fn entry(tag: &str, key: &str, values: &[i64]) -> MultimapCell {

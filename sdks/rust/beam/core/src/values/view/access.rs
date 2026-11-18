@@ -152,7 +152,7 @@ impl<'s, K: DefaultCoder, V: DefaultCoder> SideMap<'s, K, V> {
     }
 
     /// The values for the SDK-encoded `key`.
-    fn values(
+    pub(super) fn values(
         &self,
         key: &[u8],
     ) -> crate::Result<impl Iterator<Item = crate::Result<V>> + use<'s, K, V>> {
