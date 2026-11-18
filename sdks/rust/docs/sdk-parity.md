@@ -83,7 +83,7 @@ Notes:
 | Top (largest / smallest / custom order) | ✅ | ✅ | ✅ | ❌ | ✅ |
 | Sample (uniform fixed size, any) | ✅ | ✅ | ❌ | ❌ | ✅ |
 | Composed combine (several combiners in one pass) | ✅ | ✅ | ❌ | ✅ | ✅ |
-| Combine function with side inputs | ✅ | ✅ | ❌ | ❌ | 🔜 |
+| Combine function with side inputs | ✅ | ✅ | ❌ | ❌ | ✅ |
 | ApproximateUnique | ✅ | ✅ | ❌ | ❌ | ✅ |
 | ApproximateQuantiles | ✅ | ✅ | ✅ | ❌ | ✅ |
 | HLL++ sketches (BigQuery `HLL_COUNT` compatible) | ✅ ext | ❌ | ❌ | ❌ | 🔜 |
@@ -92,7 +92,7 @@ Notes:
 Notes:
 - **Java** keeps the sketch combiners in extension modules (`extensions/zetasketch`, `extensions/sketching`), because they depend on sketch libraries. The other combiners are in the core SDK in all SDKs.
 - **Composed combine**: Java `CombineFns.compose`, Python `TupleCombineFn`, TypeScript `groupBy(..).combining(..)`. Rust `Compose` takes 2 to 6 parts and nests for more; each part reads its value from the element with `on`.
-- **Combine function with side inputs**: Java `CombineFnWithContext`, Python extra arguments to `CombinePerKey` / `CombineGlobally`. Go rejects side inputs on a combine.
+- **Combine function with side inputs**: Java `CombineFnWithContext`, Python extra arguments to `CombinePerKey` / `CombineGlobally`. Rust `CombineFnWithContext` with `.with_side_inputs(views)`; the runner does not lift this combine. Go rejects side inputs on a combine.
 - **Quantiles**: Java, Python and Rust use the deterministic Munro-Paterson algorithm, with the same buffer sizes, so they give the same quantiles. Go uses randomized compactors.
 - **ApproximateUnique**: Java, Python and Rust keep the largest distinct hashes. Each SDK uses its own hash function, so their estimates differ.
 - **HLL++ in Rust**: the plan is a cross-language wrapper of the Java `HllCount`, or a separate crate that reads and writes ZetaSketch sketches.

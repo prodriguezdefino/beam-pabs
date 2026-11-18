@@ -19,11 +19,16 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use beam::pipeline::URN_COMBINE_PER_KEY;
+use beam::pipeline::{URN_COMBINE_PER_KEY, URN_GROUP_BY_KEY};
 use beam::prelude::*;
 use beam::transforms::Sum;
 use beam_model::pipeline as proto;
 use beam_runner_prism::PrismRunner;
+use beam_runner_tests::{
+    Expectation, SeedConcatFn, build_fixed_windows_combine_with_context,
+    build_simple_combine_with_context, build_simple_combine_with_context_empty,
+    prism_runner_from_env, run_pipeline,
+};
 use prost::Message;
 
 /// Counts how many times `merge_accumulators` sees each accumulator, so a test
@@ -314,4 +319,79 @@ async fn test_combine_fn_accumulators_lifted_non_lifted_and_state() {
     p.run_with(&PrismRunner::new())
         .await
         .expect("CombineFn accumulator checks must pass");
+}
+
+/// A combine with side inputs is a `GroupByKey` and a `ParDo` that declares the side input.
+/// It has no `CombinePayload`, so a runner does not lift it.
+#[test]
+fn a_combine_with_side_inputs_expands_to_a_group_by_key_and_a_pardo() {
+    let p = Pipeline::new();
+    let seed = p.apply("Seed", Create::new(vec![1_i64])).as_singleton();
+    p.apply("Values", Create::new(vec![("a".to_string(), 1_i64)]))
+        .apply(
+            "Combine",
+            CombinePerKey::new(SeedConcatFn).with_side_inputs(&seed),
+        );
+
+    let proto = p.to_proto();
+    let transforms = &proto.components.as_ref().expect("components").transforms;
+    let combine = transforms
+        .values()
+        .find(|t| t.unique_name == "Combine")
+        .expect("the composite");
+    assert_ne!(
+        combine.spec.as_ref().map(|s| s.urn.as_str()),
+        Some(URN_COMBINE_PER_KEY)
+    );
+    let parts = combine
+        .subtransforms
+        .iter()
+        .filter_map(|id| transforms.get(id))
+        .collect::<Vec<_>>();
+    assert!(
+        parts
+            .iter()
+            .any(|t| t.spec.as_ref().is_some_and(|s| s.urn == URN_GROUP_BY_KEY))
+    );
+    assert!(
+        parts.iter().any(|t| t.inputs.contains_key(seed.tag())),
+        "the combining ParDo reads the side input"
+    );
+}
+
+/// Java: `CombineTest.CombineWithContextTests.testSimpleCombineWithContext`.
+#[tokio::test]
+async fn test_simple_combine_with_context() {
+    run_pipeline(
+        "simple_combine_with_context",
+        build_simple_combine_with_context,
+        Expectation::Succeeds,
+        &prism_runner_from_env(),
+    )
+    .await;
+}
+
+/// Java: `CombineTest.CombineWithContextTests.testSimpleCombineWithContextEmpty`.
+#[tokio::test]
+async fn test_simple_combine_with_context_empty() {
+    run_pipeline(
+        "simple_combine_with_context_empty",
+        build_simple_combine_with_context_empty,
+        Expectation::Succeeds,
+        &prism_runner_from_env(),
+    )
+    .await;
+}
+
+/// Java: `CombineTest.WindowingTests.testFixedWindowsCombineWithContext`.
+#[tokio::test]
+#[ignore = "Prism reads a windowed side input too early in a stage after a GroupByKey"]
+async fn test_fixed_windows_combine_with_context() {
+    run_pipeline(
+        "fixed_windows_combine_with_context",
+        build_fixed_windows_combine_with_context,
+        Expectation::Succeeds,
+        &prism_runner_from_env(),
+    )
+    .await;
 }
