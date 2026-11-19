@@ -189,8 +189,8 @@ pub trait DefaultCoder: Send + Sync + Sized + 'static {
 
     /// Decodes with an optional schema, field map and state stream reader. The default calls
     /// [`Self::decode_element`]. Override it for a type that needs a schema, such as `Row`, or
-    /// reads state-backed iterables, such as `BeamIterable`, or wraps one. Pass all three on to
-    /// the components.
+    /// reads state-backed iterables, such as [`BeamIterable`](crate::coders::BeamIterable), or
+    /// wraps one. Pass all three on to the components.
     ///
     /// `field_map` comes from [`Self::resolve_field_map`] for `schema`. `None` means that the
     /// caller did not resolve one, so a row type must compare `schema` with its own layout.

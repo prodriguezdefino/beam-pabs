@@ -43,6 +43,7 @@ dependencies = [
  "prost",
  "serde",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]

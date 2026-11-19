@@ -21,3 +21,4 @@
 
 mod coder_encoding_test;
 mod instant_test;
+mod iterable_framing_test;

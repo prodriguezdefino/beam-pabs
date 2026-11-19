@@ -20,10 +20,12 @@
 //! Coders for the standard Beam wire format, which the runner and the SDK harness use to
 //! exchange PCollection elements, window metadata and KV records.
 
+mod composite;
 mod iterable;
 mod standard;
 mod traits;
 
+pub use composite::*;
 pub use iterable::*;
 pub use standard::*;
 pub use traits::*;
@@ -33,3 +35,8 @@ pub const URN_BOOL: &str = "beam:coder:bool:v1";
 pub const URN_STRING_UTF8: &str = "beam:coder:string_utf8:v1";
 pub const URN_VARINT: &str = "beam:coder:varint:v1";
 pub const URN_DOUBLE: &str = "beam:coder:double:v1";
+pub const URN_KV: &str = "beam:coder:kv:v1";
+pub const URN_ITERABLE: &str = "beam:coder:iterable:v1";
+pub const URN_LENGTH_PREFIX: &str = "beam:coder:length_prefix:v1";
+pub const URN_NULLABLE: &str = "beam:coder:nullable:v1";
+pub const URN_STATE_BACKED_ITERABLE: &str = "beam:coder:state_backed_iterable:v1";

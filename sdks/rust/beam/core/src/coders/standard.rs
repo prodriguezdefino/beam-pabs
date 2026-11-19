@@ -24,7 +24,9 @@ use std::sync::Arc;
 
 use super::iterable::StateStreamReader;
 use super::traits::{Coder, CoderError, CoderRegistry, Context, DefaultCoder, FieldMap};
-use super::{URN_BOOL, URN_BYTES, URN_DOUBLE, URN_STRING_UTF8, URN_VARINT};
+use super::{
+    URN_BOOL, URN_BYTES, URN_DOUBLE, URN_STATE_BACKED_ITERABLE, URN_STRING_UTF8, URN_VARINT,
+};
 
 fn unexpected_eof(wanted: usize, left: usize) -> std::io::Error {
     std::io::Error::new(
@@ -56,6 +58,17 @@ pub(super) fn read_exact_vec(reader: &mut &[u8], len: usize) -> Result<Vec<u8>, 
     take_bytes(reader, len).map(<[u8]>::to_vec)
 }
 
+pub(super) fn read_be_i32(reader: &mut &[u8]) -> Result<i32, std::io::Error> {
+    Ok(i32::from_be_bytes(read_array(reader)?))
+}
+
+/// Writes a collection length as the 32-bit big-endian count of the wire format.
+pub(super) fn write_count(len: usize, writer: &mut Vec<u8>) -> Result<(), CoderError> {
+    let count = i32::try_from(len)
+        .map_err(|_| CoderError::Format(format!("length {len} exceeds the i32 wire limit")))?;
+    Ok(writer.write_all(&count.to_be_bytes())?)
+}
+
 /// Reads a varint length prefix. A negative length is an error, not a huge `usize`.
 pub(super) fn read_varint_len(reader: &mut &[u8]) -> Result<usize, CoderError> {
     let len = VarIntCoder::decode_varint(reader)?;
@@ -80,6 +93,22 @@ fn read_bytes(reader: &mut &[u8], context: Context) -> Result<Vec<u8>, CoderErro
         }
         Context::WholeStream => Ok(std::mem::take(reader).to_vec()),
     }
+}
+
+/// Decodes an iterable without a state channel.
+pub(super) fn decode_iterable<T>(
+    reader: &mut &[u8],
+    decode_element: impl FnMut(&mut &[u8]) -> Result<T, CoderError>,
+) -> Result<Vec<T>, CoderError> {
+    super::iterable::decode_iterable_with_state(reader, decode_element, None)
+}
+
+/// Error message for a state-backed iterable when no state channel is configured.
+pub(super) fn state_backed_iterable_message(decoded_so_far: usize) -> String {
+    format!(
+        "iterable is state-backed ('{URN_STATE_BACKED_ITERABLE}'): {decoded_so_far} element(s) \
+         were inlined and the rest require a runner state channel"
+    )
 }
 
 /// Coder for UTF-8 strings.
