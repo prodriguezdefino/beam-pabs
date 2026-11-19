@@ -19,13 +19,15 @@
 
 //! Hand-written golden and edge-case tests for coders, beyond `standard_coders.yaml`.
 //!
-//! Covers URNs, length-prefix framing, unit, bool, KV, nullable and iterables.
+//! Covers URNs, length-prefix framing, unit, bool, KV, nullable, iterables and logical types.
 
+use beam_core::coders::IntervalWindow;
 use beam_core::coders::{
-    BoolCoder, BytesCoder, Coder, Context, DoubleCoder, FloatCoder, IntervalWindow,
-    IntervalWindowCoder, IterableCoder, LengthPrefixCoder, ParamWindowedValueCoder,
-    StringUtf8Coder, VarIntCoder, WindowedValue, WindowedValueCoder,
+    BoolCoder, BytesCoder, Coder, Context, DoubleCoder, FloatCoder, IntervalWindowCoder,
+    IterableCoder, LengthPrefixCoder, ParamWindowedValueCoder, RowCoder, StringUtf8Coder,
+    VarIntCoder, WindowedValue, WindowedValueCoder,
 };
+use beam_core::schema::Row;
 
 /// A length prefix encodes the inner value in the outer context, so a string has one length,
 /// not two.
@@ -56,14 +58,57 @@ fn length_prefixed_default_coder_matches_the_cross_sdk_bytes_for_strings() {
     );
 }
 
+/// A `ParDo` decodes its input with `decode_with_context`. The value in a length prefix has
+/// the whole-stream bytes that `LengthPrefixCoder` writes.
+#[test]
+fn length_prefixed_decodes_with_context_the_bytes_of_its_coder() {
+    use std::sync::Arc;
+
+    use beam_core::coders::{DefaultCoder, LengthPrefixed};
+    use beam_core::schema::{FieldType, FieldValue, Schema};
+
+    fn assert_decodes<T: DefaultCoder + PartialEq + std::fmt::Debug>(
+        value: &T,
+        schema: Option<&Arc<Schema>>,
+    ) {
+        let mut bytes = Vec::new();
+        T::coder()
+            .encode(value, &mut bytes, Context::WholeStream)
+            .unwrap();
+        let decoded = T::decode_with_context(&bytes, schema, None, None).unwrap();
+        assert_eq!(&decoded, value);
+    }
+
+    assert_decodes(&LengthPrefixed("apache beam".to_string()), None);
+    assert_decodes(&LengthPrefixed(vec![3u8, 0, 7]), None);
+    assert_decodes(&LengthPrefixed(()), None);
+    assert_decodes(
+        &("key".to_string(), LengthPrefixed("value".to_string())),
+        None,
+    );
+
+    let schema = Arc::new(Schema::builder().field("n", FieldType::int64()).build());
+    let row = Row::new(Arc::clone(&schema), vec![Some(FieldValue::Int64(7))]).unwrap();
+    assert_decodes(&LengthPrefixed(row.clone()), Some(&schema));
+    assert_decodes(&("key".to_string(), LengthPrefixed(row)), Some(&schema));
+}
+
 /// URNs are spelled out, not taken from SDK constants, so a typo in a constant is caught.
 #[test]
 fn every_coder_reports_its_standard_urn() {
+    use beam_core::coders::GlobalWindow;
     use beam_core::coders::{
-        GlobalWindow, GlobalWindowCoder, LengthPrefixed, LengthPrefixedCoder, UnitCoder,
+        GlobalWindowCoder, LengthPrefixed, LengthPrefixedCoder, RowStructCoder, UnitCoder,
     };
+    use beam_core::schema::BeamRow;
 
-    let cases: [(&str, &str); 16] = [
+    #[derive(BeamRow)]
+    #[beam(crate = "beam_core")]
+    struct Probe {
+        id: i64,
+    }
+
+    let cases: [(&str, &str); 18] = [
         (
             Coder::<String>::urn(&StringUtf8Coder),
             "beam:coder:string_utf8:v1",
@@ -87,6 +132,11 @@ fn every_coder_reports_its_standard_urn() {
         (
             Coder::<Vec<i64>>::urn(&IterableCoder::new(VarIntCoder)),
             "beam:coder:iterable:v1",
+        ),
+        (Coder::<Row>::urn(&RowCoder::default()), "beam:coder:row:v1"),
+        (
+            Coder::<Probe>::urn(&RowStructCoder::<Probe>::new()),
+            "beam:coder:row:v1",
         ),
         (
             Coder::<IntervalWindow>::urn(&IntervalWindowCoder),
@@ -312,7 +362,7 @@ fn test_beam_iterable_methods_and_edge_cases() {
     let debug = format!("{iter:?}");
     assert_eq!(debug, "BeamIterable { elements: [1, 2, 3] }");
 
-    // Iteration
+    // try_into_iter and into_iter
     let mut try_it = iter.clone().try_into_iter();
     assert_eq!(try_it.next().unwrap().unwrap(), 1);
     assert_eq!(try_it.next().unwrap().unwrap(), 2);
@@ -389,4 +439,61 @@ fn test_beam_iterable_methods_and_edge_cases() {
         format_error(&invalid_tok),
         "Invalid continuation token length: -1"
     );
+}
+
+#[test]
+fn test_logical_types_error_paths() {
+    use beam_core::schema::{BeamField, FieldValue, SchemaError};
+    use chrono::{DateTime, NaiveDate, Utc};
+    use rust_decimal::Decimal;
+
+    // DateTime<Utc> error cases.
+    assert!(matches!(
+        DateTime::<Utc>::from_field_value(None),
+        Err(SchemaError::UnexpectedNull { .. })
+    ));
+    assert!(matches!(
+        DateTime::<Utc>::from_field_value(Some(&FieldValue::Int32(42))),
+        Err(SchemaError::ValueTypeMismatch { .. })
+    ));
+
+    // NaiveDate error cases.
+    assert!(matches!(
+        NaiveDate::from_field_value(None),
+        Err(SchemaError::UnexpectedNull { .. })
+    ));
+    assert!(matches!(
+        NaiveDate::from_field_value(Some(&FieldValue::String("not-a-date".to_string()))),
+        Err(SchemaError::ValueTypeMismatch { .. })
+    ));
+    // Out of range days.
+    assert!(matches!(
+        NaiveDate::from_field_value(Some(&FieldValue::Int64(i64::MAX))),
+        Err(SchemaError::ValueOutOfRange { .. })
+    ));
+
+    // Decimal round-trip and errors.
+    let pos_dec = Decimal::new(12345, 2); // 123.45
+    let neg_dec = Decimal::new(-9876, 3); // -9.876
+    let zero_dec = Decimal::ZERO;
+
+    for dec in [pos_dec, neg_dec, zero_dec] {
+        let fv = dec.to_field_value().unwrap();
+        let roundtrip = Decimal::from_field_value(fv.as_ref()).unwrap();
+        assert_eq!(dec, roundtrip);
+    }
+
+    assert!(matches!(
+        Decimal::from_field_value(None),
+        Err(SchemaError::UnexpectedNull { .. })
+    ));
+    assert!(matches!(
+        Decimal::from_field_value(Some(&FieldValue::Boolean(true))),
+        Err(SchemaError::ValueTypeMismatch { .. })
+    ));
+    // Corrupt bytes (empty payload).
+    assert!(matches!(
+        Decimal::from_field_value(Some(&FieldValue::Bytes(Vec::new()))),
+        Err(SchemaError::LogicalTypeEncoding(_))
+    ));
 }
