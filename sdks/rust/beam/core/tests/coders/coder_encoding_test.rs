@@ -22,8 +22,9 @@
 //! Covers URNs, length-prefix framing, unit, bool, KV, nullable and iterables.
 
 use beam_core::coders::{
-    BoolCoder, BytesCoder, Coder, Context, DoubleCoder, FloatCoder, IterableCoder,
-    LengthPrefixCoder, StringUtf8Coder, VarIntCoder,
+    BoolCoder, BytesCoder, Coder, Context, DoubleCoder, FloatCoder, IntervalWindow,
+    IntervalWindowCoder, IterableCoder, LengthPrefixCoder, ParamWindowedValueCoder,
+    StringUtf8Coder, VarIntCoder, WindowedValue, WindowedValueCoder,
 };
 
 /// A length prefix encodes the inner value in the outer context, so a string has one length,
@@ -58,9 +59,11 @@ fn length_prefixed_default_coder_matches_the_cross_sdk_bytes_for_strings() {
 /// URNs are spelled out, not taken from SDK constants, so a typo in a constant is caught.
 #[test]
 fn every_coder_reports_its_standard_urn() {
-    use beam_core::coders::{LengthPrefixed, LengthPrefixedCoder, UnitCoder};
+    use beam_core::coders::{
+        GlobalWindow, GlobalWindowCoder, LengthPrefixed, LengthPrefixedCoder, UnitCoder,
+    };
 
-    let cases: [(&str, &str); 11] = [
+    let cases: [(&str, &str); 16] = [
         (
             Coder::<String>::urn(&StringUtf8Coder),
             "beam:coder:string_utf8:v1",
@@ -84,6 +87,32 @@ fn every_coder_reports_its_standard_urn() {
         (
             Coder::<Vec<i64>>::urn(&IterableCoder::new(VarIntCoder)),
             "beam:coder:iterable:v1",
+        ),
+        (
+            Coder::<IntervalWindow>::urn(&IntervalWindowCoder),
+            "beam:coder:interval_window:v1",
+        ),
+        (
+            Coder::<GlobalWindow>::urn(&GlobalWindowCoder),
+            "beam:coder:global_window:v1",
+        ),
+        (
+            Coder::<WindowedValue<i64>>::urn(&WindowedValueCoder::new(VarIntCoder)),
+            "beam:coder:windowed_value:v1",
+        ),
+        (
+            Coder::<WindowedValue<i64>>::urn(&WindowedValueCoder::with_window_coder(
+                VarIntCoder,
+                GlobalWindowCoder,
+            )),
+            "beam:coder:windowed_value:v1",
+        ),
+        (
+            Coder::<WindowedValue<i64>>::urn(&ParamWindowedValueCoder::new(
+                VarIntCoder,
+                WindowedValue::global((), 0),
+            )),
+            "beam:coder:param_windowed_value:v1",
         ),
     ];
     for (actual, expected) in cases {

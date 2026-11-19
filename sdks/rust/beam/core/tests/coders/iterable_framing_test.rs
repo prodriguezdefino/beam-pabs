@@ -27,9 +27,15 @@
 //! * the state-backed continuation (`beam:coder:state_backed_iterable:v1`). Its tail is in
 //!   runner state.
 //!
-//! The tests cover the decode path ([`IterableCoder`]) and [`BeamIterable`](beam_core::coders::BeamIterable).
+//! The tests cover the decode path ([`IterableCoder`]) and the harness skip path
+//! ([`skip_coder_value`]), because each one parses this framing independently.
 
-use beam_core::coders::{Coder, Context, IterableCoder, VarIntCoder};
+use std::collections::HashMap;
+
+use beam_core::coders::{
+    Coder, Context, IterableCoder, URN_ITERABLE, URN_VARINT, VarIntCoder, skip_coder_value,
+};
+use beam_model::pipeline as proto;
 
 /// Builds the inline chunked encoding: `-1`, then `(chunk header, elements)` pairs, then a
 /// `0` header.
@@ -62,6 +68,33 @@ fn state_backed_iterable(inline: &[i64], token: &[u8]) -> Vec<u8> {
     VarIntCoder::encode_varint(token.len() as i64, &mut buf).unwrap();
     buf.extend(token);
     buf
+}
+
+/// Returns a coder table for an iterable of varints, in the form that the harness skip path
+/// expects.
+fn varint_iterable_coders() -> HashMap<String, proto::Coder> {
+    HashMap::from([
+        (
+            "iter".to_string(),
+            proto::Coder {
+                spec: Some(proto::FunctionSpec {
+                    urn: URN_ITERABLE.to_string(),
+                    payload: Vec::new(),
+                }),
+                component_coder_ids: vec!["elem".to_string()],
+            },
+        ),
+        (
+            "elem".to_string(),
+            proto::Coder {
+                spec: Some(proto::FunctionSpec {
+                    urn: URN_VARINT.to_string(),
+                    payload: Vec::new(),
+                }),
+                component_coder_ids: Vec::new(),
+            },
+        ),
+    ])
 }
 
 // ---------------------------------------------------------------------------
@@ -106,6 +139,48 @@ fn test_decode_state_backed_iterable_is_rejected() {
     assert!(
         msg.contains(": 2 element(s) were inlined"),
         "error should report how many elements were inlined, got: {msg}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Harness skip path
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_skip_chunked_iterable_consumes_exactly_the_iterable() {
+    let coders = varint_iterable_coders();
+
+    // A trailing sentinel shows that the cursor stops at the end of the iterable. A caller
+    // that decodes a following field depends on this.
+    let mut encoded = chunked_iterable(&[&[1, 2], &[3]]);
+    let sentinel = 0xABu8;
+    encoded.push(sentinel);
+
+    let mut cursor = &encoded[..];
+    skip_coder_value(&mut cursor, "iter", &coders, true).expect("chunked iterable should skip");
+
+    let consumed = encoded.len() - cursor.len();
+    assert_eq!(
+        consumed,
+        encoded.len() - 1,
+        "skip must land exactly on the trailing sentinel"
+    );
+    assert_eq!(encoded[consumed], sentinel);
+}
+
+/// A malformed count is an error. The decoder must not treat it as the chunked form.
+#[test]
+fn test_skip_rejects_invalid_negative_count() {
+    let coders = varint_iterable_coders();
+    let encoded = (-2i32).to_be_bytes().to_vec();
+
+    let mut cursor = &encoded[..];
+    let err = skip_coder_value(&mut cursor, "iter", &coders, true)
+        .expect_err("only -1 introduces the chunked encoding");
+
+    assert!(
+        err.to_string().contains("Invalid iterable count"),
+        "unexpected error: {err}"
     );
 }
 

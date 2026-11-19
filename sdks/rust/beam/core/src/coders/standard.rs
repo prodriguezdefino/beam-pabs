@@ -45,11 +45,30 @@ pub fn take_bytes<'a>(reader: &mut &'a [u8], len: usize) -> Result<&'a [u8], std
     Ok(head)
 }
 
+/// The bytes between `start` and `rest`, where `rest` is what is left of `start` after reads.
+pub(crate) fn consumed<'a>(start: &'a [u8], rest: &[u8]) -> &'a [u8] {
+    &start[..start.len() - rest.len()]
+}
+
 pub(super) fn read_array<const N: usize>(reader: &mut &[u8]) -> Result<[u8; N], std::io::Error> {
     let bytes = take_bytes(reader, N)?;
     let mut buf = [0u8; N];
     buf.copy_from_slice(bytes);
     Ok(buf)
+}
+
+/// Encodes big-endian milliseconds with the sign bit flipped, so byte order matches time order.
+pub(super) fn encode_timestamp(millis: i64) -> [u8; 8] {
+    ((millis as u64) ^ (1 << 63)).to_be_bytes()
+}
+
+pub(super) fn decode_timestamp(bytes: [u8; 8]) -> i64 {
+    (u64::from_be_bytes(bytes) ^ (1 << 63)) as i64
+}
+
+/// Reads a timestamp written by [`encode_timestamp`].
+pub(super) fn read_timestamp(reader: &mut &[u8]) -> Result<i64, std::io::Error> {
+    read_array(reader).map(decode_timestamp)
 }
 
 /// Reads `len` bytes into a new buffer. The length is checked against the input first, so a
