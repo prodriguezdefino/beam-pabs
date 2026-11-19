@@ -67,6 +67,23 @@ impl SideInputReader for MockSideInputReader {
         ))
     }
 
+    fn get_multimap_keys<'a>(
+        &'a self,
+        tag: &str,
+        _window: &[u8],
+    ) -> Result<SideInputElements<'a>, SideInputError> {
+        let mut keys = self
+            .multimaps
+            .keys()
+            .filter(|(t, _)| t == tag)
+            .map(|(_, key)| key.clone())
+            .collect::<Vec<_>>();
+        keys.sort();
+        Ok(Box::new(
+            keys.into_iter().map(|k| Ok(bytes::Bytes::from(k))),
+        ))
+    }
+
     fn window_mapping(&self, tag: &str) -> Result<&SideInputWindowing, SideInputError> {
         Err(SideInputError::MissingReader {
             tag: tag.to_string(),
@@ -332,6 +349,118 @@ fn test_unified_dofn_and_process_context_execution() {
     drop(hctx);
     assert_eq!(sink.len(), 1);
     assert_eq!(i32::decode(&sink[0]).unwrap(), 99);
+}
+
+/// One multimap cell of [`MockSideInputReader`]: `(tag, encoded key)` and the encoded values.
+type MultimapCell = ((String, Vec<u8>), Vec<Vec<u8>>);
+
+/// Reads `views` in the global window from a reader with `multimaps` and no iterables.
+fn read_keyed<S: SideInputs, R>(
+    views: &S,
+    multimaps: Vec<MultimapCell>,
+    read: impl FnOnce(S::Values<'_>) -> R,
+) -> R {
+    let reader = MockSideInputReader {
+        iterables: HashMap::new(),
+        multimaps: multimaps.into_iter().collect(),
+    };
+    let mut sink: Vec<Vec<u8>> = Vec::new();
+    let header = WindowedHeader::global(0, PaneInfo::NO_FIRING);
+    let mut hctx = HandlerContext::new(&mut sink)
+        .with_side_inputs(Some(&reader))
+        .with_header(&header);
+    let ctx = hctx.as_process_context::<()>();
+    read(ctx.side_input(views).unwrap())
+}
+
+fn entry(tag: &str, key: &str, values: &[i64]) -> MultimapCell {
+    (
+        (tag.to_string(), key.to_string().encode().unwrap()),
+        values.iter().map(|v| v.encode().unwrap()).collect(),
+    )
+}
+
+#[test]
+fn a_singleton_view_reads_its_default_when_the_window_is_empty() {
+    let p = Pipeline::new();
+    let view = p
+        .apply("Empty", Create::new(Vec::<i64>::new()))
+        .as_singleton();
+    let with_default = view.clone().with_default(&7);
+    let reader = MockSideInputReader {
+        iterables: HashMap::new(),
+        multimaps: HashMap::new(),
+    };
+    let mut sink: Vec<Vec<u8>> = Vec::new();
+    let header = WindowedHeader::global(0, PaneInfo::NO_FIRING);
+    let mut hctx = HandlerContext::new(&mut sink)
+        .with_side_inputs(Some(&reader))
+        .with_header(&header);
+    let ctx = hctx.as_process_context::<()>();
+
+    assert_eq!(ctx.side_input(&with_default).unwrap(), 7);
+    let restored: SingletonView<i64> =
+        serde_json::from_str(&serde_json::to_string(&with_default).unwrap()).unwrap();
+    assert_eq!(ctx.side_input(&restored).unwrap(), 7);
+    let err = ctx.side_input(&view).unwrap_err().to_string();
+    assert!(err.contains("with_default"), "{err}");
+}
+
+#[test]
+fn a_multimap_view_lists_its_keys_and_entries() {
+    let p = Pipeline::new();
+    let view = p
+        .apply("Scores", Create::new(vec![("a".to_string(), 1_i64)]))
+        .as_multimap();
+    let tag = view.tag().to_string();
+    let multimaps = vec![entry(&tag, "a", &[1, 2]), entry(&tag, "b", &[3])];
+
+    let (keys, entries) = read_keyed(&view, multimaps, |side| {
+        let keys = side.keys().unwrap().collect::<Result<Vec<_>>>().unwrap();
+        let entries = side.entries().unwrap().collect::<Result<Vec<_>>>().unwrap();
+        (keys, entries)
+    });
+    assert_eq!(keys, ["a", "b"]);
+    assert_eq!(
+        entries,
+        [("a".to_string(), vec![1, 2]), ("b".to_string(), vec![3])]
+    );
+}
+
+#[test]
+fn a_map_view_reads_one_value_per_key_and_fails_on_a_duplicate_key() {
+    let p = Pipeline::new();
+    let view = p
+        .apply("Scores", Create::new(vec![("a".to_string(), 1_i64)]))
+        .as_map();
+    assert_eq!(view.kind(), SideInputKind::Map);
+    assert_eq!(view.access_pattern(), URN_SIDE_INPUT_MULTIMAP);
+    let tag = view.tag().to_string();
+
+    let unique = vec![entry(&tag, "a", &[1]), entry(&tag, "b", &[2])];
+    read_keyed(&view, unique, |side| {
+        assert_eq!(side.get(&"a".to_string()).unwrap(), Some(1));
+        assert_eq!(side.get(&"c".to_string()).unwrap(), None);
+        assert_eq!(
+            side.entries().unwrap().collect::<Result<Vec<_>>>().unwrap(),
+            [("a".to_string(), 1), ("b".to_string(), 2)]
+        );
+    });
+
+    let duplicate = vec![entry(&tag, "a", &[1, 2])];
+    read_keyed(&view, duplicate, |side| {
+        let get = side.get(&"a".to_string()).unwrap_err().to_string();
+        assert!(get.contains("more than one value"), "{get}");
+        let entries = side.entries().unwrap().next().unwrap().unwrap_err();
+        assert!(
+            entries.to_string().contains("more than one value"),
+            "{entries}"
+        );
+    });
+
+    let json = serde_json::to_string(&view).unwrap();
+    let wrong_kind = serde_json::from_str::<MultimapView<String, i64>>(&json).unwrap_err();
+    assert!(wrong_kind.to_string().contains("Map view"), "{wrong_kind}");
 }
 
 fn window_fn_spec(window_fn: &dyn WindowFn) -> beam_model::pipeline::FunctionSpec {

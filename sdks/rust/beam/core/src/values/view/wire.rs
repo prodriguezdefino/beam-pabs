@@ -50,6 +50,10 @@ struct WireView {
     windowing: WireWindowing,
     /// The `Schema` proto of the rows in an element, if the coder has one.
     row_schema: Option<Vec<u8>>,
+    /// The `Schema` proto of the rows in the key of a keyed view.
+    key_row_schema: Option<Vec<u8>>,
+    /// The encoded default of a singleton view, or the error from its encoding.
+    default: Option<Result<Vec<u8>, String>>,
 }
 
 impl<T, Kind: ViewKind> serde::Serialize for PCollectionView<T, Kind> {
@@ -78,6 +82,16 @@ impl<T, Kind: ViewKind> serde::Serialize for PCollectionView<T, Kind> {
                 .row_schema
                 .as_ref()
                 .map(|schema| schema.to_proto_bytes()),
+            key_row_schema: self
+                .key_row_schema
+                .as_ref()
+                .map(|schema| schema.to_proto_bytes()),
+            default: self.default.as_ref().map(|default| {
+                default
+                    .as_ref()
+                    .map(|bytes| bytes.to_vec())
+                    .map_err(String::clone)
+            }),
         }
         .serialize(serializer)
     }
@@ -112,11 +126,14 @@ impl<'de, T, Kind: ViewKind> serde::Deserialize<'de> for PCollectionView<T, Kind
             WireWindowing::FromRunner => ViewWindowing::FromRunner,
             WireWindowing::Unsupported(reason) => ViewWindowing::Unsupported(reason),
         };
-        let row_schema = wire
-            .row_schema
-            .map(|bytes| Schema::from_proto_bytes(&bytes).map(Arc::new))
-            .transpose()
-            .map_err(|e| D::Error::custom(format!("side input '{}': {e}", wire.tag)))?;
+        let schema = |bytes: Option<Vec<u8>>| {
+            bytes
+                .map(|bytes| Schema::from_proto_bytes(&bytes).map(Arc::new))
+                .transpose()
+                .map_err(|e| D::Error::custom(format!("side input '{}': {e}", wire.tag)))
+        };
+        let row_schema = schema(wire.row_schema)?;
+        let key_row_schema = schema(wire.key_row_schema)?;
         Ok(Self {
             tag: wire.tag,
             pcollection_id: wire.pcollection_id,
@@ -124,6 +141,9 @@ impl<'de, T, Kind: ViewKind> serde::Deserialize<'de> for PCollectionView<T, Kind
             windowing,
             row_schema,
             field_map: Arc::new(OnceLock::new()),
+            key_row_schema,
+            key_field_map: Arc::new(OnceLock::new()),
+            default: wire.default.map(|default| default.map(Arc::from)),
             _marker: PhantomData,
         })
     }

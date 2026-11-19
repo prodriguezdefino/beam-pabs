@@ -25,8 +25,8 @@ use beam_model::pipeline as proto;
 
 use crate::values::SideInputWindowing;
 
-/// Returns the side inputs of a `ParDo` `PTransform` by tag. Returns an empty map for other
-/// transforms and for a payload that does not decode.
+/// Returns the side inputs of a `PTransform` with a `ParDoPayload` by tag. Returns an empty
+/// map for other transforms and for a payload that does not decode.
 pub fn extract_side_inputs(
     transform: &proto::PTransform,
 ) -> std::collections::HashMap<String, proto::SideInput> {
@@ -34,10 +34,27 @@ pub fn extract_side_inputs(
     transform
         .spec
         .as_ref()
-        .filter(|spec| spec.urn == crate::pipeline::URN_PAR_DO && !spec.payload.is_empty())
+        .filter(|spec| has_pardo_payload(&spec.urn) && !spec.payload.is_empty())
         .and_then(|spec| proto::ParDoPayload::decode(spec.payload.as_slice()).ok())
         .map(|p| p.side_inputs)
         .unwrap_or_default()
+}
+
+/// Whether a transform with `urn` has a `ParDoPayload`: a `ParDo`, or a stage that the runner
+/// expands a splittable `ParDo` into.
+fn has_pardo_payload(urn: &str) -> bool {
+    use crate::pipeline::{
+        URN_PAR_DO, URN_SDF_PAIR_WITH_RESTRICTION, URN_SDF_PROCESS_SIZED_ELEMENT_AND_RESTRICTIONS,
+        URN_SDF_SPLIT_AND_SIZE_RESTRICTIONS, URN_SDF_TRUNCATE_SIZED_RESTRICTIONS,
+    };
+    matches!(
+        urn,
+        URN_PAR_DO
+            | URN_SDF_PAIR_WITH_RESTRICTION
+            | URN_SDF_SPLIT_AND_SIZE_RESTRICTIONS
+            | URN_SDF_PROCESS_SIZED_ELEMENT_AND_RESTRICTIONS
+            | URN_SDF_TRUNCATE_SIZED_RESTRICTIONS
+    )
 }
 
 /// Returns the side input tags of a `ParDo` `PTransform`. Returns an empty set for other
@@ -107,6 +124,13 @@ pub trait SideInputReader: Send + Sync {
         key: &[u8],
     ) -> Result<SideInputElements<'a>, SideInputError>;
 
+    /// Fetches the encoded keys of a multimap side input in `window`, one item per key.
+    fn get_multimap_keys<'a>(
+        &'a self,
+        tag: &str,
+        window: &[u8],
+    ) -> Result<SideInputElements<'a>, SideInputError>;
+
     /// The window mapping of side input `tag`, as the runner gives it. A view reads it when the
     /// pipeline graph of the worker does not have the windowing of the side input.
     fn window_mapping(&self, tag: &str) -> Result<&SideInputWindowing, SideInputError>;
@@ -150,6 +174,16 @@ pub trait SideInputReader: Send + Sync {
     ) -> Result<SideInputElements<'a>, SideInputError> {
         self.get_multimap(tag, window, key)
     }
+
+    /// `get_multimap_keys` for one transform. The default ignores the transform ID.
+    fn get_multimap_keys_for_transform<'a>(
+        &'a self,
+        _transform_id: &str,
+        tag: &str,
+        window: &[u8],
+    ) -> Result<SideInputElements<'a>, SideInputError> {
+        self.get_multimap_keys(tag, window)
+    }
 }
 
 /// A [`SideInputReader`] adapter scoped to one transform ID.
@@ -190,6 +224,15 @@ impl SideInputReader for ScopedSideInputReader<'_> {
     ) -> Result<SideInputElements<'a>, SideInputError> {
         self.reader
             .get_multimap_for_transform(self.transform_id, tag, window, key)
+    }
+
+    fn get_multimap_keys<'a>(
+        &'a self,
+        tag: &str,
+        window: &[u8],
+    ) -> Result<SideInputElements<'a>, SideInputError> {
+        self.reader
+            .get_multimap_keys_for_transform(self.transform_id, tag, window)
     }
 
     fn window_mapping(&self, tag: &str) -> Result<&SideInputWindowing, SideInputError> {

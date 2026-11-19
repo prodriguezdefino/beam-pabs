@@ -30,6 +30,8 @@ use std::fmt;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
+use state::decode_beam_iterable_reopenable;
+
 use crate::coders::URN_ITERABLE;
 use crate::coders::composite::IterableCoder;
 use crate::coders::traits::{CoderError, CoderRegistry, DefaultCoder, FieldMap};
@@ -42,6 +44,10 @@ pub type ElementDecoder<T> = Arc<dyn Fn(&mut &[u8]) -> Result<T, CoderError> + S
 
 /// Single-pass iterator over the state-backed suffix of an iterable.
 pub type StreamingSuffix<T> = Box<dyn Iterator<Item = Result<T, CoderError>> + Send>;
+
+/// Closure that reopens a state-backed iterable from its first element.
+pub(crate) type StreamOpener<T> =
+    Arc<dyn Fn() -> Result<StreamingSuffix<T>, CoderError> + Send + Sync>;
 
 /// Opens runner state streams for continuation tokens.
 pub trait StateStreamReader: Send + Sync {
@@ -56,12 +62,19 @@ pub trait StateStreamReader: Send + Sync {
 /// the elements with [`into_vec`](Self::into_vec).
 pub struct BeamIterable<T> {
     prefix: Vec<T>,
-    suffix: Option<OwnedSuffix<T>>,
+    suffix: Option<Box<StateSuffix<T>>>,
 }
 
 /// The suffix, owned by one `BeamIterable`. The `Mutex` only makes the type `Sync`, which
 /// element types need. It is read through `get_mut` and `into_inner`, which never lock.
 type OwnedSuffix<T> = Mutex<StreamingSuffix<T>>;
+
+/// State-backed tail of a [`BeamIterable`] and its optional reopen closure. Boxed so an
+/// in-memory iterable stores only one null pointer.
+struct StateSuffix<T> {
+    stream: OwnedSuffix<T>,
+    reopen: Option<StreamOpener<T>>,
+}
 
 impl<T> BeamIterable<T> {
     pub fn from_vec(elements: Vec<T>) -> Self {
@@ -75,8 +88,43 @@ impl<T> BeamIterable<T> {
     pub fn with_suffix(prefix: Vec<T>, suffix: StreamingSuffix<T>) -> Self {
         Self {
             prefix,
-            suffix: Some(Mutex::new(suffix)),
+            suffix: Some(Box::new(StateSuffix {
+                stream: Mutex::new(suffix),
+                reopen: None,
+            })),
         }
+    }
+
+    /// Creates an iterable with a streaming suffix and a closure that reopens it from the
+    /// start of the inlined prefix.
+    pub(crate) fn with_reopenable_suffix(
+        prefix: Vec<T>,
+        suffix: StreamingSuffix<T>,
+        reopen: StreamOpener<T>,
+    ) -> Self {
+        Self {
+            prefix,
+            suffix: Some(Box::new(StateSuffix {
+                stream: Mutex::new(suffix),
+                reopen: Some(reopen),
+            })),
+        }
+    }
+
+    /// Takes the elements without wrapping in an iterator if the iterable is in memory.
+    pub(crate) fn try_into_in_memory(self) -> Result<Vec<T>, Self> {
+        if self.suffix.is_none() {
+            Ok(self.prefix)
+        } else {
+            Err(self)
+        }
+    }
+
+    /// Returns a closure that reopens this state-backed iterable from its first element.
+    pub(crate) fn reopen_fn(&self) -> Option<StreamOpener<T>> {
+        self.suffix
+            .as_ref()
+            .and_then(|s| s.reopen.as_ref().map(Arc::clone))
     }
 
     pub fn is_in_memory(&self) -> bool {
@@ -97,7 +145,7 @@ impl<T> BeamIterable<T> {
     /// Collects all elements, and fetches the state suffix.
     pub fn into_vec(self) -> Result<Vec<T>, CoderError> {
         let prefix = self.prefix;
-        match self.suffix.map(Mutex::into_inner) {
+        match self.suffix.map(|s| s.stream.into_inner()) {
             None => Ok(prefix),
             Some(Err(_)) => Err(poisoned()),
             Some(Ok(mut suffix)) => suffix.try_fold(prefix, |mut elements, item| {
@@ -123,7 +171,7 @@ impl<T> BeamIterable<T> {
     pub fn try_into_iter(self) -> BeamIterableTryIntoIter<T> {
         BeamIterableTryIntoIter {
             prefix: self.prefix.into_iter(),
-            suffix: self.suffix,
+            suffix: self.suffix.map(|s| s.stream),
         }
     }
 }
@@ -261,10 +309,10 @@ impl<T: DefaultCoder> DefaultCoder for BeamIterable<T> {
     ) -> Result<Self, CoderError> {
         // The suffix decoder outlives this call, so it owns its context. Each clone is an
         // `Arc` clone.
-        let schema = schema.cloned();
+        let schema = schema.map(Arc::clone);
         let field_map = field_map.cloned();
-        let suffix_state_reader = state_reader.cloned();
-        decode_beam_iterable(
+        let suffix_state_reader = state_reader.map(Arc::clone);
+        decode_beam_iterable_reopenable(
             reader,
             move |r| {
                 T::decode_element_with_context(
@@ -274,7 +322,7 @@ impl<T: DefaultCoder> DefaultCoder for BeamIterable<T> {
                     suffix_state_reader.as_ref(),
                 )
             },
-            state_reader.map(|r| r.as_ref()),
+            state_reader,
         )
     }
 

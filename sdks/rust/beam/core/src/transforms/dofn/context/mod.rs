@@ -19,10 +19,11 @@
 
 //! The per-element context handed to a [`DoFn`](crate::transforms::DoFn).
 //!
-//! Each sibling module adds one `impl` block of [`ProcessContext`]: `process` (construction,
-//! element facts), `output`, `side_inputs`, `state`, `stateful`, `metrics`, `residuals` (SDF
-//! residual roots) and `finalizer`. `handler` holds the byte-level [`HandlerContext`]. The
-//! struct is declared here so every sibling module can reach its private fields.
+//! Each sibling module adds one `impl` block of [`ProcessContext`]: `process`
+//! (construction, element facts), `output`, `side_inputs`, `state`, `stateful`, `finish`,
+//! `residuals` (SDF residual roots) and `finalizer`. `handler` holds the byte-level
+//! [`HandlerContext`]. The struct is declared here so every sibling module can reach its
+//! private fields.
 
 use std::borrow::Cow;
 use std::marker::PhantomData;
@@ -32,7 +33,7 @@ use std::time::Duration;
 use crate::coders::WindowedHeader;
 use crate::transforms::ElementSink;
 use crate::transforms::dofn::side_input::SideInputReader;
-use crate::transforms::dofn::state::UserStateReader;
+use crate::transforms::dofn::state::UserStateBackend;
 use crate::transforms::dofn::timer::TimerCollector;
 
 mod finalizer;
@@ -60,12 +61,26 @@ pub use stateful::{StatefulContext, Timer};
 pub struct ProcessContext<'a, T = ()> {
     sink: &'a mut dyn ElementSink,
     reader: Option<&'a dyn SideInputReader>,
-    state_reader: Option<&'a Arc<dyn UserStateReader>>,
+    state_backend: Option<&'a Arc<dyn UserStateBackend>>,
     timer_collector: Option<&'a Arc<TimerCollector>>,
     bundle_finalizer: Option<&'a Arc<BundleFinalizerCollector>>,
+    /// The transform that runs the function. Timers are recorded for it.
+    transform_id: &'a str,
     header: &'a WindowedHeader,
     key_bytes: Option<Cow<'a, [u8]>>,
-    /// How far before the current timestamp an output with `.at(ts)` can be.
+    /// How far before the current timestamp an output with `.at(ts)` or a timer hold can be.
     allowed_timestamp_skew: Duration,
+    /// Allowed lateness of the input windowing strategy, for window expiration bounds.
+    allowed_lateness: Duration,
     _marker: PhantomData<T>,
+}
+
+impl<T> ProcessContext<'_, T> {
+    /// Flushes buffered outbound elements to the runner before a blocking wait.
+    ///
+    /// Call this after emitting elements and before blocking on I/O or a sleep. Does nothing
+    /// when the outbound buffer is empty.
+    pub fn flush_output(&mut self) -> crate::Result {
+        self.sink.flush().map_err(crate::Error::from)
+    }
 }

@@ -29,7 +29,7 @@ mod inputs;
 mod windowing;
 mod wire;
 
-pub use access::{SideInputScope, SideIter, SideMap};
+pub use access::{SideDict, SideInputScope, SideIter, SideMap};
 pub use inputs::{IntoSideInputs, SideInputs};
 pub use windowing::SideInputWindowing;
 
@@ -72,6 +72,9 @@ pub const URN_VIEW_FN_ITERABLE: &str = "beam:view_fn:iter:v1";
 /// Standard URN for multimap view fn.
 pub const URN_VIEW_FN_MULTIMAP: &str = "beam:view_fn:multimap:v1";
 
+/// Rust SDK URN for the map view fn: a multimap with one value per key.
+pub const URN_VIEW_FN_MAP: &str = "beam:rust:view_fn:map:v1";
+
 /// Distinguishes the consumption pattern of a side input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SideInputKind {
@@ -81,13 +84,15 @@ pub enum SideInputKind {
     Iter,
     /// Keyed lookup returning all matching values for a key in the window.
     Multimap,
+    /// Keyed lookup of the one value for a key in the window.
+    Map,
 }
 
 impl SideInputKind {
     const fn access_pattern(self) -> &'static str {
         match self {
             Self::Singleton | Self::Iter => URN_SIDE_INPUT_ITERABLE,
-            Self::Multimap => URN_SIDE_INPUT_MULTIMAP,
+            Self::Multimap | Self::Map => URN_SIDE_INPUT_MULTIMAP,
         }
     }
 
@@ -96,11 +101,13 @@ impl SideInputKind {
             Self::Singleton => URN_VIEW_FN_SINGLETON,
             Self::Iter => URN_VIEW_FN_ITERABLE,
             Self::Multimap => URN_VIEW_FN_MULTIMAP,
+            Self::Map => URN_VIEW_FN_MAP,
         }
     }
 }
 
-/// How a [`PCollectionView`] is read: [`Singleton`], [`Iter`] or [`Multimap`]. Sealed.
+/// How a [`PCollectionView`] is read: [`Singleton`], [`Iter`], [`Multimap`] or [`Dict`].
+/// Sealed.
 pub trait ViewKind: sealed::Sealed + Send + Sync + 'static {
     /// The consumption pattern written into the transform graph.
     const KIND: SideInputKind;
@@ -118,6 +125,10 @@ pub struct Iter;
 #[derive(Clone, Copy, Debug)]
 pub struct Multimap;
 
+/// Read by key, with one value for each key.
+#[derive(Clone, Copy, Debug)]
+pub struct Dict;
+
 impl ViewKind for Singleton {
     const KIND: SideInputKind = SideInputKind::Singleton;
 }
@@ -130,6 +141,10 @@ impl ViewKind for Multimap {
     const KIND: SideInputKind = SideInputKind::Multimap;
 }
 
+impl ViewKind for Dict {
+    const KIND: SideInputKind = SideInputKind::Map;
+}
+
 /// A view read as `T`. See [`PCollection::as_singleton`].
 pub type SingletonView<T> = PCollectionView<T, Singleton>;
 
@@ -139,8 +154,15 @@ pub type IterView<T> = PCollectionView<T, Iter>;
 /// A view read as a [`SideMap`] lookup. See [`PCollection::as_multimap`].
 pub type MultimapView<K, V> = PCollectionView<(K, V), Multimap>;
 
+/// A view read as a [`SideDict`] lookup. See [`PCollection::as_map`].
+pub type MapView<K, V> = PCollectionView<(K, V), Dict>;
+
+/// The encoded default value of a singleton view, or the error from its encoding.
+type EncodedDefault = Result<Arc<[u8]>, String>;
+
 /// A handle on a side [`PCollection`] of `T`, read as `Kind`. Use the aliases [`SingletonView`],
-/// [`IterView`] and [`MultimapView`]. Serializable, so a registered `DoFn` can hold it.
+/// [`IterView`], [`MultimapView`] and [`MapView`]. Serializable, so a registered `DoFn` can hold
+/// it.
 #[derive(Debug)]
 pub struct PCollectionView<T, Kind> {
     tag: String,
@@ -148,9 +170,15 @@ pub struct PCollectionView<T, Kind> {
     coder_id: String,
     windowing: ViewWindowing,
     /// The schema of the rows in an element, from the coder of the side input. A dynamic
-    /// [`Row`](crate::schema::Row) needs it to decode.
+    /// [`Row`](crate::schema::Row) needs it to decode. For a keyed view, it is the schema of
+    /// the value.
     row_schema: Option<Arc<Schema>>,
     field_map: Arc<FieldMapSlot>,
+    /// The schema of the rows in the key of a keyed view.
+    key_row_schema: Option<Arc<Schema>>,
+    key_field_map: Arc<FieldMapSlot>,
+    /// The value of an empty singleton view. Only [`SingletonView::with_default`] sets it.
+    default: Option<EncodedDefault>,
     _marker: PhantomData<fn() -> (T, Kind)>,
 }
 
@@ -163,8 +191,25 @@ impl<T, Kind> Clone for PCollectionView<T, Kind> {
             windowing: self.windowing.clone(),
             row_schema: self.row_schema.clone(),
             field_map: Arc::clone(&self.field_map),
+            key_row_schema: self.key_row_schema.clone(),
+            key_field_map: Arc::clone(&self.key_field_map),
+            default: self.default.clone(),
             _marker: PhantomData,
         }
+    }
+}
+
+impl<T: DefaultCoder> PCollectionView<T, Singleton> {
+    /// Reads `value` when the side input window has no element. Without a default, an empty
+    /// window is an error.
+    pub fn with_default(mut self, value: &T) -> Self {
+        self.default = Some(value.encode().map(Arc::from).map_err(|e| {
+            format!(
+                "Failed to encode the default of side input '{}': {e}",
+                self.tag
+            )
+        }));
+        self
     }
 }
 
@@ -250,6 +295,7 @@ mod sealed {
 impl sealed::Sealed for Singleton {}
 impl sealed::Sealed for Iter {}
 impl sealed::Sealed for Multimap {}
+impl sealed::Sealed for Dict {}
 
 impl<T: DefaultCoder> PCollection<T> {
     /// A view read through `Kind`. The tag derives from the PCollection id, so two views of one
@@ -283,6 +329,9 @@ impl<T: DefaultCoder> PCollection<T> {
             windowing,
             row_schema,
             field_map: Arc::new(OnceLock::new()),
+            key_row_schema: None,
+            key_field_map: Arc::new(OnceLock::new()),
+            default: None,
             _marker: PhantomData,
         }
     }
@@ -302,19 +351,31 @@ impl<K: DefaultCoder, V: DefaultCoder> PCollection<(K, V)>
 where
     (K, V): DefaultCoder,
 {
-    /// A side input read by key.
-    pub fn as_multimap(&self) -> MultimapView<K, V> {
-        let mut view = self.view::<Multimap>();
+    /// A view read by key. The row schemas are those of the key and the value, not of the pair.
+    fn keyed_view<Kind: ViewKind>(&self) -> PCollectionView<(K, V), Kind> {
+        let mut view = self.view::<Kind>();
         let p = self.pipeline().lock();
-        if let Some(value_coder_id) = p
-            .components
-            .coders
-            .get(&view.coder_id)
-            .and_then(|coder| coder.component_coder_ids.get(1))
-        {
-            view.row_schema = extract_row_schema(value_coder_id, &p.components.coders);
-        }
+        let coders = &p.components.coders;
+        let schema_of = |index: usize| {
+            coders
+                .get(&view.coder_id)
+                .and_then(|coder| coder.component_coder_ids.get(index))
+                .and_then(|coder_id| extract_row_schema(coder_id, coders))
+        };
+        view.key_row_schema = schema_of(0);
+        view.row_schema = schema_of(1);
         drop(p);
         view
+    }
+
+    /// A side input read by key, with all values of each key.
+    pub fn as_multimap(&self) -> MultimapView<K, V> {
+        self.keyed_view()
+    }
+
+    /// A side input read by key, with one value for each key. A read of a key with more than
+    /// one value fails.
+    pub fn as_map(&self) -> MapView<K, V> {
+        self.keyed_view()
     }
 }

@@ -27,31 +27,33 @@ use std::time::Duration;
 
 use super::{BundleFinalizerCollector, ProcessContext, ResidualApplication, ResidualCollector};
 use crate::coders::{ElementMetadata, PaneInfo, WindowedHeader};
+use crate::metrics::context::MetricsContainer;
 use crate::transforms::ElementSink;
 use crate::transforms::dofn::side_input::SideInputReader;
-use crate::transforms::dofn::state::UserStateReader;
+use crate::transforms::dofn::state::UserStateBackend;
 use crate::transforms::dofn::timer::TimerCollector;
 
 /// Carries the output sink, the readers, the collectors, and the windowed-value header and
 /// encoded key of the element. It uses no thread-local state.
 pub struct HandlerContext<'a> {
     pub sink: &'a mut dyn ElementSink,
-    pub side_inputs: Option<&'a dyn SideInputReader>,
-    pub state_reader: Option<&'a Arc<dyn UserStateReader>>,
-    pub timer_collector: Option<&'a Arc<TimerCollector>>,
-    pub residual_collector: Option<&'a Arc<ResidualCollector>>,
-    pub metrics_container: Option<&'a Arc<crate::metrics::context::MetricsContainer>>,
-    pub bundle_finalizer: Option<&'a Arc<BundleFinalizerCollector>>,
-    pub dynamic_split_registrar:
+    pub(crate) side_inputs: Option<&'a dyn SideInputReader>,
+    pub(crate) state_backend: Option<&'a Arc<dyn UserStateBackend>>,
+    pub(crate) timer_collector: Option<&'a Arc<TimerCollector>>,
+    pub(crate) residual_collector: Option<&'a Arc<ResidualCollector>>,
+    pub(crate) metrics_container: Option<&'a Arc<MetricsContainer>>,
+    pub(crate) bundle_finalizer: Option<&'a Arc<BundleFinalizerCollector>>,
+    pub(crate) dynamic_split_registrar:
         Option<&'a Arc<crate::transforms::dofn::sdf::dynamic_split::DynamicSplitRegistrar>>,
-    pub state_stream_reader: Option<&'a Arc<dyn crate::coders::StateStreamReader>>,
+    pub(crate) state_stream_reader: Option<&'a Arc<dyn crate::coders::StateStreamReader>>,
     /// Borrowed from the operator graph on the hot path; owned only when a caller gives a `String`.
-    pub transform_id: Cow<'a, str>,
+    pub(crate) transform_id: Cow<'a, str>,
     /// Timestamp, windows, pane and element metadata for the element being processed.
-    pub header: &'a WindowedHeader,
+    pub(crate) header: &'a WindowedHeader,
     /// Borrowed from the current element when possible, so keyed input does not copy the key.
-    pub key_bytes: Option<Cow<'a, [u8]>>,
-    pub input_schema: Option<&'a Arc<crate::schema::Schema>>,
+    pub(crate) key_bytes: Option<Cow<'a, [u8]>>,
+    pub(crate) input_schema: Option<&'a Arc<crate::schema::Schema>>,
+    pub(crate) allowed_lateness: Duration,
 }
 
 impl<'a> HandlerContext<'a> {
@@ -60,7 +62,7 @@ impl<'a> HandlerContext<'a> {
         Self {
             sink,
             side_inputs: None,
-            state_reader: None,
+            state_backend: None,
             timer_collector: None,
             residual_collector: None,
             metrics_container: None,
@@ -71,6 +73,7 @@ impl<'a> HandlerContext<'a> {
             header: WindowedHeader::EMPTY,
             key_bytes: None,
             input_schema: None,
+            allowed_lateness: Duration::ZERO,
         }
     }
 
@@ -84,8 +87,11 @@ impl<'a> HandlerContext<'a> {
         self
     }
 
-    pub fn with_state_reader(mut self, state_reader: Option<&'a Arc<dyn UserStateReader>>) -> Self {
-        self.state_reader = state_reader;
+    pub fn with_state_backend(
+        mut self,
+        state_backend: Option<&'a Arc<dyn UserStateBackend>>,
+    ) -> Self {
+        self.state_backend = state_backend;
         self
     }
 
@@ -145,6 +151,20 @@ impl<'a> HandlerContext<'a> {
         self
     }
 
+    /// Sets the allowed lateness of the input windowing strategy.
+    pub fn with_allowed_lateness(mut self, allowed_lateness: Duration) -> Self {
+        self.allowed_lateness = allowed_lateness;
+        self
+    }
+
+    pub fn timer_collector(&self) -> Option<&'a Arc<TimerCollector>> {
+        self.timer_collector
+    }
+
+    pub fn key_bytes(&self) -> Option<&[u8]> {
+        self.key_bytes.as_deref()
+    }
+
     /// Returns the event timestamp in milliseconds.
     pub fn timestamp(&self) -> i64 {
         self.header.timestamp_millis()
@@ -167,13 +187,13 @@ impl<'a> HandlerContext<'a> {
 
     pub fn with_metrics_container(
         mut self,
-        metrics_container: Option<&'a Arc<crate::metrics::context::MetricsContainer>>,
+        metrics_container: Option<&'a Arc<MetricsContainer>>,
     ) -> Self {
         self.metrics_container = metrics_container;
         self
     }
 
-    pub fn metrics_container(&self) -> Option<&Arc<crate::metrics::context::MetricsContainer>> {
+    pub fn metrics_container(&self) -> Option<&Arc<MetricsContainer>> {
         self.metrics_container
     }
 
@@ -206,7 +226,7 @@ impl<'a> HandlerContext<'a> {
             .map(|r| r.register(handler))
     }
 
-    pub fn header(&self) -> &WindowedHeader {
+    pub fn header(&self) -> &'a WindowedHeader {
         self.header
     }
 
@@ -216,12 +236,14 @@ impl<'a> HandlerContext<'a> {
         ProcessContext {
             sink: self.sink,
             reader: self.side_inputs,
-            state_reader: self.state_reader,
+            state_backend: self.state_backend,
             timer_collector: self.timer_collector,
             bundle_finalizer: self.bundle_finalizer,
+            transform_id: &self.transform_id,
             header: self.header,
             key_bytes: self.key_bytes.as_deref().map(Cow::Borrowed),
             allowed_timestamp_skew: Duration::ZERO,
+            allowed_lateness: self.allowed_lateness,
             _marker: PhantomData,
         }
     }

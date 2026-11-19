@@ -269,7 +269,10 @@ impl BundleHandler for WindowIntoHandler {
             crate::Instant::from_millis(ctx.timestamp()),
             &mut self.windows,
         );
-        let new_header = ctx.header.with_windows(&self.windows);
+        let new_header = ctx
+            .header
+            .with_windows(&self.windows)
+            .map_err(|e| e.to_string())?;
         (0..ctx.header.window_count().max(1))
             .try_for_each(|_| ctx.sink.push_windowed_bytes(&new_header, element))
     }

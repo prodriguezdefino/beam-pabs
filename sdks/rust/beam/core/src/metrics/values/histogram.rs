@@ -110,6 +110,14 @@ impl HistogramBuckets {
         }
     }
 
+    /// Returns the bucket index of `value`, or `None` if `value` is outside the buckets.
+    pub(crate) fn bucket_index(&self, value: f64) -> Option<usize> {
+        match self.bucket(value) {
+            Bucket::Index(index) => Some(index),
+            Bucket::Outside => None,
+        }
+    }
+
     fn bucket(&self, value: f64) -> Bucket {
         let index = match *self {
             Self::Linear { start, width, .. } if value >= start => {
@@ -184,6 +192,14 @@ impl HistogramValue {
             buckets,
             counts: vec![0; buckets.count()],
             total: 0,
+        }
+    }
+
+    pub(crate) fn from_parts(buckets: HistogramBuckets, counts: Vec<i64>, total: i64) -> Self {
+        Self {
+            buckets,
+            counts,
+            total,
         }
     }
 

@@ -29,6 +29,7 @@ use crate::transforms::dofn::outputs::{Emitter, Outputs};
 impl<'a, T: Outputs> ProcessContext<'a, T> {
     /// Emits `value` with the timestamp, window and pane of the current element.
     pub fn emit(&mut self, value: T) -> crate::Result {
+        check_default_timestamp(self.header, self.allowed_timestamp_skew)?;
         let header = (!self.header.is_empty()).then_some(self.header);
         value
             .emit_to(Emitter::new(self.sink, header))
@@ -152,10 +153,12 @@ impl<T: Outputs> OutputBuilder<'_, '_, T> {
     pub fn emit(self) -> crate::Result {
         let overridden = self.timestamp.is_some() || self.pane.is_some() || self.metadata.is_some();
         if !overridden {
-            let header = self
-                .header
-                .or_else(|| (!self.ctx.header.is_empty()).then_some(self.ctx.header));
-            return Ok(self.value.emit_to(Emitter::new(self.ctx.sink, header))?);
+            return match self.header {
+                Some(header) => Ok(self
+                    .value
+                    .emit_to(Emitter::new(self.ctx.sink, Some(header)))?),
+                None => self.ctx.emit(self.value),
+            };
         }
         let Self {
             ctx,
@@ -166,8 +169,14 @@ impl<T: Outputs> OutputBuilder<'_, '_, T> {
             metadata,
         } = self;
         // An output under a given header has no current element to compare with.
-        if let (Some(timestamp), None) = (timestamp, header) {
-            check_timestamp(timestamp, ctx.header, ctx.allowed_timestamp_skew)?;
+        match (timestamp, header) {
+            (Some(timestamp), None) => {
+                check_timestamp(timestamp, ctx.header, ctx.allowed_timestamp_skew)?;
+            }
+            (None, None) => {
+                check_default_timestamp(ctx.header, ctx.allowed_timestamp_skew)?;
+            }
+            (_, Some(_)) => {}
         }
         let base = header.unwrap_or(ctx.header);
         let rebuilt = base.rebuilt(
@@ -177,6 +186,18 @@ impl<T: Outputs> OutputBuilder<'_, '_, T> {
         );
         Ok(value.emit_to(Emitter::new(ctx.sink, Some(&rebuilt)))?)
     }
+}
+
+/// Rejects a default timestamp outside [`Instant::MIN`]..=[`Instant::MAX`], such as the
+/// sentinel hold of a [`Timer::without_hold`](super::Timer::without_hold) timer.
+fn check_default_timestamp(current: &WindowedHeader, skew: Duration) -> crate::Result {
+    if !current.is_empty() {
+        let timestamp = Instant::from_millis(current.timestamp_millis());
+        if !(Instant::MIN..=Instant::MAX).contains(&timestamp) {
+            return check_timestamp(timestamp, current, skew);
+        }
+    }
+    Ok(())
 }
 
 /// Fails if `output` is before the timestamp of `current` minus `skew`, before

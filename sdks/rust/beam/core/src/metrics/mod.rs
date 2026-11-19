@@ -22,6 +22,7 @@
 //! metrics that DoFn code declares.
 
 pub(crate) mod context;
+pub(crate) mod io;
 pub(crate) mod lineage;
 pub(crate) mod query;
 pub(crate) mod scope;
@@ -31,6 +32,7 @@ pub(crate) mod user;
 pub(crate) mod values;
 
 pub use context::MetricKey;
+pub use io::{ApiRequest, grpc_status, http_status};
 pub use lineage::{LINEAGE_NAMESPACE, LINEAGE_SINKS, LINEAGE_SOURCES, Lineage};
 pub use query::{
     MetricFilter, MetricPhase, MetricReading, MetricResult, MetricResults, MetricValue,
@@ -62,6 +64,13 @@ pub const URN_DATA_CHANNEL_READ_INDEX: &str = "beam:metric:data_channel:read_ind
 pub const URN_WORK_REMAINING: &str = "beam:metric:ptransform_progress:remaining:v1";
 pub const URN_WORK_COMPLETED: &str = "beam:metric:ptransform_progress:completed:v1";
 
+// I/O metric URNs. See [`ApiRequest`].
+
+/// The calls of a transform to a method of an external service, by status.
+pub const URN_API_REQUEST_COUNT: &str = "beam:metric:io:api_request_count:v1";
+/// The latencies of the calls of a transform to a method of an external service.
+pub const URN_API_REQUEST_LATENCIES: &str = "beam:metric:io:api_request_latencies:v1";
+
 // User metric URNs.
 
 pub const URN_USER_SUM_INT64: &str = "beam:metric:user:sum_int64:v1";
@@ -87,3 +96,14 @@ pub const LABEL_PCOLLECTION: &str = "PCOLLECTION";
 pub const LABEL_PTRANSFORM: &str = "PTRANSFORM";
 pub const LABEL_NAMESPACE: &str = "NAMESPACE";
 pub const LABEL_NAME: &str = "NAME";
+pub const LABEL_SERVICE: &str = "SERVICE";
+pub const LABEL_METHOD: &str = "METHOD";
+pub const LABEL_RESOURCE: &str = "RESOURCE";
+pub const LABEL_STATUS: &str = "STATUS";
+pub const LABEL_BIGQUERY_PROJECT_ID: &str = "BIGQUERY_PROJECT_ID";
+pub const LABEL_BIGQUERY_DATASET: &str = "BIGQUERY_DATASET";
+pub const LABEL_BIGQUERY_TABLE: &str = "BIGQUERY_TABLE";
+pub const LABEL_BIGTABLE_PROJECT_ID: &str = "BIGTABLE_PROJECT_ID";
+pub const LABEL_INSTANCE_ID: &str = "INSTANCE_ID";
+pub const LABEL_TABLE_ID: &str = "TABLE_ID";
+pub const LABEL_GCS_BUCKET: &str = "GCS_BUCKET";

@@ -34,6 +34,7 @@ mod element;
 mod encode;
 pub(crate) mod header;
 mod skip;
+pub(crate) mod walk;
 
 pub(crate) use decode::decode_field_value;
 pub use element::{RowElementCoder, RowStructCoder};

@@ -20,16 +20,40 @@
 //! How a side input finds its window from the window of the main input element.
 
 use std::borrow::Cow;
+use std::io::Cursor;
+use std::ops::Deref;
 use std::sync::Arc;
 
 use beam_model::pipeline as proto;
 use prost::Message;
 
 use super::{URN_WINDOW_MAPPING_GLOBAL, URN_WINDOW_MAPPING_IDENTITY, URN_WINDOW_MAPPING_WINDOW_FN};
-use crate::coders::{Coder, Context, IntervalWindowCoder};
+use crate::coders::{Coder, Context, IntervalWindowCoder, write_interval_window};
 use crate::pipeline::{URN_WINDOW_FN_GLOBAL_WINDOWS, URN_WINDOW_FN_SESSION_WINDOWS};
-use crate::windowing::WindowFn;
 use crate::windowing::window_fn::decode_window_fn;
+use crate::windowing::{BoundedWindow, WindowFn};
+
+/// Encoded side input window bytes, stored inline on the stack for interval windows.
+#[derive(Clone, Debug)]
+pub(super) enum MappedWindow<'a> {
+    Borrowed(&'a [u8]),
+    /// An encoded `IntervalWindow` is at most 18 bytes (8-byte end plus 10-byte varint).
+    Inline {
+        buf: [u8; 18],
+        len: u8,
+    },
+}
+
+impl Deref for MappedWindow<'_> {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match self {
+            Self::Borrowed(bytes) => bytes,
+            Self::Inline { buf, len } => &buf[..usize::from(*len)],
+        }
+    }
+}
 
 /// How a side input's window is found from the window of the main input element.
 #[derive(Clone, Debug)]
@@ -89,14 +113,12 @@ impl SideInputWindowing {
         }
     }
 
-    /// Returns the encoded side input window for the encoded `main_window`.
-    ///
-    /// Global and identity mappings return borrowed slices without allocation. Mapped window
-    /// functions decode the main window, assign the side window, and allocate an owned byte buffer.
-    pub fn map<'a>(&self, main_window: &'a [u8]) -> Result<Cow<'a, [u8]>, String> {
+    /// Returns the encoded side input window for `main_window` without heap allocation for
+    /// standard windows.
+    pub(super) fn map_window<'a>(&self, main_window: &'a [u8]) -> Result<MappedWindow<'a>, String> {
         let window_fn = match self {
-            Self::Global => return Ok(Cow::Borrowed(&[])),
-            Self::Identity => return Ok(Cow::Borrowed(main_window)),
+            Self::Global => return Ok(MappedWindow::Borrowed(&[])),
+            Self::Identity => return Ok(MappedWindow::Borrowed(main_window)),
             Self::Mapped(window_fn) => window_fn,
         };
         // The global window encodes to zero bytes and cannot be mapped to an interval window.
@@ -107,14 +129,37 @@ impl SideInputWindowing {
             .decode(&mut &main_window[..], Context::Nested)
             .map_err(|e| format!("Failed to decode main input window: {e}"))?;
         let side = window_fn
-            .assign_windows(main.max_timestamp())
-            .into_iter()
-            .min()
+            .min_window(main.max_timestamp())
             .ok_or_else(|| format!("{window_fn:?} assigned no window to {main:?}"))?;
-        let mut bytes = Vec::new();
-        side.encode(&mut bytes)
-            .map_err(|e| format!("Failed to encode side input window: {e}"))?;
-        Ok(Cow::Owned(bytes))
+        encode_window(side)
+    }
+
+    /// Returns the encoded side input window for the encoded `main_window`.
+    ///
+    /// Global and identity mappings return borrowed slices without allocation. Mapped window
+    /// functions decode the main window, assign the side window, and allocate an owned byte buffer.
+    pub fn map<'a>(&self, main_window: &'a [u8]) -> Result<Cow<'a, [u8]>, String> {
+        match self.map_window(main_window)? {
+            MappedWindow::Borrowed(bytes) => Ok(Cow::Borrowed(bytes)),
+            MappedWindow::Inline { buf, len } => Ok(Cow::Owned(buf[..usize::from(len)].to_vec())),
+        }
+    }
+}
+
+/// Encodes `side` into a stack buffer with no heap allocation.
+fn encode_window(side: BoundedWindow) -> Result<MappedWindow<'static>, String> {
+    match side {
+        BoundedWindow::Global(_) => Ok(MappedWindow::Borrowed(&[])),
+        BoundedWindow::Interval(window) => {
+            let mut buf = [0u8; 18];
+            let len = {
+                let mut cursor = Cursor::new(&mut buf[..]);
+                write_interval_window(&window, &mut cursor)
+                    .map_err(|e| format!("Failed to encode side input window: {e}"))?;
+                cursor.position() as u8
+            };
+            Ok(MappedWindow::Inline { buf, len })
+        }
     }
 }
 

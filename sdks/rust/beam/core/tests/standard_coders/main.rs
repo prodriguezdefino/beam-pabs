@@ -717,21 +717,18 @@ fn expected_timer_record(val: &Value) -> beam_core::coders::TimerRecord {
             .expect("dynamicTimerTag")
             .to_string(),
         windows,
-        clear,
-        fire_timestamp: if clear {
-            0
+        action: if clear {
+            beam_core::coders::TimerAction::Clear
         } else {
-            val["fireTimestamp"].as_i64().expect("fireTimestamp")
-        },
-        hold_timestamp: if clear {
-            0
-        } else {
-            val["holdTimestamp"].as_i64().expect("holdTimestamp")
-        },
-        pane: if clear {
-            PaneInfo::NO_FIRING
-        } else {
-            pane_info(&val["pane"])
+            beam_core::coders::TimerAction::Set {
+                fire_timestamp: beam_core::Instant::from_millis(
+                    val["fireTimestamp"].as_i64().expect("fireTimestamp"),
+                ),
+                hold_timestamp: beam_core::Instant::from_millis(
+                    val["holdTimestamp"].as_i64().expect("holdTimestamp"),
+                ),
+                pane: pane_info(&val["pane"]),
+            }
         },
     }
 }

@@ -34,7 +34,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::SystemTime;
 
-use super::context::{CounterIndex, MetricsContainer};
+use super::context::{CellIndex, MetricsContainer};
+use super::io::ApiRequest;
 use super::scope::{self, ScopeId};
 use super::values::HistogramBuckets;
 
@@ -120,8 +121,8 @@ impl MetricHandle {
     }
 }
 
-/// The counter index of the last scope that a [`Counter`] updated, so the next update in
-/// that scope skips the lookup. A clone starts empty.
+/// The cell index of the last scope that a metric handle updated, so the next update in that
+/// scope skips the lookup. A clone starts empty.
 #[derive(Debug)]
 struct CellCache {
     /// Set while one thread uses the entry. Another thread then skips the cache.
@@ -148,23 +149,35 @@ impl Clone for CellCache {
 
 impl CellCache {
     /// The cached index if it belongs to `scope`.
-    fn get(&self, scope: ScopeId) -> Option<CounterIndex> {
+    fn get(&self, scope: ScopeId) -> Option<CellIndex> {
         if self.busy.swap(true, Ordering::Acquire) {
             return None;
         }
         let hit = (ScopeId::from(self.scope.load(Ordering::Relaxed)) == scope)
-            .then(|| CounterIndex::from(self.index.load(Ordering::Relaxed)));
+            .then(|| CellIndex::from(self.index.load(Ordering::Relaxed)));
         self.busy.store(false, Ordering::Release);
         hit
     }
 
-    fn set(&self, scope: ScopeId, index: CounterIndex) {
+    fn set(&self, scope: ScopeId, index: CellIndex) {
         if self.busy.swap(true, Ordering::Acquire) {
             return;
         }
         self.index.store(index.into(), Ordering::Relaxed);
         self.scope.store(scope.into(), Ordering::Relaxed);
         self.busy.store(false, Ordering::Release);
+    }
+
+    fn resolve(
+        &self,
+        scope: ScopeId,
+        lookup: impl FnOnce() -> Option<CellIndex>,
+    ) -> Option<CellIndex> {
+        self.get(scope).or_else(|| {
+            let index = lookup()?;
+            self.set(scope, index);
+            Some(index)
+        })
     }
 }
 
@@ -238,10 +251,8 @@ impl Counter {
     pub fn inc_by(&self, n: i64) {
         self.handle
             .record_in_scope(|container, transform_id, scope, namespace, name| {
-                let index = self.cells.get(scope).or_else(|| {
-                    let index = container.counter_index(transform_id, namespace, name)?;
-                    self.cells.set(scope, index);
-                    Some(index)
+                let index = self.cells.resolve(scope, || {
+                    container.counter_index(transform_id, namespace, name)
                 });
                 if let Some(index) = index {
                     container.add_to_counter(index, n);
@@ -262,22 +273,33 @@ impl Counter {
 
 metric_handle! {
     /// A user-defined distribution of 64-bit integers: count, sum, minimum and maximum.
-    Distribution
+    ///
+    /// Keep the handle in a `DoFn` field. Then updates in the same bundle and transform skip
+    /// the cell lookup.
+    Distribution, cells: CellCache
 }
 
 impl Distribution {
     /// Adds the sample `value` to the distribution.
     pub fn update(&self, value: i64) {
         self.handle
-            .record(|container, transform_id, namespace, name| {
-                container.update_distribution(transform_id, namespace, name, value);
+            .record_in_scope(|container, transform_id, scope, namespace, name| {
+                let index = self.cells.resolve(scope, || {
+                    container.distribution_index(transform_id, namespace, name)
+                });
+                if let Some(index) = index {
+                    container.record_distribution(index, value);
+                }
             });
     }
 }
 
 metric_handle! {
     /// A user-defined gauge that reports the latest value.
-    Gauge
+    ///
+    /// Keep the handle in a `DoFn` field. Then updates in the same bundle and transform skip
+    /// the cell lookup.
+    Gauge, cells: CellCache
 }
 
 impl Gauge {
@@ -288,8 +310,13 @@ impl Gauge {
             .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
             .unwrap_or(0);
         self.handle
-            .record(|container, transform_id, namespace, name| {
-                container.set_gauge(transform_id, namespace, name, value, timestamp_ms);
+            .record_in_scope(|container, transform_id, scope, namespace, name| {
+                let index = self.cells.resolve(scope, || {
+                    container.gauge_index(transform_id, namespace, name)
+                });
+                if let Some(index) = index {
+                    container.record_gauge(index, value, timestamp_ms);
+                }
             });
     }
 }
@@ -329,10 +356,14 @@ impl BoundedTrie {
 
 /// A user-defined histogram: counts of values per bucket. Equality compares only the namespace
 /// and the name.
+///
+/// Keep the handle in a `DoFn` field. Then updates in the same bundle and transform skip the
+/// cell lookup.
 #[derive(Clone, Debug)]
 pub struct Histogram {
     handle: MetricHandle,
     buckets: HistogramBuckets,
+    cells: CellCache,
 }
 
 impl PartialEq for Histogram {
@@ -352,6 +383,7 @@ impl Histogram {
         Self {
             handle: MetricHandle::new(namespace, name),
             buckets,
+            cells: CellCache::default(),
         }
     }
 
@@ -364,6 +396,7 @@ impl Histogram {
         Self {
             handle: self.handle.bind(container, transform_id),
             buckets: self.buckets,
+            cells: CellCache::default(),
         }
     }
 
@@ -379,8 +412,13 @@ impl Histogram {
     pub fn update(&self, value: f64) {
         let buckets = self.buckets;
         self.handle
-            .record(|container, transform_id, namespace, name| {
-                container.update_histogram(transform_id, namespace, name, buckets, value);
+            .record_in_scope(|container, transform_id, scope, namespace, name| {
+                let index = self.cells.resolve(scope, || {
+                    container.histogram_index(transform_id, namespace, name, buckets)
+                });
+                if let Some(index) = index {
+                    container.record_histogram(index, value);
+                }
             });
     }
 }
@@ -465,5 +503,15 @@ impl Metrics {
         buckets: HistogramBuckets,
     ) -> Histogram {
         Histogram::new(namespace, name, buckets)
+    }
+
+    /// Returns an [`ApiRequest`] for the calls of the running transform to `method` of
+    /// `service` on `resource`.
+    pub fn api_request(
+        service: impl Into<Cow<'static, str>>,
+        method: impl Into<Cow<'static, str>>,
+        resource: impl Into<String>,
+    ) -> ApiRequest {
+        ApiRequest::new(service, method, resource)
     }
 }

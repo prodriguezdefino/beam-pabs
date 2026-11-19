@@ -20,17 +20,82 @@
 use std::io;
 use std::sync::Arc;
 
-use super::{BeamIterable, ElementDecoder, PageStream, StateStreamReader};
+use super::{
+    BeamIterable, ElementDecoder, PageStream, StateStreamReader, StreamOpener, StreamingSuffix,
+};
 use crate::coders::standard::{
     VarIntCoder, read_be_i32, read_exact_vec, state_backed_iterable_message,
 };
 use crate::coders::traits::CoderError;
 
-/// Reads the inlined elements of an iterable and returns `(elements, continuation_token)`.
+/// Continuation token and raw inline chunks captured for reopening a state-backed iterable.
+struct Continuation {
+    token: Vec<u8>,
+    prefix_chunks: Vec<u8>,
+}
+
+/// Shared state needed to reopen a state-backed iterable from its first inline element.
+struct ReopenSource<T> {
+    prefix_chunks: Vec<u8>,
+    token: Vec<u8>,
+    reader: Arc<dyn StateStreamReader>,
+    decode: ElementDecoder<T>,
+}
+
+/// Replays captured inline chunks before streaming runner state pages on a reopened pass.
+struct ReopenedIter<T> {
+    source: Arc<ReopenSource<T>>,
+    prefix_pos: usize,
+    chunk_remaining: usize,
+    suffix: StateElementIterator<T>,
+}
+
+impl<T> Iterator for ReopenedIter<T> {
+    type Item = Result<T, CoderError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let prefix = self.source.prefix_chunks.as_slice();
+        while self.chunk_remaining == 0 && self.prefix_pos < prefix.len() {
+            let mut slice = &prefix[self.prefix_pos..];
+            let chunk_len = match VarIntCoder::decode_varint(&mut slice) {
+                Ok(n) => n,
+                Err(e) => {
+                    self.prefix_pos = prefix.len();
+                    return Some(Err(e.into()));
+                }
+            };
+            self.prefix_pos = prefix.len().saturating_sub(slice.len());
+            match usize::try_from(chunk_len).ok().filter(|&n| n > 0) {
+                Some(n) => self.chunk_remaining = n,
+                None => {
+                    self.prefix_pos = prefix.len();
+                    return Some(Err(CoderError::Format(format!(
+                        "Invalid iterable chunk header: {chunk_len}"
+                    ))));
+                }
+            }
+        }
+        if self.chunk_remaining > 0 {
+            self.chunk_remaining -= 1;
+            let mut slice = &prefix[self.prefix_pos..];
+            let item = (self.source.decode)(&mut slice);
+            self.prefix_pos = prefix.len().saturating_sub(slice.len());
+            if item.is_err() {
+                self.chunk_remaining = 0;
+                self.prefix_pos = prefix.len();
+            }
+            return Some(item);
+        }
+        self.suffix.next()
+    }
+}
+
+/// Reads the inlined elements of an iterable and returns `(elements, continuation)`.
 fn read_iterable_prefix<T>(
     reader: &mut &[u8],
     mut decode_element: impl FnMut(&mut &[u8]) -> Result<T, CoderError>,
-) -> Result<(Vec<T>, Option<Vec<u8>>), CoderError> {
+    capture_prefix_chunks: bool,
+) -> Result<(Vec<T>, Option<Continuation>), CoderError> {
     let count = read_be_i32(reader)?;
     if count >= 0 {
         let elements = (0..count)
@@ -44,8 +109,10 @@ fn read_iterable_prefix<T>(
         )));
     }
 
+    let chunks_start = *reader;
     let mut prefix = Vec::new();
     loop {
+        let before_header = *reader;
         let chunk_len = VarIntCoder::decode_varint(reader)?;
         match chunk_len {
             0 => return Ok((prefix, None)),
@@ -55,7 +122,19 @@ fn read_iterable_prefix<T>(
                     CoderError::Format(format!("Invalid continuation token length: {raw_len}"))
                 })?;
                 let token = read_exact_vec(reader, token_len)?;
-                return Ok((prefix, Some(token)));
+                let prefix_chunks = if capture_prefix_chunks {
+                    let prefix_bytes_len = chunks_start.len().saturating_sub(before_header.len());
+                    chunks_start[..prefix_bytes_len].to_vec()
+                } else {
+                    Vec::new()
+                };
+                return Ok((
+                    prefix,
+                    Some(Continuation {
+                        token,
+                        prefix_chunks,
+                    }),
+                ));
             }
             n if n < 0 => {
                 return Err(CoderError::Format(format!(
@@ -73,6 +152,28 @@ fn read_iterable_prefix<T>(
     }
 }
 
+fn open_runner_pages(
+    state_reader: &dyn StateStreamReader,
+    token: &[u8],
+) -> Result<PageStream, CoderError> {
+    state_reader
+        .stream_runner_pages(token)
+        .map_err(|e| CoderError::StateStream(format!("Failed to open runner state stream: {e}")))
+}
+
+fn open_reopened<T: 'static>(
+    source: &Arc<ReopenSource<T>>,
+) -> Result<StreamingSuffix<T>, CoderError> {
+    let page_iter = open_runner_pages(source.reader.as_ref(), &source.token)?;
+    let suffix = StateElementIterator::new(page_iter, Arc::clone(&source.decode));
+    Ok(Box::new(ReopenedIter {
+        source: Arc::clone(source),
+        prefix_pos: 0,
+        chunk_remaining: 0,
+        suffix,
+    }))
+}
+
 /// Decodes a [`BeamIterable<T>`], with a lazy state suffix if the runner sent a token.
 /// Returns an error if a token arrives and `state_reader` is `None`.
 pub fn decode_beam_iterable<T: 'static>(
@@ -80,8 +181,8 @@ pub fn decode_beam_iterable<T: 'static>(
     decode_element: impl Fn(&mut &[u8]) -> Result<T, CoderError> + Send + Sync + 'static,
     state_reader: Option<&dyn StateStreamReader>,
 ) -> Result<BeamIterable<T>, CoderError> {
-    let (prefix, token) = read_iterable_prefix(reader, |r| decode_element(r))?;
-    let Some(token) = token else {
+    let (prefix, continuation) = read_iterable_prefix(reader, |r| decode_element(r), false)?;
+    let Some(Continuation { token, .. }) = continuation else {
         return Ok(BeamIterable::from_vec(prefix));
     };
 
@@ -96,11 +197,53 @@ pub fn decode_beam_iterable<T: 'static>(
             prefix.len(),
         )));
     };
-    let page_iter = state_reader
-        .stream_runner_pages(&token)
-        .map_err(|e| CoderError::StateStream(format!("Failed to open runner state stream: {e}")))?;
+    let page_iter = open_runner_pages(state_reader, &token)?;
     let suffix_iter = StateElementIterator::new(page_iter, Arc::new(decode_element));
     Ok(BeamIterable::with_suffix(prefix, Box::new(suffix_iter)))
+}
+
+/// Decodes a [`BeamIterable<T>`] and keeps a reopen closure when a continuation token is
+/// present. Opens the pass-1 state stream during decode so stream-open errors surface early.
+pub(crate) fn decode_beam_iterable_reopenable<T: 'static>(
+    reader: &mut &[u8],
+    decode_element: impl Fn(&mut &[u8]) -> Result<T, CoderError> + Send + Sync + 'static,
+    state_reader: Option<&Arc<dyn StateStreamReader>>,
+) -> Result<BeamIterable<T>, CoderError> {
+    let (prefix, continuation) = read_iterable_prefix(reader, |r| decode_element(r), true)?;
+    let Some(Continuation {
+        token,
+        prefix_chunks,
+    }) = continuation
+    else {
+        return Ok(BeamIterable::from_vec(prefix));
+    };
+
+    tracing::debug!(
+        "BeamIterable: received state-backed continuation token from runner (token_len={}, inlined_prefix_len={})",
+        token.len(),
+        prefix.len()
+    );
+
+    let Some(state_reader) = state_reader else {
+        return Err(CoderError::StateStream(state_backed_iterable_message(
+            prefix.len(),
+        )));
+    };
+    let page_iter = open_runner_pages(state_reader.as_ref(), &token)?;
+    let decode: ElementDecoder<T> = Arc::new(decode_element);
+    let suffix_iter = StateElementIterator::new(page_iter, Arc::clone(&decode));
+    let source = Arc::new(ReopenSource {
+        prefix_chunks,
+        token,
+        reader: Arc::clone(state_reader),
+        decode,
+    });
+    let reopen: StreamOpener<T> = Arc::new(move || open_reopened(&source));
+    Ok(BeamIterable::with_reopenable_suffix(
+        prefix,
+        Box::new(suffix_iter),
+        reopen,
+    ))
 }
 
 /// Decodes an iterable into a `Vec<T>` and fetches all state suffix elements. Returns an
@@ -110,8 +253,8 @@ pub fn decode_iterable_with_state<T>(
     mut decode_element: impl FnMut(&mut &[u8]) -> Result<T, CoderError>,
     state_reader: Option<&dyn StateStreamReader>,
 ) -> Result<Vec<T>, CoderError> {
-    let (mut result, token) = read_iterable_prefix(reader, &mut decode_element)?;
-    let Some(token) = token else {
+    let (mut result, continuation) = read_iterable_prefix(reader, &mut decode_element, false)?;
+    let Some(Continuation { token, .. }) = continuation else {
         return Ok(result);
     };
 
@@ -126,9 +269,7 @@ pub fn decode_iterable_with_state<T>(
             result.len(),
         )));
     };
-    let page_iter = state_reader
-        .stream_runner_pages(&token)
-        .map_err(|e| CoderError::StateStream(format!("Failed to open runner state stream: {e}")))?;
+    let page_iter = open_runner_pages(state_reader, &token)?;
     let mut stream_reader = PageStreamReader::new(page_iter, "Runner state stream error");
     while let Some(item) = stream_reader.decode_next(&mut decode_element) {
         result.push(item?);

@@ -22,6 +22,7 @@
 //! submodules can reach its private state.
 
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::sync::{Arc, Mutex};
 
 use beam_model::pipeline as proto;
@@ -56,13 +57,21 @@ impl Pipeline {
         }
     }
 
+    /// Returns true when two pipeline handles share the same graph state.
+    pub(crate) fn same_as(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
     /// Creates a pipeline configured for `options`: the entry point for pipeline binaries. The
     /// same `main` runs as driver and as worker, and `options` selects the [`ExpansionMode`]
     /// (remote at submission, placeholder in the worker) and the default resource hints.
+    /// Resource hints that do not parse make [`validate`](Self::validate) fail.
     pub fn create(options: &crate::options::PipelineOptions) -> Self {
-        let p = Self::new()
-            .with_expansion_mode(ExpansionMode::from_options(options))
-            .with_resource_hints(options.resource_hints().unwrap_or_default());
+        let p = Self::new().with_expansion_mode(ExpansionMode::from_options(options));
+        match options.resource_hints() {
+            Ok(hints) => p.set_resource_hints(hints),
+            Err(error) => p.record_invalid_construction(error),
+        }
         p.lock().options = options.clone();
         p
     }
@@ -405,6 +414,15 @@ impl Pipeline {
     /// [`validate`](Self::validate) fails, so the pipeline is not submitted.
     pub fn record_construction_error(&self, error: PipelineError) {
         self.lock().construction_errors.push(error);
+    }
+
+    /// Records a [`PipelineError::InvalidConstruction`] for the transform that expands now,
+    /// under its full name. Then [`validate`](Self::validate) fails.
+    pub fn record_invalid_construction(&self, reason: impl Display) {
+        self.record_construction_error(PipelineError::InvalidConstruction {
+            transform_id: self.scope_name().unwrap_or_default(),
+            reason: reason.to_string(),
+        });
     }
 
     /// Exports the pipeline as a Runner API `Pipeline` proto.

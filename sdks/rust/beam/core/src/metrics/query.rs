@@ -23,12 +23,14 @@ use std::collections::{HashMap, HashSet};
 
 use beam_model::pipeline::MonitoringInfo;
 
-use super::URN_ELEMENT_COUNT;
 use super::context::{MetricKey, MetricKeyParts, MetricsContainer};
 use super::values::{
     BoundedTrieValue, DistributionValue, GaugeValue, HistogramValue, MetricCell, StringSetValue,
 };
-use super::{LABEL_NAME, LABEL_NAMESPACE, LABEL_PCOLLECTION, LABEL_PTRANSFORM};
+use super::{
+    LABEL_NAME, LABEL_NAMESPACE, LABEL_PCOLLECTION, LABEL_PTRANSFORM, URN_API_REQUEST_COUNT,
+    URN_API_REQUEST_LATENCIES, URN_ELEMENT_COUNT,
+};
 
 /// Selects metrics by namespace, name or transform ID. A `None` field matches all values; a
 /// set matches only its members.
@@ -192,6 +194,10 @@ fn cell<V: MetricCell>(info: &MonitoringInfo) -> Option<Option<V>> {
 
 /// Decodes the value of `info`, or `None` for a kind that [`MetricValue`] does not hold.
 fn decode_value(info: &MonitoringInfo) -> Option<MetricValue> {
+    // One I/O cell for each status or method has the same key here, so the cells would mix.
+    if [URN_API_REQUEST_COUNT, URN_API_REQUEST_LATENCIES].contains(&info.urn.as_str()) {
+        return None;
+    }
     let element_count = (info.urn == URN_ELEMENT_COUNT)
         .then(|| i64::decode_cell(&info.payload).ok())
         .or_else(|| cell::<i64>(info));

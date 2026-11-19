@@ -19,10 +19,10 @@
 
 //! Reads of side input values in the window of the main input element.
 
-use std::borrow::Cow;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use super::windowing::MappedWindow;
 use super::{FieldMapSlot, PCollectionView, ViewKind, ViewWindowing};
 use crate::coders::{CoderError, DefaultCoder};
 use crate::schema::Schema;
@@ -33,7 +33,7 @@ impl<T, Kind: ViewKind> PCollectionView<T, Kind> {
     pub(super) fn locate<'s>(
         &self,
         scope: SideInputScope<'s>,
-    ) -> crate::Result<(&'s dyn SideInputReader, Cow<'s, [u8]>)> {
+    ) -> crate::Result<(&'s dyn SideInputReader, MappedWindow<'s>)> {
         let reader = scope.reader.ok_or_else(|| {
             format!(
                 "Side input '{}' is not declared on this transform: return its view from \
@@ -42,8 +42,10 @@ impl<T, Kind: ViewKind> PCollectionView<T, Kind> {
             )
         })?;
         let window = match &self.windowing {
-            ViewWindowing::Known(windowing) => windowing.map(scope.window)?,
-            ViewWindowing::FromRunner => reader.window_mapping(&self.tag)?.map(scope.window)?,
+            ViewWindowing::Known(windowing) => windowing.map_window(scope.window)?,
+            ViewWindowing::FromRunner => {
+                reader.window_mapping(&self.tag)?.map_window(scope.window)?
+            }
             ViewWindowing::Unsupported(reason) => return Err(reason.clone().into()),
         };
         Ok((reader, window))
@@ -70,7 +72,7 @@ impl<'s> SideInputScope<'s> {
 pub struct SideIter<'s, T> {
     pub(super) reader: &'s dyn SideInputReader,
     pub(super) tag: &'s str,
-    pub(super) window: Cow<'s, [u8]>,
+    pub(super) window: MappedWindow<'s>,
     pub(super) row_schema: Option<&'s Arc<Schema>>,
     pub(super) field_map: &'s FieldMapSlot,
     pub(super) _marker: PhantomData<fn() -> T>,
@@ -97,28 +99,115 @@ impl<'s, T: DefaultCoder> SideIter<'s, T> {
 pub struct SideMap<'s, K, V> {
     pub(super) reader: &'s dyn SideInputReader,
     pub(super) tag: &'s str,
-    pub(super) window: Cow<'s, [u8]>,
+    pub(super) window: MappedWindow<'s>,
     pub(super) row_schema: Option<&'s Arc<Schema>>,
     pub(super) field_map: &'s FieldMapSlot,
+    pub(super) key_row_schema: Option<&'s Arc<Schema>>,
+    pub(super) key_field_map: &'s FieldMapSlot,
     pub(super) _marker: PhantomData<fn() -> (K, V)>,
 }
 
 impl<'s, K: DefaultCoder, V: DefaultCoder> SideMap<'s, K, V> {
     /// All values for `key`, fetched as the iterator advances.
     pub fn get_all(&self, key: &K) -> crate::Result<impl Iterator<Item = crate::Result<V>> + 's> {
-        let (tag, schema, field_map) = (self.tag, self.row_schema, self.field_map);
         let key = key
             .encode()
             .map_err(|e| crate::Error::from(e).context("Failed to encode side input key"))?;
-        Ok(self
-            .reader
-            .get_multimap(tag, &self.window, &key)?
-            .map(move |bytes| decode_side_input(&bytes?, tag, schema, field_map)))
+        self.values(&key)
     }
 
     /// The first value for `key`, or `None` if the key is absent.
     pub fn get(&self, key: &K) -> crate::Result<Option<V>> {
         self.get_all(key)?.next().transpose()
+    }
+
+    /// The keys of the window, fetched as the iterator advances. Each call starts over.
+    pub fn keys(&self) -> crate::Result<impl Iterator<Item = crate::Result<K>> + 's> {
+        let (tag, schema, field_map) = (self.tag, self.key_row_schema, self.key_field_map);
+        Ok(self
+            .reader
+            .get_multimap_keys(tag, &self.window)?
+            .map(move |bytes| decode_side_input(&bytes?, tag, schema, field_map)))
+    }
+
+    /// Each key of the window with all its values. The keys come as the iterator advances.
+    pub fn entries(&self) -> crate::Result<impl Iterator<Item = crate::Result<(K, Vec<V>)>> + '_> {
+        self.entries_with(|map, key| map.values(key)?.collect())
+    }
+
+    /// Each key of the window with the result of `value` for its SDK-encoded bytes.
+    fn entries_with<'m, T>(
+        &'m self,
+        value: impl Fn(&'m Self, &[u8]) -> crate::Result<T> + 'm,
+    ) -> crate::Result<impl Iterator<Item = crate::Result<(K, T)>> + 'm> {
+        let (tag, schema, field_map) = (self.tag, self.key_row_schema, self.key_field_map);
+        Ok(self
+            .reader
+            .get_multimap_keys(tag, &self.window)?
+            .map(move |bytes| {
+                let bytes = bytes?;
+                let key = decode_side_input(&bytes, tag, schema, field_map)?;
+                Ok((key, value(self, &bytes)?))
+            }))
+    }
+
+    /// The values for the SDK-encoded `key`.
+    fn values(
+        &self,
+        key: &[u8],
+    ) -> crate::Result<impl Iterator<Item = crate::Result<V>> + use<'s, K, V>> {
+        let (tag, schema, field_map) = (self.tag, self.row_schema, self.field_map);
+        Ok(self
+            .reader
+            .get_multimap(tag, &self.window, key)?
+            .map(move |bytes| decode_side_input(&bytes?, tag, schema, field_map)))
+    }
+
+    /// The only value for the SDK-encoded `key`, or `None` if the key is absent. A second value
+    /// is an error.
+    fn unique(&self, key: &[u8]) -> crate::Result<Option<V>> {
+        let mut values = self.values(key)?;
+        let Some(first) = values.next().transpose()? else {
+            return Ok(None);
+        };
+        match values.next() {
+            None => Ok(Some(first)),
+            Some(_) => Err(format!(
+                "Side input '{}' has more than one value for a key: read it with `as_multimap`",
+                self.tag
+            )
+            .into()),
+        }
+    }
+}
+
+/// The value of a [`MapView`](super::MapView): lookups of the one value for a key in the side
+/// input window. A read of a key with more than one value fails.
+pub struct SideDict<'s, K, V> {
+    pub(super) map: SideMap<'s, K, V>,
+}
+
+impl<'s, K: DefaultCoder, V: DefaultCoder> SideDict<'s, K, V> {
+    /// The value for `key`, or `None` if the key is absent.
+    pub fn get(&self, key: &K) -> crate::Result<Option<V>> {
+        let key = key
+            .encode()
+            .map_err(|e| crate::Error::from(e).context("Failed to encode side input key"))?;
+        self.map.unique(&key)
+    }
+
+    /// The keys of the window, fetched as the iterator advances. Each call starts over.
+    pub fn keys(&self) -> crate::Result<impl Iterator<Item = crate::Result<K>> + 's> {
+        self.map.keys()
+    }
+
+    /// Each key of the window with its value. The keys come as the iterator advances.
+    pub fn entries(&self) -> crate::Result<impl Iterator<Item = crate::Result<(K, V)>> + '_> {
+        self.map.entries_with(|map, key| {
+            map.unique(key)?.ok_or_else(|| {
+                format!("Side input '{}' lists a key that has no value", map.tag).into()
+            })
+        })
     }
 }
 

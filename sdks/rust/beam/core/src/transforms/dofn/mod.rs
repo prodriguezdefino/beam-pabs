@@ -47,5 +47,7 @@ pub use pardo::{DoFn, DoFnHandler, IntoParDoFn, ParDo};
 pub use registered::{
     FnRegistration, Registered, build_registered, encode_registered, registered_handler,
 };
-pub use state::{BagState, MapState, OrderedListState, SetState, ValueState};
+pub use state::{
+    BagState, MapState, MultimapState, OrderedListState, SetState, StateRowSchemas, ValueState,
+};
 pub use stateful::{NoTimers, StateBinding, StateCell, StateCells, StatefulDoFn, TimerFamilies};

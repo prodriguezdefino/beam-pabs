@@ -66,6 +66,7 @@ pub(crate) fn expand_state(input: &DeriveInput) -> syn::Result<TokenStream2> {
         "state id",
     )?;
 
+    let has_cells = !cells.is_empty();
     let specs = cells
         .iter()
         .map(|(_, id, ty)| quote!(<#ty as #krate::internals::StateCell>::spec(#id)));
@@ -75,6 +76,8 @@ pub(crate) fn expand_state(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     Ok(quote! {
         impl #impl_generics #krate::internals::StateCells for #name #ty_generics #where_clause {
+            const HAS_CELLS: bool = #has_cells;
+
             fn specs() -> ::std::vec::Vec<
                 ::std::sync::Arc<dyn #krate::internals::AnyStateSpec>
             > {
@@ -84,6 +87,7 @@ pub(crate) fn expand_state(input: &DeriveInput) -> syn::Result<TokenStream2> {
             fn bind(
                 binding: &#krate::internals::StateBinding<'_>,
             ) -> #krate::Result<Self> {
+                let _ = binding;
                 ::core::result::Result::Ok(Self { #(#binds),* })
             }
         }
