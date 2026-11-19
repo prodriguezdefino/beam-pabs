@@ -139,6 +139,17 @@ impl RowDerive<'_> {
                     #support::row_decode_element(reader, schema, field_map)
                 }
 
+                fn decode_whole_stream_with_context(
+                    reader: &mut &[u8],
+                    schema: ::core::option::Option<&::std::sync::Arc<#krate::schema::Schema>>,
+                    field_map: ::core::option::Option<&#krate::coders::FieldMap>,
+                    _state_reader: ::core::option::Option<
+                        &::std::sync::Arc<dyn #krate::coders::StateStreamReader>,
+                    >,
+                ) -> ::core::result::Result<Self, #krate::coders::CoderError> {
+                    #support::row_decode_element(reader, schema, field_map)
+                }
+
                 fn resolve_field_map(
                     schema: &#krate::schema::Schema,
                 ) -> ::core::result::Result<

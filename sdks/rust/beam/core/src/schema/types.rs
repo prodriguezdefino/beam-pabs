@@ -249,7 +249,7 @@ impl Field {
     }
 }
 
-/// Schema that defines the layout and types of a `Row`.
+/// Schema that defines the layout and types of a [`Row`](super::Row).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Schema {
     pub fields: Vec<Field>,

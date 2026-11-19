@@ -115,7 +115,7 @@ fn read_window_count(cursor: &mut &[u8]) -> Result<i32, std::io::Error> {
 
 /// Skips an iterable body, with a count prefix or with varint-counted chunks. `skip_element`
 /// skips one element.
-fn skip_iterable_elements(
+pub(crate) fn skip_iterable_elements(
     cursor: &mut &[u8],
     mut skip_element: impl FnMut(&mut &[u8]) -> Result<(), std::io::Error>,
 ) -> Result<(), std::io::Error> {
@@ -289,6 +289,23 @@ fn skip_value(
             }
             Ok(())
         }
+        URN_ROW => {
+            let schema_bytes = coder
+                .spec
+                .as_ref()
+                .map(|s| s.payload.as_slice())
+                .unwrap_or(&[]);
+            if schema_bytes.is_empty() {
+                skip_to_end(cursor);
+                return Ok(());
+            }
+            let schema = crate::schema::Schema::from_proto_bytes(schema_bytes)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            let schema_arc = std::sync::Arc::new(schema);
+            super::RowCoder::decode_row(&schema_arc, cursor)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            Ok(())
+        }
         _ => {
             skip_to_end(cursor);
             Ok(())
@@ -374,7 +391,12 @@ pub fn extract_row_schema(
                 let schema = crate::schema::Schema::from_proto_bytes(payload).ok()?;
                 return Some(std::sync::Arc::new(schema));
             }
-            URN_WINDOWED_VALUE | URN_PARAM_WINDOWED_VALUE | URN_LENGTH_PREFIX | URN_NULLABLE => {
+            URN_WINDOWED_VALUE
+            | URN_PARAM_WINDOWED_VALUE
+            | URN_LENGTH_PREFIX
+            | URN_NULLABLE
+            | URN_ITERABLE
+            | URN_STATE_BACKED_ITERABLE => {
                 current_id = coder.component_coder_ids.first()?.as_str();
             }
             _ => return None,

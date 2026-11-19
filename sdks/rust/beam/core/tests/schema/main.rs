@@ -17,6 +17,6 @@
  * under the License.
  */
 
-//! Schema model and proto conversion tests.
+//! Row model, schema derive, and portable schema proto tests.
 
 mod schema_test;

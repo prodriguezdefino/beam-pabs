@@ -1,0 +1,146 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+//! Decodes row field values with the field types of the schema.
+
+use std::io::{Error as IoError, ErrorKind, Read};
+
+use super::RowCoder;
+use crate::coders::standard::{
+    VarIntCoder, decode_iterable, read_array, read_bool, read_count, read_exact_vec, read_f32,
+    read_f64, read_i8, read_i16, read_i32_varint, read_timestamp, read_varint_len,
+};
+use crate::coders::traits::CoderError;
+use crate::schema::{AtomicType, FieldType, FieldValue, TypeInfo, URN_DECIMAL, URN_MILLIS_INSTANT};
+
+pub(crate) fn decode_field_value(
+    field_type: &FieldType,
+    reader: &mut &[u8],
+) -> Result<FieldValue, CoderError> {
+    match &field_type.type_info {
+        TypeInfo::Atomic(atomic) => decode_atomic_value(*atomic, reader),
+        TypeInfo::Array(elem_type) | TypeInfo::Iterable(elem_type) => {
+            let elements = decode_iterable(reader, |r| decode_container_element(elem_type, r))?;
+            Ok(FieldValue::Array(elements))
+        }
+        TypeInfo::Map(k_type, v_type) => {
+            let count = read_count(reader)?;
+            let entries = (0..count)
+                .map(|_| {
+                    let key = decode_field_value(k_type, reader)?;
+                    Ok((key, decode_container_element(v_type, reader)?))
+                })
+                .collect::<Result<Vec<_>, CoderError>>()?;
+            Ok(FieldValue::Map(entries))
+        }
+        TypeInfo::Row(inner_schema) => {
+            let row = RowCoder::decode_row(inner_schema, reader)?;
+            Ok(FieldValue::Row(row))
+        }
+        TypeInfo::Logical {
+            urn,
+            representation,
+            ..
+        } => decode_logical_value(urn, representation, reader),
+    }
+}
+
+/// Decodes the value of a logical type. This is the inverse of
+/// [`encode_logical_value`](super::encode::encode_logical_value).
+fn decode_logical_value(
+    urn: &str,
+    representation: &FieldType,
+    reader: &mut &[u8],
+) -> Result<FieldValue, CoderError> {
+    match urn {
+        URN_DECIMAL => decode_decimal(reader),
+        URN_MILLIS_INSTANT => Ok(FieldValue::Int64(read_timestamp(reader)?)),
+        _ => decode_field_value(representation, reader),
+    }
+}
+
+/// Reads a `decimal` payload into the self-delimiting form that `Decimal::from_field_value`
+/// expects.
+fn decode_decimal(reader: &mut &[u8]) -> Result<FieldValue, CoderError> {
+    let scale = VarIntCoder::decode_varint(reader)?;
+    let length = VarIntCoder::decode_varint(reader)?;
+    let len = usize::try_from(length)
+        .map_err(|_| CoderError::Format(format!("Negative decimal length {length}")))?;
+
+    // Encode varints first and stream bytes into payload to avoid double allocation.
+    let mut payload = Vec::with_capacity(len.min(64 * 1024) + 20);
+    VarIntCoder::encode_varint(scale, &mut payload)?;
+    VarIntCoder::encode_varint(length, &mut payload)?;
+    let prefix_len = payload.len();
+    Read::take(&mut *reader, len as u64).read_to_end(&mut payload)?;
+    if payload.len() - prefix_len < len {
+        return Err(CoderError::Io(IoError::new(
+            ErrorKind::UnexpectedEof,
+            format!(
+                "expected {len} decimal bytes, stream ended after {}",
+                payload.len() - prefix_len
+            ),
+        )));
+    }
+
+    Ok(FieldValue::Bytes(payload))
+}
+
+fn decode_container_element(
+    elem_type: &FieldType,
+    reader: &mut &[u8],
+) -> Result<Option<FieldValue>, CoderError> {
+    if !elem_type.nullable || read_presence(reader)? {
+        decode_field_value(elem_type, reader).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+/// Reads the presence byte of a nullable container element: 1 is present, 0 is null.
+pub(super) fn read_presence(reader: &mut &[u8]) -> Result<bool, CoderError> {
+    match read_array::<1>(reader)? {
+        [0] => Ok(false),
+        [1] => Ok(true),
+        [other] => Err(CoderError::Format(format!(
+            "Invalid nullable presence byte: {other}"
+        ))),
+    }
+}
+
+fn decode_atomic_value(atomic: AtomicType, reader: &mut &[u8]) -> Result<FieldValue, CoderError> {
+    match atomic {
+        AtomicType::Byte => Ok(FieldValue::Byte(read_i8(reader)?)),
+        AtomicType::Int16 => Ok(FieldValue::Int16(read_i16(reader)?)),
+        AtomicType::Int32 => read_i32_varint(reader).map(FieldValue::Int32),
+        AtomicType::Int64 => Ok(FieldValue::Int64(VarIntCoder::decode_varint(reader)?)),
+        AtomicType::Float => Ok(FieldValue::Float(read_f32(reader)?)),
+        AtomicType::Double => Ok(FieldValue::Double(read_f64(reader)?)),
+        AtomicType::String => {
+            let len = read_varint_len(reader)?;
+            let s = String::from_utf8(read_exact_vec(reader, len)?)?;
+            Ok(FieldValue::String(s))
+        }
+        AtomicType::Boolean => read_bool(reader).map(FieldValue::Boolean),
+        AtomicType::Bytes => {
+            let len = read_varint_len(reader)?;
+            Ok(FieldValue::Bytes(read_exact_vec(reader, len)?))
+        }
+    }
+}
