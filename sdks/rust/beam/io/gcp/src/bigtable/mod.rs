@@ -17,8 +17,8 @@
  * under the License.
  */
 
-//! Google Cloud Bigtable connectors: [`Read`], [`ReadRows`], and server-side
-//! [`proto::RowFilter`] builders (including [`RowFilterExt::value_bitmask`]).
+//! Google Cloud Bigtable connectors: [`Read`], [`ReadRows`], [`Write`], [`WriteRows`],
+//! and server-side [`proto::RowFilter`] builders (including [`RowFilterExt::value_bitmask`]).
 //!
 //! # Read (`ReadRows`)
 //! ```no_run
@@ -29,6 +29,31 @@
 //! let options = ReadOptions::from_table("my-project", "my-instance", "my-table")
 //!     .with_app_profile_id("data-boost-profile");
 //! let rows: PCollection<Row> = p.apply("ReadBigtable", ReadRows::new(options));
+//! ```
+//!
+//! # Write (`WriteRows`)
+//! ```no_run
+//! use beam::prelude::*;
+//! use beam_io_gcp::bigtable::{BigtableMutation, WriteOptions, WriteRows, mutation_schema};
+//!
+//! let p = Pipeline::new();
+//! let mutations = p
+//!     .apply(
+//!         "Create",
+//!         Create::new(vec![Row::from(BigtableMutation::set_cell(
+//!             "row-1", "cf", "greeting", "hello",
+//!         ))]),
+//!     )
+//!     .with_row_schema(&mutation_schema());
+//! let written = mutations.apply(
+//!     "WriteBigtable",
+//!     WriteRows::new(WriteOptions::from_table(
+//!         "my-project",
+//!         "my-instance",
+//!         "my-table",
+//!     )),
+//! );
+//! // `written.failures` holds rejected mutation rows.
 //! ```
 
 #[doc(hidden)]
@@ -44,6 +69,8 @@ pub mod retry;
 mod schema;
 #[doc(hidden)]
 pub mod target;
+#[doc(hidden)]
+pub mod write;
 pub mod xlang;
 
 pub use self::filter::RowFilterExt;
@@ -57,7 +84,12 @@ pub use self::schema::{
     batched_mutation_schema, cell_schema, flattened_row_schema, mutation_schema, nested_row_schema,
 };
 pub use self::target::{ReadTarget, WriteTarget};
+pub use self::write::{
+    DEFAULT_MAX_BYTES_PER_BATCH, DEFAULT_MAX_ELEMENTS_PER_BATCH, DEFAULT_MAX_IN_FLIGHT_BYTES,
+    DEFAULT_MAX_IN_FLIGHT_REQUESTS, DEFAULT_WRITE_ATTEMPT_TIMEOUT, Write, WriteOptions,
+    WriteResult, WriteRows, write_failure_schema,
+};
 
-/// Metrics namespace of the Bigtable connectors.
+/// Metrics namespace of the Bigtable read and write connectors.
 #[doc(hidden)]
 pub const METRICS: &str = "bigtable";

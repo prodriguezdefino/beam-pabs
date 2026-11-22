@@ -19,12 +19,16 @@
 
 //! Tests for Google Cloud Bigtable: element schemas, key arithmetic, target routing headers
 //! (Tables, Materialized Views, Authorized Views, Data Boost), server-side bitmask `RowFilter`
-//! builders, read unit tests, and the cross-language transforms.
+//! builders, read/write unit tests, end-to-end mock gRPC tests, and the
+//! cross-language transforms.
 
+mod construction;
 mod filter;
 mod key_and_target;
 mod live;
+mod mock_service;
 mod read_units;
 mod retry;
 mod schema;
+mod write_units;
 mod xlang;

@@ -353,6 +353,28 @@ impl WriteTarget {
             Self::AuthorizedView { .. } => req.authorized_view_name = name,
         }
     }
+
+    /// Returns `[project, instance, table]` for Beam sink lineage.
+    pub(crate) fn lineage_segments(&self) -> [&str; 3] {
+        match self {
+            Self::Table {
+                project,
+                instance,
+                table,
+            }
+            | Self::AuthorizedView {
+                project,
+                instance,
+                table,
+                ..
+            } => [project, instance, table],
+        }
+    }
+
+    /// Returns a handle that records the calls of `method` on the target.
+    pub(crate) fn api_request(&self, method: &'static str) -> ApiRequest {
+        api_request(method, &self.resource_name(), self.lineage_segments())
+    }
 }
 
 fn require_non_empty(field: &str, value: &str) -> beam::Result {

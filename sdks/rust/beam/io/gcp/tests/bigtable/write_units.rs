@@ -1,0 +1,448 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+//! Unit tests for the write path: mutation decoding (both `RowElement::Encoded` and
+//! `RowElement::Row`), [`BatchBuffer`], [`partition_outcomes`], and [`rate_limit_backoff`].
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use beam::schema::{Field, FieldType, FieldValue, Row, RowElement, Schema};
+use beam_io_gcp::bigtable::proto::mutate_rows_response::Entry as RespEntry;
+use beam_io_gcp::bigtable::proto::{
+    Duration as ProtoDuration, MutateRowsResponse, RateLimitInfo, Status,
+};
+use beam_io_gcp::bigtable::write::batch::{
+    BatchBuffer, BatchOutcome, partition_outcomes, rate_limit_backoff,
+};
+use beam_io_gcp::bigtable::write::decode::{MutationInputKind, decode_mutation_row};
+use beam_io_gcp::bigtable::{
+    BigtableMutation, batched_mutation_schema, mutation_schema, write_failure_schema,
+};
+
+#[test]
+fn decode_mutation_row_supports_encoded_fast_path_and_row_values() {
+    let schema = mutation_schema();
+    let err_schema = Arc::new(write_failure_schema(&schema));
+
+    let m = BigtableMutation::SetCell {
+        key: b"row-1".to_vec(),
+        family_name: "cf".to_string(),
+        column_qualifier: b"q1".to_vec(),
+        value: b"v1".to_vec(),
+        timestamp_micros: Some(42),
+    };
+    let row = Row::from(m);
+    let encoded_bytes = row.to_row_bytes().unwrap();
+
+    let from_encoded = decode_mutation_row(
+        RowElement::Encoded(encoded_bytes),
+        MutationInputKind::Flat,
+        &schema,
+        &err_schema,
+    )
+    .unwrap()
+    .expect("valid encoded mutation");
+    let from_row = decode_mutation_row(
+        RowElement::Row(row),
+        MutationInputKind::Flat,
+        &schema,
+        &err_schema,
+    )
+    .unwrap()
+    .expect("valid row mutation");
+
+    assert_eq!(from_encoded.entry, from_row.entry);
+    assert_eq!(from_encoded.entry.row_key.as_ref(), b"row-1");
+    assert_eq!(from_encoded.entry.mutations.len(), 1);
+}
+
+/// An encoded row whose schema has the fields of `mutation_schema` in another order decodes
+/// by field name, and gives the entry of the same mutation in the standard order.
+#[test]
+fn decode_mutation_row_reads_an_encoded_row_of_a_reordered_schema_by_name() {
+    let standard = mutation_schema();
+    let standard_row = Row::from(BigtableMutation::SetCell {
+        key: b"row-1".to_vec(),
+        family_name: "cf".to_string(),
+        column_qualifier: b"q1".to_vec(),
+        value: b"v1".to_vec(),
+        timestamp_micros: Some(42),
+    });
+
+    // `value` and `column_qualifier` have the same type, so a read by position swaps them.
+    let mut fields = standard.fields.clone();
+    fields.swap(2, 3);
+    let mut values = standard_row.clone().into_values();
+    values.swap(2, 3);
+    let schema = Arc::new(Schema::new(fields));
+    let row = Row::new(Arc::clone(&schema), values).unwrap();
+
+    let expected = decode_mutation_row(
+        RowElement::Row(standard_row),
+        MutationInputKind::Flat,
+        &standard,
+        &Arc::new(write_failure_schema(&standard)),
+    )
+    .unwrap()
+    .expect("valid row mutation");
+    let from_encoded = decode_mutation_row(
+        RowElement::Encoded(row.to_row_bytes().unwrap()),
+        MutationInputKind::Flat,
+        &schema,
+        &Arc::new(write_failure_schema(&schema)),
+    )
+    .unwrap()
+    .expect("valid encoded mutation");
+
+    assert_eq!(from_encoded.entry, expected.entry);
+}
+
+/// An encoded row whose schema has a field type that differs from `mutation_schema` gets the
+/// type checks of the decode by field name.
+#[test]
+fn decode_mutation_row_rejects_an_encoded_row_with_a_wrong_field_type() {
+    let mut fields = mutation_schema().fields.clone();
+    fields[4] = Field::nullable("family_name", FieldType::bytes());
+    let schema = Arc::new(Schema::new(fields));
+    let row = Row::new(
+        Arc::clone(&schema),
+        vec![
+            Some(FieldValue::Bytes(b"row-1".to_vec())),
+            Some(FieldValue::String("SetCell".to_string())),
+            Some(FieldValue::Bytes(b"v1".to_vec())),
+            Some(FieldValue::Bytes(b"q1".to_vec())),
+            Some(FieldValue::Bytes(b"cf".to_vec())),
+            None,
+            None,
+            None,
+        ],
+    )
+    .unwrap();
+
+    let rejected = decode_mutation_row(
+        RowElement::Encoded(row.to_row_bytes().unwrap()),
+        MutationInputKind::Flat,
+        &schema,
+        &Arc::new(write_failure_schema(&schema)),
+    )
+    .unwrap()
+    .expect_err("a BYTES family name is not a valid mutation");
+    assert_eq!(
+        rejected.get_value("failed_row"),
+        Some(&Some(FieldValue::Row(row)))
+    );
+}
+
+#[test]
+fn decode_mutation_row_supports_batched_mutation_schema_and_routes_invalid_rows_to_errors() {
+    let batched_schema = batched_mutation_schema();
+    let err_schema = Arc::new(write_failure_schema(&batched_schema));
+
+    let map_entry = vec![
+        (
+            FieldValue::String("type".to_string()),
+            Some(FieldValue::Bytes(b"SetCell".to_vec())),
+        ),
+        (
+            FieldValue::String("family_name".to_string()),
+            Some(FieldValue::Bytes(b"cf".to_vec())),
+        ),
+        (
+            FieldValue::String("column_qualifier".to_string()),
+            Some(FieldValue::Bytes(b"q".to_vec())),
+        ),
+        (
+            FieldValue::String("value".to_string()),
+            Some(FieldValue::Bytes(b"val".to_vec())),
+        ),
+        (
+            FieldValue::String("timestamp_micros".to_string()),
+            Some(FieldValue::Bytes(12345i64.to_be_bytes().to_vec())),
+        ),
+    ];
+    let valid_row = Row::new(
+        Arc::clone(&batched_schema),
+        vec![
+            Some(FieldValue::Bytes(b"batch-key".to_vec())),
+            Some(FieldValue::Array(vec![Some(FieldValue::Map(map_entry))])),
+        ],
+    )
+    .unwrap();
+
+    let encoded = decode_mutation_row(
+        RowElement::Encoded(valid_row.to_row_bytes().unwrap()),
+        MutationInputKind::Batched,
+        &batched_schema,
+        &err_schema,
+    )
+    .unwrap()
+    .expect("valid encoded batched row");
+    let decoded = decode_mutation_row(
+        RowElement::Row(valid_row),
+        MutationInputKind::Batched,
+        &batched_schema,
+        &err_schema,
+    )
+    .unwrap()
+    .expect("valid batched row");
+    assert_eq!(encoded.entry, decoded.entry);
+    assert_eq!(decoded.entry.row_key.as_ref(), b"batch-key");
+    assert_eq!(decoded.entry.mutations.len(), 1);
+
+    // Empty row key is rejected into an error Row rather than failing the bundle.
+    let bad_row = Row::from(BigtableMutation::DeleteFromRow { key: Vec::new() });
+    let flat_schema = mutation_schema();
+    let flat_err_schema = Arc::new(write_failure_schema(&flat_schema));
+    let err = decode_mutation_row(
+        RowElement::Row(bad_row),
+        MutationInputKind::Flat,
+        &flat_schema,
+        &flat_err_schema,
+    )
+    .unwrap()
+    .expect_err("empty key must produce error row");
+    assert!(
+        err.get_string("error_message")
+            .unwrap()
+            .unwrap()
+            .contains("must not be empty")
+    );
+}
+
+#[test]
+fn batch_buffer_and_partition_outcomes_separate_succeeded_retryable_and_rejected_entries() {
+    let schema = mutation_schema();
+    let err_schema = Arc::new(write_failure_schema(&schema));
+    let make_entry = |k: &[u8]| {
+        let row = Row::from(BigtableMutation::set_cell(k, "cf", "q", "v"));
+        decode_mutation_row(
+            RowElement::Row(row),
+            MutationInputKind::Flat,
+            &schema,
+            &err_schema,
+        )
+        .unwrap()
+        .unwrap()
+    };
+
+    let mut buffer = BatchBuffer::new(2, 1024 * 1024);
+    assert!(buffer.push(make_entry(b"k1")).is_none());
+    assert!(!buffer.is_ready());
+    assert!(buffer.push(make_entry(b"k2")).is_none());
+    assert!(buffer.is_ready());
+    let flushed = buffer.push(make_entry(b"k3")).expect("flushes k1, k2");
+    assert_eq!(flushed.entries.len(), 2);
+    let tail = buffer.flush().expect("flushes k3");
+    assert_eq!(tail.entries.len(), 1);
+
+    // Partition 3 entries: index 0 -> OK (0), index 1 -> UNAVAILABLE (14, retryable),
+    // index 2 -> INVALID_ARGUMENT (3, permanent).
+    let entries = vec![make_entry(b"k1"), make_entry(b"k2"), make_entry(b"k3")];
+    let resp = MutateRowsResponse {
+        entries: vec![
+            RespEntry {
+                index: 0,
+                status: Some(Status {
+                    code: 0,
+                    message: String::new(),
+                    ..Default::default()
+                }),
+            },
+            RespEntry {
+                index: 1,
+                status: Some(Status {
+                    code: 14,
+                    message: "tablet busy".to_string(),
+                    ..Default::default()
+                }),
+            },
+            RespEntry {
+                index: 2,
+                status: Some(Status {
+                    code: 3,
+                    message: "bad family".to_string(),
+                    ..Default::default()
+                }),
+            },
+        ],
+        rate_limit_info: Some(RateLimitInfo {
+            period: Some(ProtoDuration {
+                seconds: 2,
+                nanos: 0,
+            }),
+            factor: 0.7,
+        }),
+    };
+
+    let outcome = partition_outcomes(entries, vec![resp], true);
+    let BatchOutcome::Partial {
+        retryable,
+        rejected,
+        server_backoff,
+        throttled,
+    } = outcome
+    else {
+        panic!("expected Partial outcome");
+    };
+    assert_eq!(retryable.len(), 1);
+    assert_eq!(retryable[0].entry.row_key.as_ref(), b"k2");
+    assert_eq!(rejected.len(), 1);
+    assert_eq!(rejected[0].0.entry.row_key.as_ref(), b"k3");
+    assert_eq!(rejected[0].1.code, 3);
+    assert!(server_backoff.unwrap() >= Duration::from_millis(500));
+    assert!(!throttled, "UNAVAILABLE is not RESOURCE_EXHAUSTED");
+
+    // RateLimitInfo with factor >= 1.0 produces no backoff.
+    assert!(
+        rate_limit_backoff(&RateLimitInfo {
+            period: Some(ProtoDuration {
+                seconds: 5,
+                nanos: 0,
+            }),
+            factor: 1.2,
+        })
+        .is_none()
+    );
+}
+
+#[test]
+fn partition_outcomes_preserves_server_backoff_on_all_succeeded() {
+    let schema = mutation_schema();
+    let err_schema = Arc::new(write_failure_schema(&schema));
+    let make_entry = || {
+        let row = Row::from(BigtableMutation::set_cell(b"k1", "cf", "q", "v"));
+        decode_mutation_row(
+            RowElement::Row(row),
+            MutationInputKind::Flat,
+            &schema,
+            &err_schema,
+        )
+        .unwrap()
+        .unwrap()
+    };
+    let resp = MutateRowsResponse {
+        entries: vec![RespEntry {
+            index: 0,
+            status: Some(Status {
+                code: 0,
+                message: String::new(),
+                ..Default::default()
+            }),
+        }],
+        rate_limit_info: Some(RateLimitInfo {
+            period: Some(ProtoDuration {
+                seconds: 2,
+                nanos: 0,
+            }),
+            factor: 0.7,
+        }),
+    };
+
+    let BatchOutcome::AllSucceeded { server_backoff } =
+        partition_outcomes(vec![make_entry()], vec![resp.clone()], true)
+    else {
+        panic!("expected AllSucceeded");
+    };
+    assert!(server_backoff.unwrap() >= Duration::from_millis(500));
+
+    let BatchOutcome::AllSucceeded { server_backoff } =
+        partition_outcomes(vec![make_entry()], vec![resp], false)
+    else {
+        panic!("expected AllSucceeded");
+    };
+    assert!(server_backoff.is_none());
+}
+
+#[test]
+fn into_error_row_reconstructs_flat_and_batched_failed_rows() {
+    let flat_schema = mutation_schema();
+    let flat_err = Arc::new(write_failure_schema(&flat_schema));
+    let original_flat = Row::from(BigtableMutation::SetCell {
+        key: b"k-err".to_vec(),
+        family_name: "cf".to_string(),
+        column_qualifier: b"q".to_vec(),
+        value: b"v".to_vec(),
+        timestamp_micros: Some(99),
+    });
+    let pending = decode_mutation_row(
+        RowElement::Row(original_flat.clone()),
+        MutationInputKind::Flat,
+        &flat_schema,
+        &flat_err,
+    )
+    .unwrap()
+    .unwrap();
+    let err_row = pending
+        .into_error_row(MutationInputKind::Flat, &flat_schema, &flat_err, "denied")
+        .unwrap();
+    assert_eq!(err_row.get_string("error_message").unwrap(), Some("denied"));
+    assert_eq!(
+        err_row.get_value("failed_row"),
+        Some(&Some(FieldValue::Row(original_flat)))
+    );
+
+    let batched_schema = batched_mutation_schema();
+    let batched_err = Arc::new(write_failure_schema(&batched_schema));
+    let original_batched = Row::new(
+        Arc::clone(&batched_schema),
+        vec![
+            Some(FieldValue::Bytes(b"bk".to_vec())),
+            Some(FieldValue::Array(vec![Some(FieldValue::Map(vec![
+                (
+                    FieldValue::String("type".to_string()),
+                    Some(FieldValue::Bytes(b"SetCell".to_vec())),
+                ),
+                (
+                    FieldValue::String("family_name".to_string()),
+                    Some(FieldValue::Bytes(b"cf".to_vec())),
+                ),
+                (
+                    FieldValue::String("column_qualifier".to_string()),
+                    Some(FieldValue::Bytes(b"q".to_vec())),
+                ),
+                (
+                    FieldValue::String("value".to_string()),
+                    Some(FieldValue::Bytes(b"v".to_vec())),
+                ),
+            ]))])),
+        ],
+    )
+    .unwrap();
+    let pending_batched = decode_mutation_row(
+        RowElement::Row(original_batched.clone()),
+        MutationInputKind::Batched,
+        &batched_schema,
+        &batched_err,
+    )
+    .unwrap()
+    .unwrap();
+    let batched_err_row = pending_batched
+        .into_error_row(
+            MutationInputKind::Batched,
+            &batched_schema,
+            &batched_err,
+            "rejected",
+        )
+        .unwrap();
+    assert_eq!(
+        batched_err_row.get_value("failed_row"),
+        Some(&Some(FieldValue::Row(original_batched)))
+    );
+}
