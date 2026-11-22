@@ -21,13 +21,13 @@
 
 use beam::pipeline::URN_EXPANSION_SCHEMA_TRANSFORM;
 use beam::prelude::*;
-use beam_io_gcp::bigquery::{
+use beam_io_gcp::bigquery::xlang::{
     BigQueryRead, BigQueryWrite, CreateDisposition, URN_BIGQUERY_STORAGE_READ,
     URN_BIGQUERY_STORAGE_WRITE, WriteDisposition, WriteMethod,
 };
 use beam_io_managed::URN_MANAGED;
 
-use crate::fixtures::{BIGQUERY_WRITE_CONFIG, WriteExpect};
+use super::fixtures::{BIGQUERY_WRITE_CONFIG, WriteExpect};
 use beam_test_utils::xlang::{Route, assert_spliced, describe, fixture, start_mock, values};
 
 #[test]

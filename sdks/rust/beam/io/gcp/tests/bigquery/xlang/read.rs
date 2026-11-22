@@ -20,9 +20,9 @@
 //! Tests for `BigQueryRead` configuration rows and Managed I/O payloads.
 
 use beam_external::ExpansionError;
-use beam_io_gcp::bigquery::{BigQueryRead, URN_BIGQUERY_STORAGE_READ};
+use beam_io_gcp::bigquery::xlang::{BigQueryRead, URN_BIGQUERY_STORAGE_READ};
 
-use crate::fixtures::{BIGQUERY_READ_CONFIG, managed_target, sorted};
+use super::fixtures::{BIGQUERY_READ_CONFIG, managed_target, sorted};
 use beam_test_utils::xlang::{describe, fixture, string_array, string_value, values};
 
 #[test]

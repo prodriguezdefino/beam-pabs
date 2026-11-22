@@ -144,6 +144,10 @@ google-cloud-gax = "1.14.0"
 google-cloud-gax-internal = { version = "=0.7.21", default-features = false, features = ["_internal-grpc-client", "_internal-grpc-server-streaming"] }
 google-cloud-auth = "1.16.0"
 google-cloud-secretmanager-v1 = "1.14.0"
+google-cloud-bigquery = "0.18.0"
+google-cloud-bigquery-v2 = "1.0.0"
+google-cloud-wkt = "1.9.0"
+uuid = { version = "1", features = ["v4"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 proc-macro2 = "1.0"
 quote = "1.0"

@@ -368,20 +368,26 @@ dependencies = [
  "apache-beam-core",
  "apache-beam-external",
  "apache-beam-gcp-core",
+ "apache-beam-io-arrow",
  "apache-beam-io-file",
  "apache-beam-io-gcp-googleapis",
  "apache-beam-io-managed",
  "apache-beam-model",
  "apache-beam-test-utils",
+ "arrow-ipc",
  "base64 0.22.1",
  "bytes",
+ "chrono",
  "clap",
  "futures",
  "google-cloud-auth",
+ "google-cloud-bigquery",
+ "google-cloud-bigquery-v2",
  "google-cloud-gax",
  "google-cloud-gax-internal",
  "google-cloud-secretmanager-v1",
  "google-cloud-storage",
+ "google-cloud-wkt",
  "inventory",
  "prost",
  "serde",
@@ -390,6 +396,7 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -2537,6 +2544,72 @@ dependencies = [
  "time",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "google-cloud-bigquery"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e78c988c66c8cb41a3492452eb616cfeb1344f5234045c89ff63eae1af07f1c5"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "base64 0.23.1",
+ "bytes",
+ "google-cloud-auth",
+ "google-cloud-bigquery-derive",
+ "google-cloud-bigquery-v2",
+ "google-cloud-gax",
+ "google-cloud-gax-internal",
+ "google-cloud-rpc",
+ "google-cloud-type",
+ "google-cloud-wkt",
+ "http",
+ "prost",
+ "prost-types",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "google-cloud-bigquery-derive"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "103dea01e5f9ef39edc65f76d82619cdb2ffcd4a9e2535e39155a48367b8725f"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
+]
+
+[[package]]
+name = "google-cloud-bigquery-v2"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f18fee7e5c3802602ab71c10da5e9ffdedc1f4fcc49b4f9bdaac99c807769442"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "google-cloud-gax",
+ "google-cloud-gax-internal",
+ "google-cloud-lro",
+ "google-cloud-type",
+ "google-cloud-wkt",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

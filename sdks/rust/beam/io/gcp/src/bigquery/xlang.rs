@@ -28,7 +28,7 @@
 //! ```no_run
 //! use beam::prelude::*;
 //! use beam_external::ExpansionError;
-//! use beam_io_gcp::bigquery::BigQueryRead;
+//! use beam_io_gcp::bigquery::xlang::BigQueryRead;
 //!
 //! # fn run() -> Result<(), ExpansionError> {
 //! let p = Pipeline::new();
@@ -46,7 +46,7 @@
 //! ```no_run
 //! use beam::prelude::*;
 //! use beam_external::ExpansionError;
-//! use beam_io_gcp::bigquery::{BigQueryWrite, CreateDisposition, WriteDisposition, WriteMethod};
+//! use beam_io_gcp::bigquery::xlang::{BigQueryWrite, CreateDisposition, WriteDisposition, WriteMethod};
 //!
 //! # fn run(rows: PCollection<Row>) -> Result<(), ExpansionError> {
 //! rows.try_apply(

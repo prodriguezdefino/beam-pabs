@@ -20,12 +20,12 @@
 //! Builder defaults and getter tests for `BigQueryRead` and `BigQueryWrite`.
 
 use beam_io_gcp::DEFAULT_EXPANSION_SERVICE;
-use beam_io_gcp::bigquery::{
+use beam_io_gcp::bigquery::xlang::{
     BigQueryRead, BigQueryWrite, CreateDisposition, URN_BIGQUERY_STORAGE_READ, URN_BIGQUERY_WRITE,
     WriteDisposition, WriteMethod,
 };
 
-use crate::fixtures::{BIGQUERY_WRITE_CONFIG, WriteExpect, managed_target, sorted};
+use super::fixtures::{BIGQUERY_WRITE_CONFIG, WriteExpect, managed_target, sorted};
 use beam_test_utils::xlang::{describe, fixture, string_value, values};
 
 /// `(table, query, selected_fields, row_restriction, expansion_service)`.

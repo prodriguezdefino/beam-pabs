@@ -24,7 +24,9 @@
 //! rows through the cross-language BigQuery write transform. Both transforms run in the Java
 //! expansion service.
 
-use beam::io::gcp::bigquery::{BigQueryRead, BigQueryWrite, CreateDisposition, WriteDisposition};
+use beam::io::gcp::bigquery::xlang::{
+    BigQueryRead, BigQueryWrite, CreateDisposition, WriteDisposition,
+};
 use beam::prelude::*;
 use clap::Args as ClapArgs;
 use serde::{Deserialize, Serialize};

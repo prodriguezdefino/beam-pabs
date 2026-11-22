@@ -21,12 +21,12 @@
 
 use beam::pipeline::URN_EXPANSION_SCHEMA_TRANSFORM;
 use beam_external::ExpansionError;
-use beam_io_gcp::bigquery::{
+use beam_io_gcp::bigquery::xlang::{
     BigQueryWrite, CreateDisposition, URN_BIGQUERY_FILELOADS, URN_BIGQUERY_STORAGE_WRITE,
     URN_BIGQUERY_WRITE, UnknownWriteMethod, WriteDisposition, WriteMethod,
 };
 
-use crate::fixtures::{BIGQUERY_WRITE_CONFIG, WriteExpect, managed_target};
+use super::fixtures::{BIGQUERY_WRITE_CONFIG, WriteExpect, managed_target};
 use beam_test_utils::xlang::{decode_payload, describe, error_handling, fixture, values};
 
 #[test]

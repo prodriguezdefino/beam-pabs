@@ -43,7 +43,22 @@ gcs = [
     "dep:bytes",
     "dep:inventory",
 ]
-bigquery = ["options", "dep:beam_external", "dep:beam_io_managed"]
+# BigQuery Storage Read API reads. They pull in arrow-rs and the BigQuery clients.
+bigquery = [
+    "options",
+    "dep:beam_external",
+    "dep:beam_io_managed",
+    "beam_gcp_core/grpc",
+    "dep:google-cloud-gax",
+    "dep:bytes",
+    "dep:google-cloud-bigquery",
+    "dep:google-cloud-bigquery-v2",
+    "dep:google-cloud-wkt",
+    "dep:uuid",
+    "dep:beam_io_arrow",
+    "dep:arrow-ipc",
+    "dep:chrono",
+]
 bigtable = [
     "beam_gcp_core/grpc",
     "dep:base64",
@@ -80,11 +95,23 @@ google-cloud-gax-internal = { workspace = true, optional = true }
 beam_io_gcp_googleapis = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
 tonic = { workspace = true, optional = true }
+google-cloud-bigquery = { workspace = true, optional = true }
+google-cloud-bigquery-v2 = { workspace = true, optional = true }
+# The snapshot time of a read session.
+google-cloud-wkt = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
+beam_io_arrow = { workspace = true, optional = true }
+# The Arrow IPC codecs of compressed Storage Read responses.
+arrow-ipc = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
 
 [dev-dependencies]
 beam_model = { workspace = true }
 beam_test_utils = { workspace = true }
+beam_io_arrow = { workspace = true }
 google-cloud-auth = { workspace = true }
+google-cloud-bigquery = { workspace = true }
+google-cloud-bigquery-v2 = { workspace = true }
 prost = { workspace = true }
 tonic = { workspace = true }
 tonic-prost = { workspace = true }

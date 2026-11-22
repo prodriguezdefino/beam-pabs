@@ -20,7 +20,7 @@
 //! BigQuery summary export: row content, table schema, and the graph built without an
 //! expansion service.
 
-use beam::io::gcp::bigquery::URN_BIGQUERY_WRITE;
+use beam::io::gcp::bigquery::xlang::URN_BIGQUERY_WRITE;
 use beam::options::PipelineOptions;
 use beam::pipeline::URN_EXPANSION_SCHEMA_TRANSFORM;
 use beam::prelude::*;

@@ -17,10 +17,12 @@
  * under the License.
  */
 
-//! Integration and cross-language tests for Google Cloud BigQuery.
+//! Tests for the Google Cloud BigQuery connectors: table specs, the Storage Read connector
+//! (`storage_*`) and the cross-language transforms (`xlang`).
 
-mod builders;
-mod fixtures;
-mod pipeline;
-mod read;
-mod write;
+mod storage_read;
+mod storage_read_failures;
+mod storage_read_restriction;
+mod storage_schema;
+mod table;
+mod xlang;

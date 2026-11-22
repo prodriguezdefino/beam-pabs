@@ -19,7 +19,7 @@
 
 //! Suite summary export to BigQuery: one row for each query, written by a small batch job.
 
-use beam::io::gcp::bigquery::{BigQueryWrite, CreateDisposition, WriteDisposition};
+use beam::io::gcp::bigquery::xlang::{BigQueryWrite, CreateDisposition, WriteDisposition};
 use beam::options::PipelineOptions;
 use beam::prelude::*;
 use chrono::{DateTime, Utc};

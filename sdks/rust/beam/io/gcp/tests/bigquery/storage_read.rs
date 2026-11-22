@@ -1,0 +1,323 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+//! Pipeline shapes of the Storage Read connector. The tests build pipelines and do not
+//! run them, and give the schema, so no test calls BigQuery.
+
+use beam::internals::PipelineInternals;
+use std::sync::Arc;
+
+use beam::pipeline::Pipeline;
+use beam::schema::{FieldType, Schema};
+use beam_io_gcp::bigquery::{ArrowCompression, Read, ReadOptions, ReadRows, read_failure_schema};
+
+const TABLE: &str = "my-project.my_dataset.my_table";
+
+const DEFAULT_STEPS: [&str; 7] = [
+    "CreateSession",
+    "Impulse",
+    "ReadStreams",
+    "Reshuffle",
+    "Reshuffle/Expand",
+    "Reshuffle/GroupByKey",
+    "Reshuffle/PairWithRandomKey",
+];
+
+fn read() -> ReadRows {
+    let schema = Schema::builder().field("id", FieldType::int64()).build();
+    ReadRows::new(ReadOptions::new(TABLE))
+        .with_schema(Arc::new(schema))
+        .with_encoded_rows()
+}
+
+/// The sorted names of the transforms under the read, without the `ReadRows/` prefix. With
+/// `nested`, the list also has the steps inside each step.
+fn steps(pipeline: &Pipeline, nested: bool) -> Vec<String> {
+    let mut names: Vec<String> = pipeline
+        .lock()
+        .components
+        .transforms
+        .values()
+        .filter_map(|t| t.unique_name.strip_prefix("ReadRows/").map(str::to_string))
+        .filter(|name| nested || !name.contains('/'))
+        .collect();
+    names.sort();
+    names
+}
+
+/// The unique name of the transform that produces `pcollection`, and the URN of its coder.
+fn producer_and_coder(pipeline: &Pipeline, pcollection: &str) -> (String, String) {
+    let lock = pipeline.lock();
+    let components = &lock.components;
+    let producer = components
+        .transforms
+        .values()
+        .filter(|t| t.subtransforms.is_empty())
+        .find(|t| t.outputs.values().any(|id| id == pcollection))
+        .unwrap()
+        .unique_name
+        .clone();
+    let coder_id = &components.pcollections[pcollection].coder_id;
+    let urn = components.coders[coder_id]
+        .spec
+        .as_ref()
+        .unwrap()
+        .urn
+        .clone();
+    (producer, urn)
+}
+
+#[test]
+fn the_default_read_emits_the_rows_of_the_stream_reader() {
+    let pipeline = Pipeline::new();
+    let rows = pipeline.try_apply("ReadRows", read()).unwrap();
+    // The same steps, the step names inside them included, as a read without an error output.
+    assert_eq!(steps(&pipeline, true), DEFAULT_STEPS);
+    assert_eq!(
+        steps(&pipeline, false),
+        ["CreateSession", "Impulse", "ReadStreams", "Reshuffle"]
+    );
+    let (producer, urn) = producer_and_coder(&pipeline, rows.id());
+    assert_eq!(producer, "ReadRows/ReadStreams");
+    assert_eq!(urn, "beam:coder:row:v1");
+    assert_eq!(rows.row_schema().unwrap().fields[0].name, "id");
+}
+
+#[test]
+fn the_read_with_failures_emits_the_rows_and_the_error_rows_from_the_reader() {
+    let pipeline = Pipeline::new();
+    let outputs = pipeline
+        .try_apply("ReadRows", read().with_failures())
+        .unwrap();
+    assert_eq!(
+        steps(&pipeline, false),
+        ["CreateSession", "Impulse", "ReadStreams", "Reshuffle"]
+    );
+    for output in [&outputs.output, &outputs.failures] {
+        let (producer, urn) = producer_and_coder(&pipeline, output.id());
+        assert_eq!(producer, "ReadRows/ReadStreams");
+        assert_eq!(urn, "beam:coder:row:v1");
+    }
+    assert_eq!(outputs.output.row_schema().unwrap().fields[0].name, "id");
+    assert_eq!(
+        &outputs.failures.row_schema().unwrap(),
+        read_failure_schema()
+    );
+}
+
+#[test]
+fn the_error_rows_hold_the_row_the_reason_and_the_position() {
+    let fields: Vec<_> = read_failure_schema()
+        .fields
+        .iter()
+        .map(|f| (f.name.as_str(), f.field_type.clone()))
+        .collect();
+    assert_eq!(
+        fields,
+        [
+            ("failed_row", FieldType::string()),
+            ("error_message", FieldType::string()),
+            ("stream", FieldType::string()),
+            ("offset", FieldType::int64()),
+        ]
+    );
+}
+
+#[test]
+fn apply_records_invalid_options_and_returns_outputs_that_take_later_steps() {
+    let pipeline = Pipeline::new();
+    let invalid = || {
+        ReadRows::new(
+            ReadOptions::new(TABLE)
+                .with_max_stream_count(10)
+                .with_preferred_min_stream_count(20),
+        )
+    };
+    let rows = pipeline.apply("ReadRows", invalid());
+    let outputs = pipeline.apply("ReadWithFailures", invalid().with_failures());
+    for (name, output) in [("Rows", &rows), ("Failures", &outputs.failures)] {
+        output.apply(
+            name,
+            beam::transforms::Map::new(|row: beam::schema::Row| row.values().len() as i64),
+        );
+    }
+    assert_eq!(
+        &outputs.failures.row_schema().unwrap(),
+        read_failure_schema()
+    );
+    let error = pipeline.validate().unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            beam::pipeline::PipelineError::InvalidConstruction { transform_id, reason }
+                if transform_id == "ReadRows" && reason.contains("max_stream_count")
+        ),
+        "{error}"
+    );
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, beam::schema::BeamRow)]
+struct TypedItem {
+    id: i64,
+}
+
+#[test]
+fn the_typed_read_with_failures_converts_the_rows_and_keeps_the_error_rows() {
+    let pipeline = Pipeline::new();
+    let outputs = pipeline.apply(
+        "ReadRows",
+        Read::<TypedItem>::new(ReadOptions::new(TABLE)).with_failures(),
+    );
+    assert_eq!(
+        steps(&pipeline, false),
+        ["CreateSession", "Impulse", "ReadStreams", "Reshuffle"]
+    );
+    let (producer, urn) = producer_and_coder(&pipeline, outputs.output.id());
+    assert_eq!(producer, "ReadRows/ReadStreams");
+    assert_eq!(urn, "beam:coder:row:v1");
+    let (producer, urn) = producer_and_coder(&pipeline, outputs.failures.id());
+    assert_eq!(producer, "ReadRows/ReadStreams");
+    assert_eq!(urn, "beam:coder:row:v1");
+    assert_eq!(
+        &outputs.failures.row_schema().unwrap(),
+        read_failure_schema()
+    );
+}
+
+#[test]
+fn try_apply_expands_typed_reads_and_reports_invalid_options() {
+    let pipeline = Pipeline::new();
+    let items = pipeline
+        .try_apply("ReadTyped", Read::<TypedItem>::new(ReadOptions::new(TABLE)))
+        .unwrap();
+    let (producer, urn) = producer_and_coder(&pipeline, items.id());
+    assert_eq!(producer, "ReadTyped/ReadStreams");
+    assert_eq!(urn, "beam:coder:row:v1");
+
+    let outputs = pipeline
+        .try_apply(
+            "ReadTypedWithFailures",
+            Read::<TypedItem>::new(ReadOptions::new(TABLE)).with_failures(),
+        )
+        .unwrap();
+    let (producer, _) = producer_and_coder(&pipeline, outputs.output.id());
+    assert_eq!(producer, "ReadTypedWithFailures/ReadStreams");
+    let (producer, urn) = producer_and_coder(&pipeline, outputs.failures.id());
+    assert_eq!(producer, "ReadTypedWithFailures/ReadStreams");
+    assert_eq!(urn, "beam:coder:row:v1");
+    assert_eq!(
+        &outputs.failures.row_schema().unwrap(),
+        read_failure_schema()
+    );
+
+    let bad_options = ReadOptions::new(TABLE)
+        .with_max_stream_count(10)
+        .with_preferred_min_stream_count(20);
+    let err = pipeline
+        .try_apply("BadRead", Read::<TypedItem>::new(bad_options.clone()))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("max_stream_count"), "{err}");
+    let err = pipeline
+        .try_apply(
+            "BadReadWithFailures",
+            Read::<TypedItem>::new(bad_options).with_failures(),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("max_stream_count"), "{err}");
+}
+
+#[test]
+fn read_transforms_record_display_data_in_pipeline_proto() {
+    use std::collections::HashMap;
+
+    use beam::transforms::display_data::DisplayDataItem;
+
+    let schema = Arc::new(Schema::builder().field("id", FieldType::int64()).build());
+    let pipeline = Pipeline::new();
+    pipeline.apply(
+        "ReadTable",
+        ReadRows::new(
+            ReadOptions::new(TABLE)
+                .with_row_restriction("id > 0")
+                .with_selected_fields(["id"])
+                .with_sample_percentage(12.5)
+                .with_compression(ArrowCompression::Zstd),
+        )
+        .with_schema(Arc::clone(&schema)),
+    );
+    pipeline.apply(
+        "ReadQuery",
+        ReadRows::new(ReadOptions::from_query("SELECT id FROM t"))
+            .with_schema(Arc::clone(&schema))
+            .with_failures(),
+    );
+    pipeline.apply("ReadTyped", Read::<TypedItem>::new(ReadOptions::new(TABLE)));
+
+    let components = pipeline.to_proto().components.unwrap();
+    let display_map = |name: &str| -> HashMap<String, String> {
+        let transform = components
+            .transforms
+            .values()
+            .find(|t| t.unique_name == name)
+            .unwrap();
+        transform
+            .display_data
+            .iter()
+            .map(|d| {
+                let item = DisplayDataItem::from_proto(d).unwrap();
+                (item.key, item.value.to_string())
+            })
+            .collect()
+    };
+
+    let table_items = display_map("ReadTable");
+    assert_eq!(table_items.get("table").map(String::as_str), Some(TABLE));
+    assert_eq!(
+        table_items.get("row_restriction").map(String::as_str),
+        Some("id > 0")
+    );
+    assert_eq!(
+        table_items.get("selected_fields").map(String::as_str),
+        Some("id")
+    );
+    assert_eq!(
+        table_items.get("sample_percentage").map(String::as_str),
+        Some("12.5")
+    );
+
+    let query_items = display_map("ReadQuery");
+    assert_eq!(
+        query_items.get("query").map(String::as_str),
+        Some("SELECT id FROM t")
+    );
+    assert_eq!(
+        query_items.get("arrow_compression").map(String::as_str),
+        Some("NONE")
+    );
+    assert!(!query_items.contains_key("table"));
+
+    let typed_items = display_map("ReadTyped");
+    assert_eq!(typed_items.get("table").map(String::as_str), Some(TABLE));
+    assert_eq!(
+        typed_items.get("selected_fields").map(String::as_str),
+        Some("id")
+    );
+}
