@@ -92,6 +92,13 @@ impl TableRef {
     }
 }
 
+/// Records `resource` (`projects/{p}/datasets/{d}/tables/{t}`) in `Lineage::sinks()`.
+pub(crate) fn record_sink_lineage(resource: &str) {
+    if let Some(segments) = table_segments(resource) {
+        beam::metrics::Lineage::sinks().add(super::METRICS, segments);
+    }
+}
+
 /// Returns a handle that records the calls of `method` on the BigQuery `resource`. A stream
 /// counts as its table or read session. A table also gets the project, dataset and table labels.
 pub(crate) fn api_request(resource: &str, method: &'static str) -> ApiRequest {

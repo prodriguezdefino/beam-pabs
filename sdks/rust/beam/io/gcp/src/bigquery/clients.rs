@@ -17,21 +17,26 @@
  * under the License.
  */
 
-//! Process-wide BigQuery client singletons shared across reads.
+//! Process-wide BigQuery client singletons shared across reads and writes.
 //!
 //! Initialize and call every helper on [`crate::runtime::client_runtime`] only.
 
 use std::io;
+use std::sync::Arc;
 
-use google_cloud_bigquery::client::Read;
+use google_cloud_bigquery::client::{Read, Write};
 use google_cloud_bigquery_v2::client::{DatasetService, JobService, TableService};
 use tokio::sync::OnceCell;
 
+use super::write::commit::CommitClient;
+
 static READ_CLIENT: OnceCell<Read> = OnceCell::const_new();
 static SPLIT_CLIENT: OnceCell<Read> = OnceCell::const_new();
+static WRITE_CLIENT: OnceCell<Arc<Write>> = OnceCell::const_new();
 static TABLE_CLIENT: OnceCell<TableService> = OnceCell::const_new();
 static JOB_CLIENT: OnceCell<JobService> = OnceCell::const_new();
 static DATASET_CLIENT: OnceCell<DatasetService> = OnceCell::const_new();
+static COMMIT_CLIENT: OnceCell<CommitClient> = OnceCell::const_new();
 
 /// Process-wide Storage Read client.
 pub(super) async fn read_client() -> io::Result<Read> {
@@ -48,6 +53,23 @@ pub(super) async fn split_client() -> io::Result<Read> {
         .get_or_try_init(|| async { Read::builder().build().await.map_err(io::Error::other) })
         .await
         .cloned()
+}
+
+/// Returns `given`, or the process-wide Storage Write client.
+pub(super) async fn write_client(given: Option<Arc<Write>>) -> io::Result<Arc<Write>> {
+    match given {
+        Some(client) => Ok(client),
+        None => WRITE_CLIENT
+            .get_or_try_init(|| async {
+                Write::builder()
+                    .build()
+                    .await
+                    .map(Arc::new)
+                    .map_err(io::Error::other)
+            })
+            .await
+            .cloned(),
+    }
 }
 
 /// Returns `given`, or the process-wide BigQuery v2 `TableService` client shared by query
@@ -91,4 +113,11 @@ pub(super) async fn dataset_client() -> io::Result<DatasetService> {
         })
         .await
         .cloned()
+}
+
+/// Process-wide `BatchCommitWriteStreams` client.
+pub(super) async fn commit_client() -> io::Result<&'static CommitClient> {
+    COMMIT_CLIENT
+        .get_or_try_init(|| CommitClient::connect(None))
+        .await
 }
