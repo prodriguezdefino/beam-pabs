@@ -27,6 +27,7 @@ use bytes::Bytes;
 use tokio::sync::mpsc::{self, Receiver};
 
 use beam::internals::recv_blocking;
+use beam::retry::RetryWaits;
 
 /// Streaming reader that bridges an asynchronous GCS chunk stream into [`std::io::Read`].
 #[doc(hidden)]
@@ -37,6 +38,7 @@ pub struct GcsStreamReader {
     /// Error received after bytes were copied; returned on the next call.
     pending_error: Option<io::Error>,
     completed: Arc<AtomicBool>,
+    waits: Option<Arc<RetryWaits>>,
 }
 
 impl GcsStreamReader {
@@ -54,12 +56,34 @@ impl GcsStreamReader {
             offset: 0,
             pending_error: None,
             completed,
+            waits: None,
+        }
+    }
+
+    /// Attaches retry waits from the background read task so this reader records them on the
+    /// calling thread.
+    pub fn with_waits(mut self, waits: Arc<RetryWaits>) -> Self {
+        self.waits = Some(waits);
+        self
+    }
+
+    fn drain_waits(&self) {
+        if let Some(waits) = &self.waits {
+            waits.record(super::METRICS);
         }
     }
 
     fn next_chunk(&mut self) -> Option<io::Result<Bytes>> {
-        recv_blocking(&mut self.receiver)
-            .unwrap_or_else(|| Some(Err(io::Error::other("GCS stream thread panicked"))))
+        let next = recv_blocking(&mut self.receiver)
+            .unwrap_or_else(|| Some(Err(io::Error::other("GCS stream thread panicked"))));
+        self.drain_waits();
+        next
+    }
+}
+
+impl Drop for GcsStreamReader {
+    fn drop(&mut self) {
+        self.drain_waits();
     }
 }
 

@@ -34,34 +34,38 @@ use google_cloud_auth::signer::Signer;
 
 use crate::runtime::client_runtime;
 
-/// The scope of the credentials.
+/// OAuth2 scope requested for Application Default Credentials.
 const SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform";
 
-/// The environment variable that names the principal of credentials that have no service
-/// account, for example the credentials of a user. The Google client libraries of Managed
-/// Service for Apache Kafka read the same variable.
+/// Environment variable that names the principal of credentials that have no service account,
+/// such as user credentials. Managed Service for Apache Kafka client libraries read the same
+/// variable.
 pub const PRINCIPAL_VARIABLE: &str = "GOOGLE_MANAGED_KAFKA_AUTH_PRINCIPAL";
 
-static CREDENTIALS: OnceLock<Result<AccessTokenCredentials, String>> = OnceLock::new();
+/// Keeps only built credentials, so a later call builds again after an error.
+static CREDENTIALS: OnceLock<AccessTokenCredentials> = OnceLock::new();
 
-/// The credentials of this process. They load on the client runtime, because the task that
-/// refreshes their token runs on the runtime that built them.
+/// Process-wide credentials loaded on [`client_runtime`] so background token refresh runs on
+/// the long-lived runtime.
 fn credentials() -> io::Result<&'static AccessTokenCredentials> {
-    CREDENTIALS
-        .get_or_init(|| {
-            let rt = client_runtime().map_err(|e| e.to_string())?;
-            let _runtime = rt.enter();
-            Builder::default()
-                .with_scopes([SCOPE])
-                .build_access_token_credentials()
-                .map_err(|e| format!("Cannot load the Google Application Default Credentials: {e}"))
-        })
-        .as_ref()
-        .map_err(|e| io::Error::other(e.clone()))
+    if let Some(credentials) = CREDENTIALS.get() {
+        return Ok(credentials);
+    }
+    let rt = client_runtime()?;
+    let _runtime = rt.enter();
+    let credentials = Builder::default()
+        .with_scopes([SCOPE])
+        .build_access_token_credentials()
+        .map_err(|e| {
+            io::Error::other(format!(
+                "Cannot load the Google Application Default Credentials: {e}"
+            ))
+        })?;
+    Ok(CREDENTIALS.get_or_init(|| credentials))
 }
 
-/// The request headers of the credentials, as names and values: `authorization`, and the
-/// quota project of user credentials.
+/// Request headers of the credentials as `(name, value)` pairs (`authorization` and any user
+/// quota project).
 pub async fn headers() -> io::Result<Vec<(String, String)>> {
     let headers = match credentials()?.headers(Default::default()).await {
         Ok(CacheableResource::New { data, .. }) => data,
@@ -87,7 +91,7 @@ pub async fn headers() -> io::Result<Vec<(String, String)>> {
         .collect()
 }
 
-/// The value of the `authorization` header of the credentials: `Bearer <access token>`.
+/// Value of the `authorization` header of the credentials (`Bearer <access token>`).
 pub async fn authorization() -> io::Result<String> {
     headers()
         .await?
@@ -96,7 +100,7 @@ pub async fn authorization() -> io::Result<String> {
         .ok_or_else(|| io::Error::other("The Google credentials gave no authorization header"))
 }
 
-/// An access token of the credentials.
+/// Access token string of the credentials.
 pub async fn access_token() -> io::Result<String> {
     credentials()?
         .access_token()
@@ -123,9 +127,8 @@ fn signer() -> io::Result<&'static Signer> {
     Ok(SIGNER.get_or_init(|| signer))
 }
 
-/// The principal of the credentials: [`PRINCIPAL_VARIABLE`] if it is set, else the email of
-/// the service account of the credentials (a key file, impersonation, or the metadata server
-/// on Google Cloud).
+/// Principal of the credentials: [`PRINCIPAL_VARIABLE`] when set, else the service-account
+/// email of the credentials.
 pub async fn principal() -> io::Result<String> {
     if let Ok(principal) = std::env::var(PRINCIPAL_VARIABLE)
         && !principal.is_empty()

@@ -29,35 +29,43 @@ name = "beam_io_gcp"
 test = false
 
 [features]
-# One feature per connector (D8): each enables only its module and its dependencies.
-# `auth`, `options`, `runtime` and `secret_manager` are always built.
-default = ["gcs", "bigquery", "bigtable", "pubsub"]
-gcs = ["dep:beam_io_file", "dep:google-cloud-storage", "dep:google-cloud-gax", "dep:futures", "dep:bytes"]
-bigquery = ["dep:beam_external", "dep:beam_io_managed"]
-bigtable = ["dep:beam_external"]
+# One feature per module: each enables only its own dependencies.
+default = ["gcs", "bigquery", "bigtable", "pubsub", "options", "secret-manager"]
+options = ["dep:clap", "dep:inventory"]
+secret-manager = ["dep:google-cloud-secretmanager-v1", "dep:inventory"]
+gcs = [
+    "beam_gcp_core/retry",
+    "dep:beam_io_file",
+    "dep:google-cloud-auth",
+    "dep:google-cloud-storage",
+    "dep:google-cloud-gax",
+    "dep:futures",
+    "dep:bytes",
+    "dep:inventory",
+]
+bigquery = ["options", "dep:beam_external", "dep:beam_io_managed"]
+bigtable = ["options", "dep:beam_external"]
 pubsub = ["dep:beam_external"]
 
 [dependencies]
-beam = { package = "apache-beam-core", path = "../../core", version = "2.79.0-SNAPSHOT" }
+beam = { package = "apache-beam-core", path = "../../core", version = "2.79.0-SNAPSHOT", features = ["derive"] }
+beam_gcp_core = { workspace = true }
 beam_io_file = { workspace = true, optional = true }
 beam_external = { workspace = true, optional = true }
 beam_io_managed = { workspace = true, optional = true }
-clap = { workspace = true }
-inventory = { workspace = true }
+clap = { workspace = true, optional = true }
+inventory = { workspace = true, optional = true }
+google-cloud-auth = { workspace = true, optional = true }
 google-cloud-storage = { workspace = true, optional = true }
 google-cloud-gax = { workspace = true, optional = true }
-google-cloud-secretmanager-v1 = { workspace = true }
+google-cloud-secretmanager-v1 = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-rustls = { workspace = true }
 serde = { workspace = true }
-# The Application Default Credentials of the calls that no client library makes (auth).
-google-cloud-auth = { workspace = true }
 
 [dev-dependencies]
-beam_io_gcp = { package = "apache-beam-io-gcp", path = "." }
 beam_model = { workspace = true }
 beam_test_utils = { workspace = true }
 
@@ -80,6 +88,11 @@ required-features = ["bigtable"]
 name = "pubsub"
 path = "tests/pubsub/main.rs"
 required-features = ["pubsub"]
+
+[[test]]
+name = "options"
+path = "tests/options/main.rs"
+required-features = ["options", "secret-manager"]
 
 [lints]
 workspace = true

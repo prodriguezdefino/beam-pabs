@@ -93,13 +93,16 @@ pub trait DataflowApiClient: Send + Sync + fmt::Debug {
         job_id: &str,
     ) -> Result<JobResponse, ClientError>;
 
-    /// Lists execution log messages for a Dataflow job.
+    /// Lists one page of the execution log messages of a Dataflow job, from `start_time`
+    /// on. `page_token` is the `next_page_token` of the page before, for the same
+    /// `start_time`.
     async fn list_messages(
         &self,
         project: &str,
         region: &str,
         job_id: &str,
         start_time: Option<&str>,
+        page_token: Option<&str>,
     ) -> Result<ListJobMessagesResponse, ClientError>;
 
     /// Fetches the latest execution metrics for a Dataflow job.

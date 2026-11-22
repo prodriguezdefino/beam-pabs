@@ -65,6 +65,24 @@ async fn test_dataflow_runner_terminal_failure_handling() {
     );
 }
 
+/// After the job ends, the runner reads every page of messages and reports all errors.
+#[tokio::test]
+async fn a_failed_job_reports_the_errors_of_every_message_page() {
+    let client = Arc::new(
+        MockDataflowClient::with_initial_job_state(JOB_STATE_FAILED).with_message_page_size(2),
+    );
+    (1..=5).for_each(|i| client.add_error_message(format!("error {i}")));
+
+    let err = run_polling(Arc::clone(&client), "paged-errors")
+        .await
+        .unwrap_err();
+
+    let message = err.to_string();
+    for i in 1..=5 {
+        assert!(message.contains(&format!("error {i}")), "{message}");
+    }
+}
+
 fn wait_options(job_name: &str) -> PipelineOptions {
     PipelineOptions::parse_from([
         "app".to_string(),

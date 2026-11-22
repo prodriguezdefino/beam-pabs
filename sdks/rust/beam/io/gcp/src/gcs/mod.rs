@@ -26,12 +26,20 @@
 use std::io::{self, Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
+use beam::metrics::{ApiRequest, LABEL_GCS_BUCKET, Metrics};
+use beam::retry::RetryWaits;
+use beam_gcp_core::retry::{RETRY_TIME_LIMIT, observe_retries, status_name};
 use beam_io_file::{FileSystem, GlobMatcher, find_wildcard};
 use bytes::{Bytes, BytesMut};
 use futures::{Stream, TryStreamExt, stream};
+use google_cloud_gax::backoff_policy::BackoffPolicy;
+use google_cloud_gax::exponential_backoff::ExponentialBackoff;
+use google_cloud_gax::options::RequestOptionsBuilder as _;
 use google_cloud_gax::paginator::ItemPaginator;
+use google_cloud_gax::retry_policy::{RetryPolicy, RetryPolicyExt as _};
+use google_cloud_storage::retry_policy::RetryableErrors;
 use tokio::sync::{OnceCell, mpsc};
 
 pub mod reader;
@@ -40,6 +48,20 @@ pub mod writer;
 use crate::runtime::{block_on_async, client_runtime};
 use reader::GcsStreamReader;
 use writer::{GcsAsyncWriter, GcsWriter, upload_bytes};
+
+/// Metric namespace of the GCS connector.
+pub(crate) const METRICS: &str = "gcs";
+
+/// Wraps GCS retry and backoff policies to accumulate retry and throttling waits into `waits`.
+pub(super) fn observed_gcs_retries(
+    waits: Arc<RetryWaits>,
+) -> (impl RetryPolicy + 'static, impl BackoffPolicy + 'static) {
+    observe_retries(
+        RetryableErrors.with_time_limit(RETRY_TIME_LIMIT),
+        ExponentialBackoff::default(),
+        waits,
+    )
+}
 
 /// Splits `gs://bucket/object` into `(bucket, object)`. Returns
 /// [`io::ErrorKind::InvalidInput`] if the scheme is not `gs://` or the bucket is empty.
@@ -140,6 +162,24 @@ pub fn emulator_endpoint(host: Option<String>) -> Option<String> {
     })
 }
 
+/// Returns a handle that records the calls of `method` on `bucket`.
+fn bucket_request(bucket: &str, method: &'static str) -> ApiRequest {
+    Metrics::api_request(
+        "Storage",
+        method,
+        format!("//storage.googleapis.com/buckets/{bucket}"),
+    )
+    .with_label(LABEL_GCS_BUCKET, bucket)
+}
+
+/// Returns the status name of an error from [`map_gcs_error`] for the I/O request metrics.
+fn io_status(error: &io::Error) -> &'static str {
+    error
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<google_cloud_gax::error::Error>())
+        .map_or("unknown", status_name)
+}
+
 fn read_range_spec(start_offset: u64, length: u64) -> google_cloud_storage::model_ext::ReadRange {
     match (start_offset, length) {
         (0, 0) => google_cloud_storage::model_ext::ReadRange::all(),
@@ -227,14 +267,22 @@ impl GcsFileSystem {
         let (bucket, object) = parse_gcs_uri(path)?;
         let clients = self.clients().await?;
         let parent = format!("projects/_/buckets/{bucket}");
-        let obj = clients
+        let waits = Arc::new(RetryWaits::default());
+        let (retry, backoff) = observed_gcs_retries(Arc::clone(&waits));
+        let call = clients
             .control
             .get_object()
             .set_bucket(&parent)
             .set_object(object)
-            .send()
+            .with_retry_policy(retry)
+            .with_backoff_policy(backoff)
+            .send();
+        let result = bucket_request(bucket, "GetObject")
+            .time(call, status_name)
             .await
-            .map_err(map_gcs_error)?;
+            .map_err(map_gcs_error);
+        waits.record(METRICS);
+        let obj = result?;
         Ok(obj.size.max(0) as u64)
     }
 
@@ -243,14 +291,22 @@ impl GcsFileSystem {
         let (bucket, object) = parse_gcs_uri(path)?;
         let clients = self.clients().await?;
         let parent = format!("projects/_/buckets/{bucket}");
-        let obj = clients
+        let waits = Arc::new(RetryWaits::default());
+        let (retry, backoff) = observed_gcs_retries(Arc::clone(&waits));
+        let call = clients
             .control
             .get_object()
             .set_bucket(&parent)
             .set_object(object)
-            .send()
+            .with_retry_policy(retry)
+            .with_backoff_policy(backoff)
+            .send();
+        let result = bucket_request(bucket, "GetObject")
+            .time(call, status_name)
             .await
-            .map_err(map_gcs_error)?;
+            .map_err(map_gcs_error);
+        waits.record(METRICS);
+        let obj = result?;
         let ts = obj.update_time.or(obj.create_time).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -274,19 +330,27 @@ impl GcsFileSystem {
         let matcher = GlobMatcher::new(object_pattern)?;
         let clients = self.clients().await?;
         let parent = format!("projects/_/buckets/{bucket}");
+        let waits = Arc::new(RetryWaits::default());
+        let (retry, backoff) = observed_gcs_retries(Arc::clone(&waits));
         let items = clients
             .control
             .list_objects()
             .set_parent(parent)
             .set_prefix(prefix)
+            .with_retry_policy(retry)
+            .with_backoff_policy(backoff)
             .by_item();
-        let names = collect_object_names(
+        let listing = collect_object_names(
             stream::unfold(items, |mut items| async move {
                 items.next().await.map(|item| (item, items))
             })
             .map_ok(|object| object.name),
-        )
-        .await?;
+        );
+        let result = bucket_request(bucket, "ListObjects")
+            .time(listing, io_status)
+            .await;
+        waits.record(METRICS);
+        let names = result?;
         Ok(to_sorted_uris(bucket, &matcher, names))
     }
 
@@ -305,33 +369,44 @@ impl GcsFileSystem {
         let (bucket, object) = parse_gcs_uri(path)?;
         let clients = self.clients().await?;
         let parent = format!("projects/_/buckets/{bucket}");
-        let mut resp = clients
-            .storage
-            .read_object(&parent, object)
-            .set_read_range(read_range_spec(start_offset, length))
-            .send()
-            .await
-            .map_err(map_gcs_error)?;
-        let mut first_chunk: Option<Bytes> = None;
-        let mut combined: Option<BytesMut> = None;
-        while let Some(chunk) = resp.next().await {
-            let chunk = chunk.map_err(map_gcs_error)?;
-            if let Some(buf) = &mut combined {
-                buf.extend_from_slice(&chunk);
-            } else if let Some(prev) = first_chunk.take() {
-                let cap = usize::try_from(length)
-                    .ok()
-                    .filter(|&n| n > 0)
-                    .unwrap_or(prev.len() + chunk.len());
-                let mut buf = BytesMut::with_capacity(cap);
-                buf.extend_from_slice(&prev);
-                buf.extend_from_slice(&chunk);
-                combined = Some(buf);
-            } else {
-                first_chunk = Some(chunk);
+        let waits = Arc::new(RetryWaits::default());
+        let (retry, backoff) = observed_gcs_retries(Arc::clone(&waits));
+        let read = async {
+            let mut resp = clients
+                .storage
+                .read_object(&parent, object)
+                .set_read_range(read_range_spec(start_offset, length))
+                .with_retry_policy(retry)
+                .with_backoff_policy(backoff)
+                .send()
+                .await
+                .map_err(map_gcs_error)?;
+            let mut first_chunk: Option<Bytes> = None;
+            let mut combined: Option<BytesMut> = None;
+            while let Some(chunk) = resp.next().await {
+                let chunk = chunk.map_err(map_gcs_error)?;
+                if let Some(buf) = &mut combined {
+                    buf.extend_from_slice(&chunk);
+                } else if let Some(prev) = first_chunk.take() {
+                    let cap = usize::try_from(length)
+                        .ok()
+                        .filter(|&n| n > 0)
+                        .unwrap_or(prev.len() + chunk.len());
+                    let mut buf = BytesMut::with_capacity(cap);
+                    buf.extend_from_slice(&prev);
+                    buf.extend_from_slice(&chunk);
+                    combined = Some(buf);
+                } else {
+                    first_chunk = Some(chunk);
+                }
             }
-        }
-        Ok(combined.map_or_else(|| first_chunk.unwrap_or_default(), BytesMut::freeze))
+            Ok(combined.map_or_else(|| first_chunk.unwrap_or_default(), BytesMut::freeze))
+        };
+        let result = bucket_request(bucket, "ReadObject")
+            .time(read, io_status)
+            .await;
+        waits.record(METRICS);
+        result
     }
 
     /// Uploads `payload` to `path` with idempotent retries.
@@ -358,14 +433,22 @@ impl GcsFileSystem {
         let (bucket, object) = parse_gcs_uri(path)?;
         let clients = self.clients().await?;
         let parent = format!("projects/_/buckets/{bucket}");
-        clients
+        let waits = Arc::new(RetryWaits::default());
+        let (retry, backoff) = observed_gcs_retries(Arc::clone(&waits));
+        let call = clients
             .control
             .delete_object()
             .set_bucket(&parent)
             .set_object(object)
-            .send()
+            .with_retry_policy(retry)
+            .with_backoff_policy(backoff)
+            .send();
+        let result = bucket_request(bucket, "DeleteObject")
+            .time(call, status_name)
             .await
-            .map_err(map_gcs_error)?;
+            .map_err(map_gcs_error);
+        waits.record(METRICS);
+        result?;
         Ok(())
     }
 
@@ -376,19 +459,29 @@ impl GcsFileSystem {
         let clients = self.clients().await?;
         let src_parent = format!("projects/_/buckets/{src_bucket}");
         let dst_parent = format!("projects/_/buckets/{dst_bucket}");
+        let rewrites = bucket_request(dst_bucket, "RewriteObject");
+        let waits = Arc::new(RetryWaits::default());
         let mut rewrite_token: Option<String> = None;
         loop {
+            let (retry, backoff) = observed_gcs_retries(Arc::clone(&waits));
             let mut req = clients
                 .control
                 .rewrite_object()
                 .set_source_bucket(&src_parent)
                 .set_source_object(src_object)
                 .set_destination_bucket(&dst_parent)
-                .set_destination_name(dst_object);
+                .set_destination_name(dst_object)
+                .with_retry_policy(retry)
+                .with_backoff_policy(backoff);
             if let Some(token) = rewrite_token {
                 req = req.set_rewrite_token(token);
             }
-            let resp = req.send().await.map_err(map_gcs_error)?;
+            let result = rewrites
+                .time(req.send(), status_name)
+                .await
+                .map_err(map_gcs_error);
+            waits.record(METRICS);
+            let resp = result?;
             if resp.done {
                 return Ok(());
             }
@@ -431,15 +524,25 @@ impl FileSystem for GcsFileSystem {
         let (tx, rx) = mpsc::channel(128);
         let completed = Arc::new(AtomicBool::new(false));
         let task_completed = Arc::clone(&completed);
+        let waits = Arc::new(RetryWaits::default());
+        let task_waits = Arc::clone(&waits);
+        let reads = bucket_request(bucket, "ReadObject");
         let rt = client_runtime()?;
         rt.spawn(async move {
+            let started = Instant::now();
+            let (retry, backoff) = observed_gcs_retries(task_waits);
             let req = storage
                 .read_object(&parent, object)
-                .set_read_range(read_range_spec(start_offset, length));
+                .set_read_range(read_range_spec(start_offset, length))
+                .with_retry_policy(retry)
+                .with_backoff_policy(backoff);
             match req.send().await {
                 Ok(mut resp) => {
-                    let mut clean = true;
+                    let (mut clean, mut status) = (true, "ok");
                     while let Some(chunk) = resp.next().await {
+                        if let Err(err) = &chunk {
+                            status = status_name(err);
+                        }
                         let res = chunk.map_err(map_gcs_error);
                         if tx.send(res).await.is_err() {
                             clean = false;
@@ -447,16 +550,20 @@ impl FileSystem for GcsFileSystem {
                         }
                     }
                     if clean {
+                        reads.record(status, started.elapsed());
                         task_completed.store(true, Ordering::Release);
                     }
                 }
                 Err(err) => {
+                    reads.record(status_name(&err), started.elapsed());
                     let _ = tx.send(Err(map_gcs_error(err))).await;
                 }
             }
         });
 
-        Ok(Box::new(GcsStreamReader::with_completion(rx, completed)))
+        Ok(Box::new(
+            GcsStreamReader::with_completion(rx, completed).with_waits(waits),
+        ))
     }
 
     fn open_write(&self, path: &str) -> io::Result<Box<dyn Write + Send>> {

@@ -21,11 +21,18 @@
 //! `Storage::from_stub`, replaces the GCS backend.
 
 use std::collections::VecDeque;
-use std::io::{self, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::net::TcpListener;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use beam::internals::{MetricsContainer, MetricsScope};
+use beam::metrics::{
+    MetricResults, RETRY_WAIT_COUNTER_NAME, THROTTLE_TIME_COUNTER_NAME, THROTTLE_TIME_NAMESPACE,
+};
 use beam_io_gcp::gcs::writer::GcsWriter;
+use google_cloud_auth::credentials::anonymous::Builder as Anonymous;
 use google_cloud_gax::error::Error as GaxError;
 use google_cloud_gax::error::rpc::{Code, Status};
 use google_cloud_storage::client::Storage;
@@ -487,4 +494,155 @@ fn async_writer_takes_no_bytes_after_close() {
         Ok::<_, io::Error>(())
     })
     .unwrap();
+}
+
+/// Starts a local HTTP server that answers `responses` in order (repeating the last) and counts
+/// handled requests.
+fn serve_http_responses(responses: Vec<(u16, &'static str)>) -> (String, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind local port");
+    let endpoint = format!("http://{}", listener.local_addr().expect("local addr"));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&calls);
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(&stream);
+            let mut request_line = String::new();
+            if reader.read_line(&mut request_line).is_err() {
+                continue;
+            }
+            let mut content_length = 0usize;
+            let mut chunked = false;
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap_or(0) > 2 {
+                if let Some((name, value)) = line.split_once(':') {
+                    if name.eq_ignore_ascii_case("content-length") {
+                        content_length = value.trim().parse().unwrap_or(0);
+                    } else if name.eq_ignore_ascii_case("transfer-encoding")
+                        && value.to_ascii_lowercase().contains("chunked")
+                    {
+                        chunked = true;
+                    }
+                }
+                line.clear();
+            }
+            if content_length > 0 {
+                let mut sink = io::sink();
+                let _ = io::copy(&mut reader.take(content_length as u64), &mut sink);
+            } else if chunked {
+                loop {
+                    let mut size_line = String::new();
+                    if reader.read_line(&mut size_line).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    let size = usize::from_str_radix(size_line.trim(), 16).unwrap_or(0);
+                    if size == 0 {
+                        let mut trailer = String::new();
+                        let _ = reader.read_line(&mut trailer);
+                        break;
+                    }
+                    let mut sink = io::sink();
+                    let _ = io::copy(&mut reader.by_ref().take((size + 2) as u64), &mut sink);
+                }
+            }
+            let index = counter.fetch_add(1, Ordering::SeqCst);
+            let (status, body) = responses
+                .get(index)
+                .copied()
+                .unwrap_or_else(|| *responses.last().expect("at least one response"));
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    (endpoint, calls)
+}
+
+fn anonymous_storage(endpoint: &str) -> Arc<Storage> {
+    let endpoint = endpoint.to_string();
+    Arc::new(
+        beam_io_gcp::runtime::block_on_async(async move {
+            Storage::builder()
+                .with_endpoint(endpoint)
+                .with_credentials(Anonymous::new().build())
+                .build()
+                .await
+                .map_err(io::Error::other)
+        })
+        .expect("storage client"),
+    )
+}
+
+#[test]
+fn buffered_upload_records_throttling_on_http_429() {
+    let (endpoint, calls) = serve_http_responses(vec![
+        (429, r#"{"error":{"code":429,"message":"rate limited"}}"#),
+        (429, r#"{"error":{"code":429,"message":"rate limited"}}"#),
+        (200, r#"{"bucket":"bkt","name":"obj"}"#),
+    ]);
+    let client = anonymous_storage(&endpoint);
+    let container = Arc::new(MetricsContainer::new());
+    {
+        let _scope = MetricsScope::enter(Arc::clone(&container), Arc::from("WriteGcs"));
+        let mut writer = GcsWriter::new(client, "bkt".into(), "obj".into());
+        writer.write_all(b"hello").unwrap();
+        writer.flush().unwrap();
+    }
+
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    let metrics = MetricResults::from_container(&container);
+    assert!(
+        metrics
+            .counter_for_transform(
+                "WriteGcs",
+                THROTTLE_TIME_NAMESPACE,
+                THROTTLE_TIME_COUNTER_NAME,
+            )
+            .unwrap_or(0)
+            > 0
+    );
+    assert_eq!(
+        metrics.counter_for_transform("WriteGcs", "gcs", RETRY_WAIT_COUNTER_NAME),
+        None
+    );
+}
+
+#[test]
+fn streamed_upload_records_throttling_across_client_runtime() {
+    use beam_io_gcp::gcs::writer::STREAM_CHUNK_BYTES;
+
+    let (endpoint, calls) = serve_http_responses(vec![
+        (429, r#"{"error":{"code":429,"message":"rate limited"}}"#),
+        (429, r#"{"error":{"code":429,"message":"rate limited"}}"#),
+        (403, r#"{"error":{"code":403,"message":"denied"}}"#),
+    ]);
+    let client = anonymous_storage(&endpoint);
+    let container = Arc::new(MetricsContainer::new());
+    let result = {
+        let _scope = MetricsScope::enter(Arc::clone(&container), Arc::from("WriteGcsStream"));
+        let mut writer = GcsWriter::new(client, "bkt".into(), "large".into());
+        writer
+            .write_all(&vec![b'a'; STREAM_CHUNK_BYTES + 1])
+            .and_then(|()| writer.flush())
+    };
+
+    assert!(result.is_err());
+    assert!(calls.load(Ordering::SeqCst) >= 3);
+    let metrics = MetricResults::from_container(&container);
+    assert!(
+        metrics
+            .counter_for_transform(
+                "WriteGcsStream",
+                THROTTLE_TIME_NAMESPACE,
+                THROTTLE_TIME_COUNTER_NAME,
+            )
+            .unwrap_or(0)
+            > 0
+    );
+    assert_eq!(
+        metrics.counter_for_transform("WriteGcsStream", "gcs", RETRY_WAIT_COUNTER_NAME),
+        None
+    );
 }

@@ -19,14 +19,14 @@
 
 //! Google Cloud client calls on the shared async I/O runtime of `beam::internals`.
 //!
-//! The clients use rustls, so each entry point installs the `ring` crypto provider first.
+//! Client libraries use rustls, so each entry point installs the `ring` crypto provider first.
 
 use std::future::Future;
 use std::io;
 use std::sync::Once;
 
-/// Installs the rustls `ring` provider once for the process. Another provider that is
-/// already installed stays.
+/// Installs the rustls `ring` provider once for the process. Any provider installed earlier
+/// stays in place.
 fn install_crypto_provider() {
     static INSTALL: Once = Once::new();
     INSTALL.call_once(|| {
@@ -34,7 +34,7 @@ fn install_crypto_provider() {
     });
 }
 
-/// Returns the shared async I/O runtime. Spawn Google Cloud client tasks on it.
+/// Returns the shared async I/O runtime for Google Cloud client tasks.
 pub fn client_runtime() -> io::Result<&'static tokio::runtime::Runtime> {
     install_crypto_provider();
     beam::internals::io_runtime()

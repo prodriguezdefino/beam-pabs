@@ -23,6 +23,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use beam::retry::RetryWaits;
+use beam_gcp_core::retry::{observe_retries, status_name};
 use bytes::Bytes;
 use google_cloud_gax::exponential_backoff::{ExponentialBackoff, ExponentialBackoffBuilder};
 use google_cloud_gax::retry_policy::RetryPolicyExt;
@@ -34,7 +36,7 @@ use google_cloud_storage::stub::{self, DefaultStorage};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use super::map_gcs_error;
+use super::{METRICS, bucket_request, map_gcs_error, observed_gcs_retries};
 
 use crate::runtime::{block_on_async, client_runtime};
 
@@ -57,23 +59,39 @@ fn upload_backoff() -> ExponentialBackoff {
 
 /// Sets the retries of a buffered upload. A retry writes the same object name again, so it
 /// is idempotent.
-fn with_upload_retries<T, S>(request: WriteObject<T, S>) -> WriteObject<T, S>
+fn with_upload_retries<T, S>(
+    request: WriteObject<T, S>,
+    waits: Arc<RetryWaits>,
+) -> WriteObject<T, S>
 where
     S: stub::Storage + 'static,
 {
+    let (retry, backoff) = observe_retries(
+        RetryableErrors.with_attempt_limit(UPLOAD_ATTEMPTS),
+        upload_backoff(),
+        waits,
+    );
     request
         .with_idempotency(true)
-        .with_retry_policy(RetryableErrors.with_attempt_limit(UPLOAD_ATTEMPTS))
-        .with_backoff_policy(upload_backoff())
+        .with_retry_policy(retry)
+        .with_backoff_policy(backoff)
 }
 
-/// Marks a streamed upload as idempotent. It keeps the retry time limit (300 seconds) and the
-/// backoff of the client, because a retry resumes from the unconfirmed bytes of a large object.
-fn with_stream_retries<T, S>(request: WriteObject<T, S>) -> WriteObject<T, S>
+/// Marks a streamed upload as idempotent, because a retry resumes from the unconfirmed bytes
+/// of a large object. The request gets the GCS retry policy and backoff of this crate. They
+/// replace the retry settings of the `Storage` client.
+fn with_stream_retries<T, S>(
+    request: WriteObject<T, S>,
+    waits: Arc<RetryWaits>,
+) -> WriteObject<T, S>
 where
     S: stub::Storage + 'static,
 {
-    request.with_idempotency(true)
+    let (retry, backoff) = observed_gcs_retries(waits);
+    request
+        .with_idempotency(true)
+        .with_retry_policy(retry)
+        .with_backoff_policy(backoff)
 }
 
 /// Uploads `payload` to `gs://{bucket}/{object}` with idempotent retries.
@@ -87,11 +105,19 @@ where
     S: stub::Storage + 'static,
 {
     let parent = format!("projects/_/buckets/{bucket}");
-    with_upload_retries(storage.write_object(&parent, object, payload))
-        .send_buffered()
+    let waits = Arc::new(RetryWaits::default());
+    let call = with_upload_retries(
+        storage.write_object(&parent, object, payload),
+        Arc::clone(&waits),
+    )
+    .send_buffered();
+    let result = bucket_request(bucket, "WriteObject")
+        .time(call, status_name)
         .await
         .map(drop)
-        .map_err(map_gcs_error)
+        .map_err(map_gcs_error);
+    waits.record(METRICS);
+    result
 }
 
 /// One message from the writer to the upload.
@@ -133,6 +159,7 @@ struct ActiveStream {
     tx: mpsc::Sender<Part>,
     handle: JoinHandle<io::Result<()>>,
     drained: Arc<AtomicBool>,
+    waits: Arc<RetryWaits>,
 }
 
 impl ActiveStream {
@@ -149,9 +176,15 @@ impl ActiveStream {
         let storage = Arc::clone(storage);
         let parent = format!("projects/_/buckets/{bucket}");
         let object = object.to_string();
+        let writes = bucket_request(bucket, "WriteObject");
+        let waits = Arc::new(RetryWaits::default());
+        let task_waits = Arc::clone(&waits);
         let handle = client_runtime()?.spawn(async move {
-            with_stream_retries(storage.write_object(&parent, &object, source))
-                .send_buffered()
+            let call =
+                with_stream_retries(storage.write_object(&parent, &object, source), task_waits)
+                    .send_buffered();
+            writes
+                .time(call, status_name)
                 .await
                 .map(drop)
                 .map_err(map_gcs_error)
@@ -160,6 +193,7 @@ impl ActiveStream {
             tx,
             handle,
             drained,
+            waits,
         })
     }
 
@@ -209,11 +243,14 @@ impl ActiveStream {
             tx,
             handle,
             drained,
+            waits,
         } = self;
         drop(tx);
-        handle
+        let result = handle
             .await
-            .map_err(|e| io::Error::other(format!("GCS upload task failed: {e}")))??;
+            .map_err(|e| io::Error::other(format!("GCS upload task failed: {e}")))?;
+        waits.record(METRICS);
+        result?;
         Ok(drained.load(Ordering::Acquire))
     }
 }

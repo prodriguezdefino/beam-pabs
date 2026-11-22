@@ -286,6 +286,49 @@ fn premature_drop_empty_returns_unexpected_eof() {
     assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
 }
 
+#[test]
+fn stream_reader_drains_retry_waits_into_active_metrics_scope() {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    use beam::internals::{MetricsContainer, MetricsScope};
+    use beam::metrics::{
+        MetricResults, RETRY_WAIT_COUNTER_NAME, THROTTLE_TIME_COUNTER_NAME, THROTTLE_TIME_NAMESPACE,
+    };
+    use beam::retry::{Decision, RetryWaits};
+
+    let (tx, rx) = mpsc::channel(1);
+    tx.try_send(Ok(Bytes::from_static(b"ok"))).unwrap();
+    drop(tx);
+    let waits = Arc::new(RetryWaits::default());
+    waits.add(Decision::Throttled, Duration::from_millis(40));
+    waits.add(Decision::Backoff, Duration::from_millis(15));
+    let completed = Arc::new(AtomicBool::new(true));
+    let mut reader = GcsStreamReader::with_completion(rx, completed).with_waits(waits);
+
+    let container = Arc::new(MetricsContainer::new());
+    let mut text = String::new();
+    {
+        let _scope = MetricsScope::enter(Arc::clone(&container), Arc::from("ReadGcs"));
+        reader.read_to_string(&mut text).unwrap();
+    }
+    assert_eq!(text, "ok");
+
+    let metrics = MetricResults::from_container(&container);
+    assert_eq!(
+        metrics.counter_for_transform(
+            "ReadGcs",
+            THROTTLE_TIME_NAMESPACE,
+            THROTTLE_TIME_COUNTER_NAME,
+        ),
+        Some(40)
+    );
+    assert_eq!(
+        metrics.counter_for_transform("ReadGcs", "gcs", RETRY_WAIT_COUNTER_NAME),
+        Some(15)
+    );
+}
+
 fn service_error(code: Code, msg: &str) -> GaxError {
     GaxError::service(Status::default().set_code(code).set_message(msg))
 }
