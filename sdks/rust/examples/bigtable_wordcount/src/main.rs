@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! Cross-language Bigtable WordCount pipeline binary.
+//! Bigtable WordCount pipeline binary.
 //!
 //! Write word counts to Bigtable on Dataflow:
 //! ```bash

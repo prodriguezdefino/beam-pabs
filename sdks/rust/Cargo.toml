@@ -30,12 +30,15 @@ members = [
     "beam/runners/*",
     "beam/io/*",
     "beam/io/gcp/core",
+    "beam/io/gcp/expansion-service",
     "beam/io/gcp/googleapis",
     "beam/runner-tests",
     "beam/test-utils",
     "beam/testing",
     "examples/*",
-    "benchmarks/*",
+    "benchmarks/nexmark",
+    "benchmarks/io/support",
+    "benchmarks/io/*/rust",
 ]
 exclude = [
     "examples/build",
@@ -187,6 +190,7 @@ beam_runner_dataflow = { package = "apache-beam-runner-dataflow", path = "beam/r
 beam_testing = { package = "apache-beam-testing", path = "beam/testing", version = "2.79.0-SNAPSHOT" }
 beam_test_utils = { package = "apache-beam-test-utils", path = "beam/test-utils", version = "2.79.0-SNAPSHOT" }
 beam_derive = { package = "apache-beam-derive", path = "beam/derive", version = "2.79.0-SNAPSHOT" }
+beam_benchmark_io = { package = "apache-beam-benchmark-io", path = "benchmarks/io/support", version = "2.79.0-SNAPSHOT" }
 
 # Keep file:line in panic backtraces without full DWARF debug info.
 [profile.dev]

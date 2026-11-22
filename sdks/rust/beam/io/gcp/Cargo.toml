@@ -45,8 +45,6 @@ gcs = [
 ]
 bigquery = ["options", "dep:beam_external", "dep:beam_io_managed"]
 bigtable = [
-    "options",
-    "dep:beam_external",
     "beam_gcp_core/grpc",
     "dep:base64",
     "dep:bytes",

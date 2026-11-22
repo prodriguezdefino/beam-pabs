@@ -71,7 +71,6 @@ mod schema;
 pub mod target;
 #[doc(hidden)]
 pub mod write;
-pub mod xlang;
 
 pub use self::filter::RowFilterExt;
 pub use self::read::{
