@@ -29,6 +29,7 @@ members = [
     "beam/ml",
     "beam/runners/*",
     "beam/io/*",
+    "beam/io/gcp/googleapis",
     "beam/runner-tests",
     "beam/test-utils",
     "beam/testing",
@@ -166,6 +167,7 @@ beam_harness = { package = "apache-beam-harness", path = "beam/harness", version
 beam_external = { package = "apache-beam-external", path = "beam/external", version = "2.79.0-SNAPSHOT" }
 beam_expansion = { package = "apache-beam-expansion", path = "beam/expansion", version = "2.79.0-SNAPSHOT" }
 beam_io_file = { package = "apache-beam-io-file", path = "beam/io/file", version = "2.79.0-SNAPSHOT" }
+beam_io_gcp_googleapis = { package = "apache-beam-io-gcp-googleapis", path = "beam/io/gcp/googleapis", version = "2.79.0-SNAPSHOT" }
 beam_io_gcp = { package = "apache-beam-io-gcp", path = "beam/io/gcp", version = "2.79.0-SNAPSHOT", default-features = false }
 beam_io_kafka = { package = "apache-beam-io-kafka", path = "beam/io/kafka", version = "2.79.0-SNAPSHOT" }
 beam_io_managed = { package = "apache-beam-io-managed", path = "beam/io/managed", version = "2.79.0-SNAPSHOT" }
