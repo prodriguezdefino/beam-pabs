@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use beam::io::gcp::bigtable::{BigtableCell, BigtableColumn};
+use beam::io::gcp::bigtable::xlang::{BigtableCell, BigtableColumn};
 use beam::prelude::*;
 use beam::testing::{TestPipeline, passert};
 use bigtable_wordcount::{COUNT_QUALIFIER, CountWordsToMutations, decode_count};

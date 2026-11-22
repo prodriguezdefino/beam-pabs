@@ -32,7 +32,7 @@
 //! cbt -project my-project -instance my-instance createtable wordcount families=counts
 //! ```
 
-use beam::io::gcp::bigtable::{
+use beam::io::gcp::bigtable::xlang::{
     BigtableColumn, BigtableMutation, BigtableRead, BigtableWrite, mutation_schema,
 };
 use beam::pipeline::PipelineError;

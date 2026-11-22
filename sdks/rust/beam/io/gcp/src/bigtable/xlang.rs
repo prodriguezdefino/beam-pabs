@@ -26,7 +26,7 @@
 //! ```no_run
 //! use beam::prelude::*;
 //! use beam_external::ExpansionError;
-//! use beam_io_gcp::bigtable::BigtableRead;
+//! use beam_io_gcp::bigtable::xlang::BigtableRead;
 //!
 //! # fn run() -> Result<(), ExpansionError> {
 //! let p = Pipeline::new();
@@ -42,7 +42,7 @@
 //! ```no_run
 //! use beam::prelude::*;
 //! use beam_external::ExpansionError;
-//! use beam_io_gcp::bigtable::{BigtableMutation, BigtableWrite, mutation_schema};
+//! use beam_io_gcp::bigtable::xlang::{BigtableMutation, BigtableWrite, mutation_schema};
 //!
 //! # fn run() -> Result<(), ExpansionError> {
 //! # let p = Pipeline::new();
