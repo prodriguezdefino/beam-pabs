@@ -40,6 +40,8 @@ pub enum LauncherError {
     NeedsStreaming(SourceType),
     /// The expansion service could not expand a cross-language transform.
     Expansion(ExpansionError),
+    /// A transform rejected its configuration when it expanded.
+    Transform(beam::Error),
     /// Updating or snapshotting `PipelineOptions` failed.
     Options(OptionsError),
     /// Runner execution failed.
@@ -66,6 +68,7 @@ impl fmt::Display for LauncherError {
                  --pubsub_mode=PUBLISH_ONLY"
             ),
             Self::Expansion(err) => write!(f, "cross-language expansion error: {err}"),
+            Self::Transform(err) => write!(f, "transform error: {err}"),
             Self::Options(err) => write!(f, "pipeline options error: {err}"),
             Self::Runner(err) => write!(f, "pipeline execution error: {err}"),
             Self::Unsuccessful(state) => write!(f, "job ended in state {state}"),
@@ -80,6 +83,9 @@ impl std::error::Error for LauncherError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Expansion(err) => Some(err),
+            Self::Transform(err) => err
+                .source()
+                .map(|source| source as &(dyn std::error::Error + 'static)),
             Self::Options(err) => Some(err),
             Self::Runner(err) => Some(err),
             Self::MissingFlag { .. }
@@ -95,6 +101,12 @@ impl std::error::Error for LauncherError {
 impl From<ExpansionError> for LauncherError {
     fn from(err: ExpansionError) -> Self {
         Self::Expansion(err)
+    }
+}
+
+impl From<beam::Error> for LauncherError {
+    fn from(err: beam::Error) -> Self {
+        Self::Transform(err)
     }
 }
 

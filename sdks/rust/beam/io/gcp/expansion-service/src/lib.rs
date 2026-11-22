@@ -25,8 +25,13 @@
 
 use beam::schema::BeamRow;
 
+pub mod bigquery;
 pub mod bigtable;
 
+pub use self::bigquery::{
+    BigQueryStorageReadConfig, BigQueryStorageReadProvider, BigQueryStorageWriteConfig,
+    BigQueryStorageWriteProvider, URN_BIGQUERY_STORAGE_READ, URN_BIGQUERY_STORAGE_WRITE,
+};
 pub use self::bigtable::{
     BigtableReadConfig, BigtableReadProvider, BigtableWriteConfig, BigtableWriteProvider,
     URN_BIGTABLE_READ, URN_BIGTABLE_WRITE,

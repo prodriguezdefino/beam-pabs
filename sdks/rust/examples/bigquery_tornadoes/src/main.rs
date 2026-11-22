@@ -20,7 +20,7 @@
 //! BigQuery Tornadoes binary.
 //!
 //! Reads weather data from BigQuery, computes tornado counts per month, and writes results
-//! back to BigQuery through the Java expansion service.
+//! back to BigQuery with the Storage Read and Storage Write connectors.
 //!
 //! Example usage:
 //!

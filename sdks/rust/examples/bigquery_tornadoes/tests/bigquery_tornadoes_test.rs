@@ -19,28 +19,25 @@
 
 use beam::prelude::*;
 use beam::testing::{TestPipeline, passert};
-use bigquery_tornadoes::{CountTornadoes, TornadoCount};
-
-/// The columns of a weather station row that the example reads.
-#[derive(BeamRow)]
-struct Observation {
-    month: i64,
-    tornado: bool,
-}
+use bigquery_tornadoes::{CountTornadoes, TornadoCount, WeatherStation};
 
 #[tokio::test]
 async fn test_count_tornadoes() {
     let p = TestPipeline::new();
 
-    let observations = [(1, true), (1, false), (1, true), (5, true), (7, false)]
-        .map(|(month, tornado)| Observation { month, tornado }.to_row().expect("valid row"));
+    let observations = [
+        (Some(1), Some(true)),
+        (Some(1), Some(false)),
+        (Some(1), Some(true)),
+        (Some(5), Some(true)),
+        (Some(7), Some(false)),
+        (Some(9), None),
+        (None, Some(true)),
+    ]
+    .map(|(month, tornado)| WeatherStation { month, tornado });
     let counts = p
         .apply("Create", Create::new(observations.to_vec()))
-        .with_row_schema(&Observation::beam_schema())
-        .apply("CountTornadoes", CountTornadoes)
-        .par_do_fn("FromRow", |row: Row, out| {
-            out.emit(TornadoCount::from_row(&row)?)
-        });
+        .apply("CountTornadoes", CountTornadoes);
 
     passert::that("AssertCounts", &counts).contains_in_any_order([
         TornadoCount {

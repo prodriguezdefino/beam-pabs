@@ -35,9 +35,10 @@ path = "src/main.rs"
 test = false
 
 [dependencies]
-# The SDK facade: the connector is `beam::io::gcp::bigtable`. Its `mimalloc` feature installs mimalloc as the global allocator
+# The SDK facade: the connectors are `beam::io::gcp::bigquery` and
+# `beam::io::gcp::bigtable`. Its `mimalloc` feature installs mimalloc as the global allocator
 # of the worker.
-beam = { package = "apache-beam", path = "../../..", version = "2.79.0-SNAPSHOT", default-features = false, features = ["gcp-bigtable", "gcp-gcs", "mimalloc"] }
+beam = { package = "apache-beam", path = "../../..", version = "2.79.0-SNAPSHOT", default-features = false, features = ["gcp-bigquery", "gcp-bigtable", "gcp-gcs", "managed", "mimalloc"] }
 bytes = { workspace = true }
 beam_expansion = { workspace = true }
 tokio = { workspace = true }

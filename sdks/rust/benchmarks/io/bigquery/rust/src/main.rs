@@ -17,10 +17,11 @@
  * under the License.
  */
 
-//! Tests for the cross-language BigQuery transforms.
+//! Binary of the BigQuery benchmark in a Rust pipeline.
 
-mod builders;
-mod fixtures;
-mod pipeline;
-mod read;
-mod write;
+use std::error::Error;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+    beam_benchmark_io::run(beam_benchmark_bigquery::build_pipeline).await
+}

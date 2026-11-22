@@ -72,6 +72,9 @@ tracing = { workspace = true }
 beam_harness = { workspace = true }
 beam_model = { workspace = true }
 tonic = { workspace = true }
+google-cloud-bigquery = { workspace = true }
+google-cloud-bigquery-v2 = { workspace = true }
+google-cloud-gax = { workspace = true }
 
 [lints]
 workspace = true

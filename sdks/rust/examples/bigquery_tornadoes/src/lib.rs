@@ -19,13 +19,12 @@
 
 //! Counts tornadoes per month in BigQuery weather data.
 //!
-//! The pipeline reads weather station rows through the cross-language BigQuery Storage Read
-//! transform, counts the rows with a tornado for each month, and writes `(month, tornado_count)`
-//! rows through the cross-language BigQuery write transform. Both transforms run in the Java
-//! expansion service.
+//! The pipeline reads weather station rows with the BigQuery Storage Read connector,
+//! counts the rows with a tornado for each month, and writes `(month, tornado_count)` rows with
+//! the Storage Write connector.
 
-use beam::io::gcp::bigquery::xlang::{
-    BigQueryRead, BigQueryWrite, CreateDisposition, WriteDisposition,
+use beam::io::gcp::bigquery::{
+    CreateDisposition, Read, ReadOptions, Write, WriteDisposition, WriteOptions,
 };
 use beam::prelude::*;
 use clap::Args as ClapArgs;
@@ -49,13 +48,16 @@ pub struct Args {
     /// Table to write the counts to, as PROJECT:DATASET.TABLE or DATASET.TABLE.
     #[arg(long)]
     pub output: String,
-
-    /// Address (host:port) of an expansion service to use instead of the Java one that the SDK starts.
-    #[arg(long)]
-    pub expansion_service: Option<String>,
 }
 
 impl PipelineOptionGroup for Args {}
+
+/// Weather station columns read from BigQuery.
+#[derive(Clone, Debug, PartialEq, Eq, BeamRow)]
+pub struct WeatherStation {
+    pub month: Option<i64>,
+    pub tornado: Option<bool>,
+}
 
 /// Number of tornadoes in one month.
 #[derive(Clone, Debug, PartialEq, Eq, BeamRow)]
@@ -64,34 +66,23 @@ pub struct TornadoCount {
     pub tornado_count: i64,
 }
 
-/// Month of a weather row that recorded a tornado, or `None` for the other rows.
-fn tornado_month(row: &Row) -> Option<i64> {
-    row.get_bool("tornado")
-        .ok()
-        .flatten()
-        .filter(|&tornado| tornado)
-        .and_then(|_| row.get_i64("month").ok().flatten())
-}
-
-/// Counts the weather rows with a tornado for each month, as [`TornadoCount`] rows.
+/// Counts weather observations with a tornado for each month, as [`TornadoCount`] values.
 pub struct CountTornadoes;
 
-impl PTransform<PCollection<Row>> for CountTornadoes {
-    type Output = PCollection<Row>;
+impl PTransform<PCollection<WeatherStation>> for CountTornadoes {
+    type Output = PCollection<TornadoCount>;
 
-    fn expand(self, rows: &PCollection<Row>) -> Self::Output {
-        rows.flat_map("ExtractTornadoMonths", |row: Row| tornado_month(&row))
-            .count_per_element("CountPerMonth")
-            .par_do_fn("FormatCounts", |(month, tornado_count): (i64, i64), out| {
-                out.emit(
-                    TornadoCount {
-                        month,
-                        tornado_count,
-                    }
-                    .to_row()?,
-                )
-            })
-            .with_row_schema(&TornadoCount::beam_schema())
+    fn expand(self, rows: &PCollection<WeatherStation>) -> Self::Output {
+        rows.flat_map("ExtractTornadoMonths", |row: WeatherStation| {
+            row.tornado.filter(|&tornado| tornado).and(row.month)
+        })
+        .count_per_element("CountPerMonth")
+        .map("FormatCounts", |(month, tornado_count): (i64, i64)| {
+            TornadoCount {
+                month,
+                tornado_count,
+            }
+        })
     }
 }
 
@@ -100,40 +91,16 @@ pub fn build_pipeline(options: &PipelineOptions, args: &Args) -> Pipeline {
     let p = Pipeline::create(options);
 
     let read = match &args.input_query {
-        Some(query) => BigQueryRead::new().with_query(query),
-        None => BigQueryRead::new()
-            .with_table(&args.input)
-            .with_selected_fields(["month", "tornado"]),
+        Some(query) => ReadOptions::from_query(query),
+        None => ReadOptions::new(&args.input),
     };
-    let write = BigQueryWrite::new(&args.output)
+    let write = WriteOptions::new(&args.output)
         .with_create_disposition(CreateDisposition::CreateIfNeeded)
         .with_write_disposition(WriteDisposition::WriteAppend);
-    let (read, write) = match &args.expansion_service {
-        Some(service) => (
-            read.with_expansion_service(service),
-            write.with_expansion_service(service),
-        ),
-        None => (read, write),
-    };
 
-    match p.try_apply("ReadWeather", read) {
-        Ok(rows) => {
-            if let Err(err) = rows
-                .apply("CountTornadoes", CountTornadoes)
-                .try_apply("WriteCounts", write)
-            {
-                p.record_construction_error(beam::pipeline::PipelineError::InvalidConstruction {
-                    transform_id: "WriteCounts".to_string(),
-                    reason: err.to_string(),
-                });
-            }
-        }
-        Err(err) => {
-            p.record_construction_error(beam::pipeline::PipelineError::InvalidConstruction {
-                transform_id: "ReadWeather".to_string(),
-                reason: err.to_string(),
-            });
-        }
-    }
+    // `Read<WeatherStation>` selects only the fields of `WeatherStation`.
+    p.apply("ReadWeather", Read::<WeatherStation>::new(read))
+        .apply("CountTornadoes", CountTornadoes)
+        .apply("WriteCounts", Write::<TornadoCount>::new(write));
     p
 }

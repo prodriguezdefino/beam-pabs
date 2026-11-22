@@ -69,7 +69,6 @@ pub mod schema;
 pub mod table;
 #[doc(hidden)]
 pub mod write;
-pub mod xlang;
 
 pub use read::{
     ArrowCompression, QueryPriority, Read, ReadOptions, ReadRows, ReadRowsWithFailures,

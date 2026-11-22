@@ -47,8 +47,6 @@ gcs = [
 # and the BigQuery clients.
 bigquery = [
     "options",
-    "dep:beam_external",
-    "dep:beam_io_managed",
     "beam_gcp_core/grpc",
     "dep:google-cloud-gax",
     "dep:bytes",
@@ -82,7 +80,6 @@ beam = { package = "apache-beam-core", path = "../../core", version = "2.79.0-SN
 beam_gcp_core = { workspace = true }
 beam_io_file = { workspace = true, optional = true }
 beam_external = { workspace = true, optional = true }
-beam_io_managed = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
 inventory = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
@@ -121,6 +118,13 @@ prost = { workspace = true }
 tonic = { workspace = true }
 tonic-prost = { workspace = true }
 tokio-stream = { workspace = true }
+chrono = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "typed_codec"
+harness = false
+required-features = ["bigquery"]
 
 [[test]]
 name = "gcs"

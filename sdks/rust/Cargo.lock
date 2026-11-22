@@ -156,6 +156,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "apache-beam-benchmark-bigquery"
+version = "2.79.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "apache-beam-benchmark-io",
+ "clap",
+ "serde",
+ "tokio",
+]
+
+[[package]]
 name = "apache-beam-benchmark-bigtable"
 version = "2.79.0-SNAPSHOT"
 dependencies = [
@@ -371,7 +382,6 @@ dependencies = [
  "apache-beam-io-arrow",
  "apache-beam-io-file",
  "apache-beam-io-gcp-googleapis",
- "apache-beam-io-managed",
  "apache-beam-model",
  "apache-beam-test-utils",
  "arrow-ipc",
@@ -379,6 +389,7 @@ dependencies = [
  "bytes",
  "chrono",
  "clap",
+ "criterion",
  "futures",
  "google-cloud-auth",
  "google-cloud-bigquery",
@@ -606,6 +617,9 @@ dependencies = [
  "apache-beam-model",
  "apache-beam-runner-prism",
  "clap",
+ "google-cloud-bigquery",
+ "google-cloud-bigquery-v2",
+ "google-cloud-gax",
  "inventory",
  "prost",
  "rust_decimal",

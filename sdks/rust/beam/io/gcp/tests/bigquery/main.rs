@@ -18,7 +18,7 @@
  */
 
 //! Tests for the Google Cloud BigQuery connectors: table specs, and the Storage Read
-//! and Storage Write connectors (`storage_*`), and the cross-language transforms (`xlang`).
+//! and Storage Write connectors (`storage_*`).
 
 mod common;
 mod storage_read;
@@ -36,4 +36,3 @@ mod storage_write_options;
 mod storage_write_projection;
 mod storage_write_schema;
 mod table;
-mod xlang;
