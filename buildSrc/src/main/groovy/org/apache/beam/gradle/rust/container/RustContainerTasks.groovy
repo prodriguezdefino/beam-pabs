@@ -15,9 +15,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.beam.gradle.rust
+package org.apache.beam.gradle.rust.container
 
 import groovy.transform.CompileStatic
+import java.security.MessageDigest
+import org.apache.beam.gradle.rust.BeamModuleExtras
+import org.apache.beam.gradle.rust.RustConfig
+import org.apache.beam.gradle.rust.RustSdkBuild
 import org.gradle.api.Action
 import org.gradle.api.GradleException
 import org.gradle.api.Project
@@ -100,6 +104,42 @@ class RustContainerTasks {
     }
   }
 
+  /** Computes a short content hash so Cargo invalidates PGO builds when a profile file changes. */
+  static String sha256Prefix(File file) {
+    MessageDigest md = MessageDigest.getInstance('SHA-256')
+    file.withInputStream { InputStream input ->
+      byte[] buf = new byte[8192]
+      int n
+      while ((n = input.read(buf)) != -1) {
+        md.update(buf, 0, n)
+      }
+    }
+    return md.digest().encodeHex().toString().substring(0, 12)
+  }
+
+  /**
+   * Fails on {@code -PpgoGenerate}: an instrumented Linux worker writes {@code .profraw} files
+   * on the runner, where the host cannot collect them. Train with {@code profilePrism}.
+   */
+  static void rejectPgoGenerate(Project project) {
+    if (!(project.findProperty('pgoGenerate') ?: '').toString().trim().isEmpty()) {
+      throw new GradleException('-PpgoGenerate applies only to profilePrism. A Linux worker ' +
+          'build takes -PpgoProfile=<merged .profdata>.')
+    }
+  }
+
+  /** Tracks the optional {@code -PpgoProfile} input of a worker build task. */
+  void registerPgoInputs(Task task) {
+    Project project = build.project
+    task.doFirst { rejectPgoGenerate(project) }
+    String pgoProfile = (project.findProperty('pgoProfile') ?: '').toString().trim()
+    if (pgoProfile.isEmpty()) {
+      task.inputs.property('pgoProfile', 'none')
+    } else {
+      task.inputs.file(project.file(pgoProfile))
+    }
+  }
+
   /** Compiles {@code examples} into Linux worker binaries under {@code build/linux_<arch>/}. */
   void compileWorkers(List<String> examples, String arch, String sdkVer) {
     Project project = build.project
@@ -118,19 +158,42 @@ class RustContainerTasks {
     Map<String, String> defaultCpu = [amd64: 'x86-64-v2', arm64: 'generic']
     String targetCpu = (project.findProperty('workerTargetCpu') ?: defaultCpu[arch] ?: 'generic').toString()
     // gemm-f16 (from candle) needs +fp16, which generic aarch64 leaves off when RUSTFLAGS is set.
-    String rustFlags = "-C target-cpu=${targetCpu}" + (arch == 'arm64' ? ' -C target-feature=+fp16' : '')
+    String baseRustFlags = "-C target-cpu=${targetCpu}" + (arch == 'arm64' ? ' -C target-feature=+fp16' : '')
+    rejectPgoGenerate(project)
+    String pgoProfile = (project.findProperty('pgoProfile') ?: '').toString().trim()
+    File pgoProfileFile = null
+    String pgoProfileHash = null
+    if (!pgoProfile.isEmpty()) {
+      pgoProfileFile = project.file(pgoProfile)
+      if (!pgoProfileFile.isFile()) {
+        throw new GradleException("PGO profile not found: ${pgoProfileFile.absolutePath}")
+      }
+      pgoProfileHash = sha256Prefix(pgoProfileFile)
+    }
+    boolean pgoActive = pgoProfileFile != null
     Object jobsProp = project.findProperty('workerJobs')
     List<String> jobFlags = jobsProp != null ? ['--jobs', jobsProp.toString()] : new ArrayList<String>()
 
     if (isHostLinux && arch == BeamModuleExtras.nativeArchitecture(project)) {
+      String rustFlags = baseRustFlags
+      if (pgoProfileFile != null) {
+        File staged = build.buildFile("pgo/${pgoProfileHash}.profdata")
+        staged.parentFile.mkdirs()
+        if (!staged.isFile()) {
+          staged.bytes = pgoProfileFile.bytes
+        }
+        rustFlags = "${rustFlags} -C profile-use=${staged.absolutePath}"
+      }
+      List<String> hostTargetFlags = pgoActive ? ['--target', rustTarget] : new ArrayList<String>()
+      String hostProfileDir = pgoActive ? "target/${rustTarget}/${cargoProfile}" : "target/${cargoProfile}"
       project.exec({ ExecSpec spec ->
         spec.workingDir(build.rustDir)
         spec.environment(build.versions.cargoEnv())
         spec.environment('RUSTFLAGS', rustFlags)
-        spec.commandLine(['cargo', 'build', '--profile', cargoProfile] + jobFlags + targetFlags)
+        spec.commandLine(['cargo', 'build', '--profile', cargoProfile] + hostTargetFlags + jobFlags + targetFlags)
       } as Action<ExecSpec>)
       project.copy({ CopySpec spec ->
-        spec.from(new File(build.rustDir, "target/${cargoProfile}"))
+        spec.from(new File(build.rustDir, hostProfileDir))
         spec.into(outDir)
         spec.include(examples)
       } as Action<CopySpec>)
@@ -139,25 +202,46 @@ class RustContainerTasks {
       File crossTarget = build.buildFile('cross-target')
       crossTarget.mkdirs()
 
+      String rustFlags = baseRustFlags
+      List<String> dockerMounts = new ArrayList<String>()
+      if (pgoProfileFile != null) {
+        String containerProfile = "/tmp/pgo/${pgoProfileHash}.profdata"
+        dockerMounts.add('-v')
+        dockerMounts.add("${pgoProfileFile.absolutePath}:${containerProfile}:ro".toString())
+        rustFlags = "${rustFlags} -C profile-use=${containerProfile}"
+      }
+
       String copyOut = examples
           .collect { String bin ->
             "cp /tmp/target/${rustTarget}/${cargoProfile}/${bin} /workspace/sdks/rust/build/linux_${arch}/${bin}"
           }
           .join(' && ')
-      String compileScript = "CARGO_TARGET_DIR=/tmp/target cargo build --profile ${cargoProfile} " +
+      // librdkafka configure reads CC and CXX. Set cross compilers when host arch differs.
+      Map<String, String> gnuByArch = [amd64: 'x86_64', arm64: 'aarch64']
+      String gnuArch = gnuByArch[arch] ?: 'x86_64'
+      String crossCompilers = "case \"\$(uname -m)\" in ${gnuArch}) ;; *) export CC=${gnuArch}-linux-gnu-gcc " +
+          "CXX=${gnuArch}-linux-gnu-g++ HOST_CC=gcc HOST_CXX=g++ ;; esac"
+      String compileScript = "${crossCompilers} && CARGO_TARGET_DIR=/tmp/target cargo build --profile ${cargoProfile} " +
           "${(jobFlags + targetFlags).join(' ')} --target ${rustTarget} && ${copyOut}"
+      List<String> dockerCmd = [
+        'docker', 'run', '--rm',
+        '-v', "${project.rootDir.absolutePath}:/workspace".toString(),
+        '-v', "${crossTarget.absolutePath}:/tmp/target".toString(),
+        '-v', 'beam-cargo-registry:/usr/local/cargo/registry',
+      ]
+      dockerCmd.addAll(dockerMounts)
+      dockerCmd.addAll([
+        '-w', '/workspace/sdks/rust',
+        '-e', "BEAM_SDK_VERSION=${sdkVer}".toString(),
+        '-e', "BEAM_RELEASE_VERSION=${build.versions.releaseVersion}".toString(),
+        '-e', "BEAM_VERSION=${build.versions.beamVersion}".toString(),
+        '-e', "RUSTFLAGS=${rustFlags}".toString(),
+        rustBuilderImage,
+        'sh', '-c', compileScript,
+      ])
       project.exec({ ExecSpec spec ->
         spec.workingDir(project.rootDir)
-        spec.commandLine('docker', 'run', '--rm',
-            '-v', "${project.rootDir.absolutePath}:/workspace",
-            '-v', "${crossTarget.absolutePath}:/tmp/target",
-            '-w', '/workspace/sdks/rust',
-            '-e', "BEAM_SDK_VERSION=${sdkVer}",
-            '-e', "BEAM_RELEASE_VERSION=${build.versions.releaseVersion}",
-            '-e', "BEAM_VERSION=${build.versions.beamVersion}",
-            '-e', "RUSTFLAGS=${rustFlags}",
-            rustBuilderImage,
-            'sh', '-c', compileScript)
+        spec.commandLine(dockerCmd)
       } as Action<ExecSpec>)
     }
   }
@@ -184,6 +268,7 @@ class RustContainerTasks {
       task.inputs.property('arch', arch)
       task.inputs.property('sdkVersion', build.versions.sdkVersion)
       task.inputs.property('targetCpu', (project.findProperty('workerTargetCpu') ?: 'default').toString())
+      registerPgoInputs(task)
       task.outputs.file(config.workerBinaryFor(bin, arch))
 
       task.doLast { compileWorkers([bin], arch, build.versions.sdkVersion) }

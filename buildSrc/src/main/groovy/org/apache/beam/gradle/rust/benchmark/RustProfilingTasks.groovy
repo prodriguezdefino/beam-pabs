@@ -15,11 +15,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.beam.gradle.rust
+package org.apache.beam.gradle.rust.benchmark
 
 import groovy.json.JsonSlurper
 import groovy.transform.CompileDynamic
 import groovy.transform.CompileStatic
+import org.apache.beam.gradle.rust.RustConfig
+import org.apache.beam.gradle.rust.RustSdkBuild
+import org.apache.beam.gradle.rust.container.RustContainerTasks
 import org.gradle.api.Action
 import org.gradle.api.GradleException
 import org.gradle.api.Project
@@ -70,6 +73,11 @@ class RustProfilingTasks {
       String features = (config.resolveProp(example, 'exampleFeatures') ?: '').trim()
       List<String> featureFlags = features.isEmpty() ? new ArrayList<String>() : ['--features', features]
       List<String> gcpArgs = config.portableGcpArgs(example)
+      String pgoGenerate = (project.findProperty('pgoGenerate') ?: '').toString().trim()
+      String pgoProfile = (project.findProperty('pgoProfile') ?: '').toString().trim()
+      if (!pgoGenerate.isEmpty() && !pgoProfile.isEmpty()) {
+        throw new GradleException('Pass either -PpgoGenerate or -PpgoProfile, not both.')
+      }
 
       task.doFirst {
         if (mode in ['cpu', 'both']) {
@@ -93,13 +101,41 @@ class RustProfilingTasks {
         File timeTxt = new File(outDir, 'time.txt')
         File summaryTxt = new File(outDir, 'summary.md')
 
+        String pgoRustFlag = ''
+        Map<String, String> pgoRunEnv = new LinkedHashMap<String, String>()
+        if (!pgoGenerate.isEmpty()) {
+          File genDir = project.file(pgoGenerate)
+          genDir.mkdirs()
+          pgoRustFlag = "-C profile-generate=${genDir.absolutePath}"
+          pgoRunEnv['LLVM_PROFILE_FILE'] = "${genDir.absolutePath}/beam_%p_%m.profraw".toString()
+        } else if (!pgoProfile.isEmpty()) {
+          File profileFile = project.file(pgoProfile)
+          if (!profileFile.isFile()) {
+            throw new GradleException("PGO profile not found: ${profileFile.absolutePath}")
+          }
+          String profileHash = RustContainerTasks.sha256Prefix(profileFile)
+          File staged = build.buildFile("pgo/${profileHash}.profdata")
+          staged.parentFile.mkdirs()
+          if (!staged.isFile()) {
+            staged.bytes = profileFile.bytes
+          }
+          pgoRustFlag = "-C profile-use=${staged.absolutePath}"
+        }
+
         task.logger.lifecycle("Building binary ${binArg} in ${pkgArg} with the '${cargoProfile}' profile...")
         ByteArrayOutputStream buildOutput = new ByteArrayOutputStream()
         List<String> target = cargoExample != null ? ['--example', cargoExample]
             : (cargoBench != null ? ['--bench', cargoBench, '--message-format=json-render-diagnostics']
                 : ['--bin', binArg])
         List<String> scope = featureFlags.isEmpty() ? build.workspaceScope : ['-p', pkgArg] + featureFlags
-        List<String> buildCmd = ['cargo', 'build', '--profile', cargoProfile] + scope + target
+        // A PGO build gets its own target directory, so it does not rebuild the shared
+        // `target/<profile>` that the other tasks use.
+        String pgoTriple = pgoRustFlag.isEmpty() ? null : hostTriple(project, build.versions.cargoEnv())
+        List<String> pgoTarget = pgoTriple != null ? ['--target', pgoTriple] : new ArrayList<String>()
+        String profileDir = pgoTriple != null
+            ? "${cargoTargetDir}/${pgoTriple}/${cargoProfile}"
+            : "${cargoTargetDir}/${cargoProfile}"
+        List<String> buildCmd = ['cargo', 'build', '--profile', cargoProfile] + scope + target + pgoTarget
         project.exec({ ExecSpec spec ->
           spec.workingDir(build.rustDir)
           spec.environment(build.versions.cargoEnv())
@@ -107,6 +143,10 @@ class RustProfilingTasks {
           spec.environment("${profileEnv}_STRIP", 'none')
           if (hostOs == 'darwin') {
             spec.environment("${profileEnv}_SPLIT_DEBUGINFO", 'unpacked')
+          }
+          if (!pgoRustFlag.isEmpty()) {
+            String existing = System.getenv('RUSTFLAGS') ?: ''
+            spec.environment('RUSTFLAGS', existing.isEmpty() ? pgoRustFlag : "${existing} ${pgoRustFlag}")
           }
           spec.commandLine(buildCmd)
           if (cargoBench != null) {
@@ -119,8 +159,8 @@ class RustProfilingTasks {
         String binPath = bench != null
             ? bench.executable
             : new File(cargoExample != null
-                ? "${cargoTargetDir}/${cargoProfile}/examples/${cargoExample}"
-                : "${cargoTargetDir}/${cargoProfile}/${binArg}").absolutePath
+                ? "${profileDir}/examples/${cargoExample}"
+                : "${profileDir}/${binArg}").absolutePath
 
         List<String> benchArgs = (project.findProperty('extraArgs') ?: '').toString().tokenize(' ')
         List<String> profileTime = benchArgs.any { String a -> a.startsWith('--profile-time') }
@@ -140,6 +180,9 @@ class RustProfilingTasks {
           project.exec({ ExecSpec spec ->
             spec.workingDir(build.rustDir)
             spec.environment(config.launchEnvironment())
+            if (!pgoRunEnv.isEmpty()) {
+              spec.environment(pgoRunEnv)
+            }
             spec.commandLine(cmd)
           } as Action<ExecSpec>)
         }
@@ -152,6 +195,9 @@ class RustProfilingTasks {
               project.exec({ ExecSpec spec ->
                 spec.workingDir(build.rustDir)
                 spec.environment(config.launchEnvironment())
+                if (!pgoRunEnv.isEmpty()) {
+                  spec.environment(pgoRunEnv)
+                }
                 spec.commandLine(timeCmd + [binPath] + runArgs)
                 spec.standardOutput = outStream
                 spec.errorOutput = errStream
@@ -207,5 +253,20 @@ class RustProfilingTasks {
 
   private static boolean isCriterionBench(String srcPath) {
     return srcPath != null && new File(srcPath).text.contains('criterion_main!')
+  }
+
+  /** The target triple of the host, from {@code rustc -vV}. */
+  private static String hostTriple(Project project, Map<String, String> cargoEnv) {
+    ByteArrayOutputStream out = new ByteArrayOutputStream()
+    project.exec({ ExecSpec spec ->
+      spec.environment(cargoEnv)
+      spec.commandLine('rustc', '-vV')
+      spec.standardOutput = out
+    } as Action<ExecSpec>)
+    String line = out.toString('UTF-8').readLines().find { String l -> l.startsWith('host: ') }
+    if (line == null) {
+      throw new GradleException('rustc -vV printed no host triple')
+    }
+    return line.substring('host: '.length()).trim()
   }
 }

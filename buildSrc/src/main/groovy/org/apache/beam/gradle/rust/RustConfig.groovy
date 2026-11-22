@@ -18,6 +18,7 @@
 package org.apache.beam.gradle.rust
 
 import groovy.transform.CompileStatic
+import org.apache.beam.gradle.rust.runner.RustPrismTasks
 import org.gradle.api.Action
 import org.gradle.api.Project
 import org.gradle.api.file.ConfigurableFileTree

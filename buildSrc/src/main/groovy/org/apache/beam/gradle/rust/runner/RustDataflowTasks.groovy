@@ -15,10 +15,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.beam.gradle.rust
+package org.apache.beam.gradle.rust.runner
 
 import groovy.transform.CompileStatic
 import java.util.regex.Matcher
+import org.apache.beam.gradle.rust.RustConfig
+import org.apache.beam.gradle.rust.RustSdkBuild
 import org.gradle.api.GradleException
 import org.gradle.api.Project
 import org.gradle.api.tasks.Exec

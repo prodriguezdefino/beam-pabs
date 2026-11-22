@@ -109,7 +109,7 @@ The reports are in `build/reports/coverage/<pkg|workspace>/`: `summary.txt`, `lc
 
 ## Code quality
 
-[RustQualityTasks.groovy](../../../buildSrc/src/main/groovy/org/apache/beam/gradle/rust/RustQualityTasks.groovy) defines the code-quality tasks. Their scripts are in [scripts/quality/](../scripts/quality/README.md). All these tasks run in the `beam_rust_builder` container. They are in the `Verification` task group.
+[RustQualityTasks.groovy](../../../buildSrc/src/main/groovy/org/apache/beam/gradle/rust/workspace/RustQualityTasks.groovy) defines the code-quality tasks. Their scripts are in [scripts/quality/](../scripts/quality/README.md). All these tasks run in the `beam_rust_builder` container. They are in the `Verification` task group.
 
 ### Test quality (per-test coverage, mutation testing)
 

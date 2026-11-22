@@ -15,9 +15,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.beam.gradle.rust
+package org.apache.beam.gradle.rust.runner
 
 import groovy.transform.CompileStatic
+import org.apache.beam.gradle.rust.BeamModuleExtras
+import org.apache.beam.gradle.rust.RustConfig
+import org.apache.beam.gradle.rust.RustSdkBuild
 import org.gradle.api.Action
 import org.gradle.api.Project
 import org.gradle.api.Task
@@ -177,13 +180,6 @@ class RustPrismTasks {
     build.testWorkspaceDoctestsTask?.configure { Task task ->
       task.dependsOn('fetchPrism')
       task.inputs.file(prismHostBinary).withPathSensitivity(PathSensitivity.NONE)
-    }
-
-    project.tasks.matching { Task task -> task.name == 'testBenchmarks' }.configureEach { Task task ->
-      task.dependsOn('fetchPrism')
-      if (task instanceof Exec) {
-        ((Exec) task).environment('BEAM_PRISM_PATH', prismHostBinary.absolutePath)
-      }
     }
   }
 

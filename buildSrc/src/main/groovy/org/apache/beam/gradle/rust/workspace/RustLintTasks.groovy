@@ -15,11 +15,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.beam.gradle.rust
+package org.apache.beam.gradle.rust.workspace
 
 import groovy.json.JsonSlurper
 import groovy.transform.CompileDynamic
 import groovy.transform.CompileStatic
+import org.apache.beam.gradle.rust.CargoWorkspace
+import org.apache.beam.gradle.rust.RustSdkBuild
 import org.gradle.api.Action
 import org.gradle.api.GradleException
 import org.gradle.api.Task

@@ -65,7 +65,7 @@ Rust closures do not serialize into the pipeline proto. On a containerized runne
 
 ## Gradle Tasks
 
-[`RustValidatesRunnerTasks.groovy`](../../../buildSrc/src/main/groovy/org/apache/beam/gradle/rust/RustValidatesRunnerTasks.groovy) registers the suite tasks:
+[`RustValidatesRunnerTasks.groovy`](../../../buildSrc/src/main/groovy/org/apache/beam/gradle/rust/runner/RustValidatesRunnerTasks.groovy) registers the suite tasks:
 
 | Task | Runner | Mode |
 |---|---|---|
@@ -95,7 +95,7 @@ Run the Prism tasks in separate Gradle commands, so that they run in parallel. A
 
 ## Cross-language Suites
 
-[`RustXlangTasks.groovy`](../../../buildSrc/src/main/groovy/org/apache/beam/gradle/rust/RustXlangTasks.groovy) tests cross-language expansion in both directions.
+[`RustXlangTasks.groovy`](../../../buildSrc/src/main/groovy/org/apache/beam/gradle/rust/xlang/RustXlangTasks.groovy) tests cross-language expansion in both directions.
 
 ### Foreign SDK pipelines calling the Rust expansion service
 

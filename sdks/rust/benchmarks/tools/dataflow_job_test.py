@@ -88,8 +88,8 @@ class TestDataflowJob(unittest.TestCase):
     self.assertEqual(values["memory_gb_s"], 6000)
     self.assertEqual(values["pd_gb_s"], 37500)
     self.assertEqual(values["shuffle_gb"], 2.5)
-    self.assertEqual(values["step_cpu_s"], 700.0)
-    self.assertAlmostEqual(values["step_cpu_s_per_1m_elements"], 0.7)
+    self.assertEqual(values["step_wall_s"], 700.0)
+    self.assertAlmostEqual(values["step_wall_s_per_1m_elements"], 0.7)
 
   def test_parse_metrics_adds_the_counter_of_each_step(self):
     self.assertEqual(dataflow_job.parse_metrics(METRICS, "", "line_count")["metrics"]["counter_total"], 42)
@@ -99,7 +99,7 @@ class TestDataflowJob(unittest.TestCase):
     for count_output in ("NoSuchStep", ""):
       values = dataflow_job.parse_metrics(METRICS, count_output)["metrics"]
       self.assertNotIn("elements", values)
-      self.assertNotIn("step_cpu_s_per_1m_elements", values)
+      self.assertNotIn("step_wall_s_per_1m_elements", values)
 
   def test_parse_messages(self):
     events = dataflow_job.parse_messages(MESSAGES)
@@ -232,6 +232,25 @@ class TestDataflowJob(unittest.TestCase):
     runs = [run(1, "rust", ["A"], peak=4.0), run(1, "java", ["A"], peak=5.0)]
     self.assertEqual(dataflow_job.flags(runs, 4), ["Round 1 java: autoscaled to 5 workers"])
 
+  def test_render_with_io_metrics_and_a_named_variant(self):
+    runs = [{**run(1, "java", ["A"]), "metrics": {"processing_s": 100.0}},
+            {**run(1, "rust", ["A"]), "metrics": {"processing_s": 80.0}}]
+    results = {"task": "bigQueryBenchmark", "created": "now",
+               "config": {"description": "d", "current": "rust", "io": {"rows": "rows"},
+                          "variants": {"java": "reader java", "rust": "reader rust"}},
+               "runs": runs, "medians": report.medians(runs, dataflow_job.SECTIONS), "flags": []}
+    text = "\n".join(dataflow_job.render(results, None))
+    self.assertIn("| Processing time (s) | 100 | 80 | -20.0% |", text)
+    self.assertIn("rust vs java", text)
+
+  def test_summarize_with_io(self):
+    job = {"id": "j1", "currentState": "JOB_STATE_DONE", "createTime": "2026-10-27T23:20:31Z",
+           "currentStateTime": "2026-10-27T23:30:31Z"}
+    io = {"pipeline": "python", "namespace": "wordcount", "rows": "line_count"}
+    record = dataflow_job.summarize({"job": job, "metrics": METRICS, "messages": MESSAGES},
+                                    "", None, io)
+    self.assertAlmostEqual(record["metrics"]["rows_per_vcpu_s"], 40 / 1500)
+
   def test_render(self):
     runs = [{**run(1, "current", ["A"]), **dataflow_job.parse_metrics(METRICS, "ExtractWords"),
              "memory": {"sdk-0-0": 900.0}, "job_id": "j1"}]
@@ -240,12 +259,85 @@ class TestDataflowJob(unittest.TestCase):
                           "counter": "line_count", "variants": {"current": "abc"}},
                "runs": runs, "medians": report.medians(runs, dataflow_job.SECTIONS), "flags": []}
     text = "\n".join(dataflow_job.render(results, None))
-    self.assertIn("| Step CPU s / 1M words | 0.700 |", text)
+    self.assertIn("| Step wall time (s) | 700.0 |", text)
+    self.assertIn("| Step wall s / 1M words | 0.700 |", text)
     self.assertIn("| Words per vCPU·s | 666,667 |", text)
     self.assertIn("| line_count/s (10-90%) | - |", text)
     self.assertIn("| CountWords/ExtractWords | 510.0 |", text)
     self.assertIn("| sdk-0-0 | 900 |", text)
     self.assertIn("## Flags\n\nNone.", text)
+    self.assertNotIn("## Variant settings", text)
+
+  def test_render_variant_settings_table(self):
+    runs = [run(1, "python", ["A"]), run(1, "rust", ["A"])]
+    results = {"task": "bigQueryBenchmark", "created": "now",
+               "config": {"description": "d", "current": "rust",
+                          "variants": {"python": "reader python", "rust": "reader rust"},
+                          "variant_settings": {
+                              "python": {"pipeline": "python", "shape": "count", "output": "dict"},
+                              "rust": {"pipeline": "python", "shape": "count", "output": "row",
+                                       "format": "arrow"},
+                          }},
+               "runs": runs, "medians": report.medians(runs, dataflow_job.SECTIONS), "flags": []}
+    text = "\n".join(dataflow_job.render(results, None))
+    self.assertIn("## Variant settings", text)
+    self.assertIn("| Setting | python | rust |", text)
+    self.assertIn("| pipeline | python | python |", text)
+    self.assertIn("| shape | count | count |", text)
+    self.assertIn("| output | dict | row |", text)
+    self.assertIn("| format | - | arrow |", text)
+
+  def test_flags_fairness_mismatches_in_a_round(self):
+    matching = [
+        run(1, "java-native", ["A"], peak=4.0,
+            settings={"shape": "count", "format": "arrow", "output": "row",
+                      "scaling": "fixed", "workers": "4", "max_workers": "4",
+                      "machine": "n2-standard-4"}),
+        run(1, "rust", ["A"], peak=4.0,
+            settings={"shape": "count", "format": "arrow", "output": "row",
+                      "scaling": "fixed", "workers": "4", "max_workers": "4",
+                      "machine": "n2-standard-4"}),
+    ]
+    self.assertEqual(dataflow_job.flags(matching, workers=4), [])
+
+    mismatched = [
+        run(1, "java", ["A"], peak=4.0,
+            labels={"shape": "count", "scaling": "fixed"},
+            settings={"shape": "count", "format": "avro", "output": "tablerow",
+                      "flatten": "false", "scaling": "fixed", "workers": "4",
+                      "max_workers": "4", "machine": "n2-standard-4"}),
+        run(1, "rust", ["A"], peak=4.0,
+            labels={"shape": "per_key", "scaling": "fixed"},
+            settings={"shape": "per_key", "format": "arrow", "output": "row",
+                      "flatten": "true", "scaling": "autoscaling", "workers": "1",
+                      "max_workers": "10", "machine": "n2-standard-8"}),
+    ]
+    self.assertEqual(dataflow_job.flags(mismatched, workers=4), [
+        "Round 1: shape differs: java=count, rust=per_key",
+        "Round 1: format differs: java=avro, rust=arrow",
+        "Round 1: output differs: java=tablerow, rust=row",
+        "Round 1: flatten differs: java=false, rust=true",
+        "Round 1: scaling differs: java=fixed, rust=autoscaling",
+        "Round 1: workers differs: java=4, rust=1",
+        "Round 1: max_workers differs: java=4, rust=10",
+        "Round 1: machine differs: java=n2-standard-4, rust=n2-standard-8",
+    ])
+
+    partial = [
+        run(1, "python", ["A"], settings={"shape": "count", "output": "dict"}),
+        run(1, "rust", ["A"], settings={"shape": "count", "output": "row", "format": "arrow"}),
+    ]
+    self.assertEqual(dataflow_job.flags(partial), [
+        "Round 1: output differs: python=dict, rust=row",
+    ])
+
+    from_labels = [
+        run(1, "java", ["A"], labels={"shape": "load", "scaling": "fixed"}),
+        run(1, "rust", ["A"], labels={"shape": "load", "scaling": "autoscaling"}),
+    ]
+    self.assertEqual(dataflow_job.flags(from_labels), [
+        "Round 1: scaling differs: java=fixed, rust=autoscaling",
+    ])
 
 class PlatformAndCapacityTest(unittest.TestCase):
 
@@ -426,6 +518,15 @@ class NamespaceTest(unittest.TestCase):
                      ["counter_total"], 10)
     self.assertEqual(dataflow_job.parse_metrics(metrics, "", "rows")["metrics"]
                      ["counter_total"], 17)
+
+  def test_summarize_takes_the_namespace_of_io(self):
+    job = {"id": "j1", "currentState": "JOB_STATE_DONE", "createTime": "2026-10-27T23:20:31Z",
+           "currentStateTime": "2026-10-27T23:30:31Z"}
+    metrics = METRICS + [user_metric("line_count", 1000, step="c", namespace="other")]
+    io = {"pipeline": "python", "namespace": "wordcount", "rows": "line_count"}
+    record = dataflow_job.summarize({"job": job, "metrics": metrics, "messages": []},
+                                    "", "line_count", io)
+    self.assertEqual(record["metrics"]["counter_total"], 40)
 
 
 if __name__ == "__main__":

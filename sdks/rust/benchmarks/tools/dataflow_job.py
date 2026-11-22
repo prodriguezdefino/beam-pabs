@@ -27,9 +27,11 @@ SDK works. While the job runs, the script records the CPU platform of its worker
 the job, it reads the job, its metrics, its messages and its Cloud Monitoring series, and
 writes results.json and report.md.
 
-A variant can also have "labels" (more job labels), "wait" (what to do after a launcher that
-does not wait for its job, see job_wait.py) and "after" (a command that runs after each job,
-with the same placeholders, for example a check of the output).
+A variant can also have "labels" (more job labels), "settings" (variant settings for the
+report and fairness checks), "wait" (what to do after a launcher that does not wait for its
+job, see job_wait.py) and "after" (a command that runs after each job, with the same
+placeholders, for example a check of the output). With --io, the report also has the metrics
+of the I/O benchmarks (see io_report.py).
 
 With --producer, each round starts a companion load job when the measured jobs run. With
 --shared-producer, the runs of several tasks on this host share one companion. results.json
@@ -38,8 +40,9 @@ leave it out.
 
 `fetch` prints the same record of jobs that ran before, without the CPU platform.
 
-The total vCPU time includes worker startup and idle autoscaled workers. The used vCPU time
-and the CPU time of the steps per million elements compare the code of two builds better.
+The total vCPU time includes worker startup and idle autoscaled workers. Used vCPU time leaves
+them out. Step wall time (`ExecutionTime_ProcessElement`) counts waiting in `poll()`, so use
+`profilePrism` to compare two builds.
 """
 
 import argparse
@@ -55,8 +58,9 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
+import io_report
 import job_wait
 import monitoring
 import report
@@ -80,6 +84,9 @@ SECTIONS = ["metrics", "steps", "memory"]
 MAX_START_SPREAD_SECONDS = 60
 # The longest job name, label value and VM label value.
 MAX_NAME = 63
+# Settings that must match across all variants in one round.
+FAIRNESS_KEYS = ("shape", "format", "output", "flatten", "scaling", "workers", "max_workers",
+                 "machine")
 
 
 def columns(count_name: str, counter: Optional[str]) -> List[report.Column]:
@@ -100,8 +107,8 @@ def columns(count_name: str, counter: Optional[str]) -> List[report.Column]:
       ("peak_sdk_memory_mib", "Peak SDK container (MiB)", ",.0f"),
       ("pd_gb_s", "PD (GB·s)", ",.0f"),
       ("shuffle_gb", "Shuffle (GB)", ",.2f"),
-      ("step_cpu_s", "Step CPU total (s)", ",.1f"),
-      ("step_cpu_s_per_1m_elements", f"Step CPU s / 1M {count_name}", ",.3f"),
+      ("step_wall_s", "Step wall time (s)", ",.1f"),
+      ("step_wall_s_per_1m_elements", f"Step wall s / 1M {count_name}", ",.3f"),
       ("peak_workers", "Peak workers", ".0f"),
       ("peak_vcpus", "Peak vCPUs", ".0f"),
       ("wall_s", "Wall time (s)", ",.0f"),
@@ -159,6 +166,11 @@ def fetch(project: str, region: str, job_id: str) -> Dict[str, Any]:
   }
 
 
+def io_namespace(io: Optional[io_report.Config]) -> Optional[str]:
+  """The namespace of the user metrics of an I/O benchmark, or None."""
+  return io.get("namespace") if io else None
+
+
 def collect_monitoring(project: str, details: Dict[str, Any], counter: Optional[str],
                        wait_seconds: float, namespace: Optional[str] = None
                        ) -> Dict[str, monitoring.Series]:
@@ -170,6 +182,13 @@ def collect_monitoring(project: str, details: Dict[str, Any], counter: Optional[
   return monitoring.collect(lambda query: monitoring.time_series(project, token, query),
                             job["id"], job["createTime"], job["currentStateTime"], counter,
                             wait_seconds, expected)
+
+
+def collect_io(args: argparse.Namespace, details: Dict[str, Any]) -> Dict[str, Any]:
+  """The logs and Monitoring series of io_report.py for a job from `fetch`."""
+  token = access_token()
+  return io_report.collect(args.project, token, details, args.io,
+                           lambda query: monitoring.time_series(args.project, token, query))
 
 
 def platform_command(project: str, job_name: str) -> List[str]:
@@ -224,7 +243,7 @@ def parse_metrics(metrics: Iterable[Dict[str, Any]], count_output: str,
     elif (counter and metric["name"].get("origin") == "user" and name == counter
           and (not namespace or context.get("namespace") == namespace)):
       counter_total += float(scalar)
-  vcpu, step_cpu = totals.get("TotalVcpuTime"), sum(steps.values())
+  vcpu, step_wall = totals.get("TotalVcpuTime"), sum(steps.values())
   values = {
       "total_vcpu_s": vcpu,
       "elements": elements or None,
@@ -233,8 +252,8 @@ def parse_metrics(metrics: Iterable[Dict[str, Any]], count_output: str,
       "pd_gb_s": totals.get("TotalPdUsage"),
       # The service reports the shuffle data in GB.
       "shuffle_gb": totals.get("TotalShuffleDataProcessed"),
-      "step_cpu_s": step_cpu,
-      "step_cpu_s_per_1m_elements": step_cpu / (elements / 1e6) if elements else None,
+      "step_wall_s": step_wall,
+      "step_wall_s_per_1m_elements": step_wall / (elements / 1e6) if elements else None,
       "counter_total": counter_total or None,
   }
   return {"metrics": {k: v for k, v in values.items() if v is not None}, "steps": steps}
@@ -265,19 +284,22 @@ def machine_type(job: Dict[str, Any]) -> Optional[str]:
   return next((p["machineType"] for p in pools if p.get("machineType")), None)
 
 
-def summarize(details: Dict[str, Any], count_output: str,
-              counter: Optional[str] = None) -> Dict[str, Any]:
-  """The record of one job from the reply of `fetch` and its "monitoring" series, if any."""
+def summarize(details: Dict[str, Any], count_output: str, counter: Optional[str] = None,
+              io: Optional[io_report.Config] = None) -> Dict[str, Any]:
+  """The record of one job from the reply of `fetch` and its "monitoring" series, if any.
+  With `io`, the record also has the metrics of io_report.py."""
   job = details["job"]
-  parsed = parse_metrics(details["metrics"], count_output, counter)
+  parsed = parse_metrics(details["metrics"], count_output, counter, io_namespace(io))
   events = parse_messages(details["messages"])
   watched = monitoring.summarize(details.get("monitoring", {}), machine_type(job),
                                  parsed["metrics"].get("total_vcpu_s"),
                                  parsed["metrics"].get("counter_total"))
+  extra = io_report.summarize(details, io, parsed["metrics"].get("total_vcpu_s")) if io \
+      else {"metrics": {}, "environments": {}}
   start, end = job.get("startTime") or job.get("createTime"), job.get("currentStateTime")
   wall = (monitoring.parse_time(end) - monitoring.parse_time(start)).total_seconds() \
       if start and end else None
-  metrics = {**parsed["metrics"], **watched["metrics"],
+  metrics = {**parsed["metrics"], **watched["metrics"], **extra["metrics"],
              "peak_workers": events["peak_workers"], "wall_s": wall}
   return {
       "job_id": job.get("id"),
@@ -288,10 +310,16 @@ def summarize(details: Dict[str, Any], count_output: str,
       "end": end,
       "metrics": {k: v for k, v in metrics.items() if v is not None},
       "steps": parsed["steps"],
-      "memory": watched["memory"],
+      "memory": io_report.name_containers(watched["memory"], extra["environments"]),
       "monitoring_missing": watched["monitoring_missing"],
       **{k: events[k] for k in ("warnings", "stockout", "quota")},
   }
+
+
+def setting_str(value: Any) -> str:
+  if isinstance(value, bool):
+    return "true" if value else "false"
+  return str(value)
 
 
 def flags(runs: Sequence[Dict[str, Any]], workers: int = 1) -> List[str]:
@@ -313,19 +341,48 @@ def flags(runs: Sequence[Dict[str, Any]], workers: int = 1) -> List[str]:
     out += [f"{tag}: CPU platform not captured"] if not platforms else []
     out += [f"{tag}: no Monitoring data for {', '.join(missing)}"] if missing else []
   for round_number in sorted({run["round"] for run in runs}):
-    pair = {run["variant"]: tuple(run.get("platforms", [])) for run in runs
-            if run["round"] == round_number}
+    round_runs = [run for run in runs if run["round"] == round_number]
+    pair = {run["variant"]: tuple(run.get("platforms", [])) for run in round_runs}
     if len(set(pair.values())) > 1:
       out.append(f"Round {round_number}: CPU platforms differ: " +
                  ", ".join(f"{v}={', '.join(p) or '?'}" for v, p in pair.items()))
-    starts = [monitoring.parse_time(run["start"]) for run in runs
-              if run["round"] == round_number and run.get("start")]
+    starts = [monitoring.parse_time(run["start"]) for run in round_runs if run.get("start")]
     apart = (max(starts) - min(starts)).total_seconds() if starts else 0.0
     if apart > MAX_START_SPREAD_SECONDS:
       out.append(f"Round {round_number}: jobs started {apart:.0f} s apart")
-    if any(run.get("round_failed") for run in runs if run["round"] == round_number):
+    if len(round_runs) >= 2:
+      effective = [
+          (run["variant"], {**(run.get("labels") or {}), **(run.get("settings") or {})})
+          for run in round_runs
+      ]
+      for key in FAIRNESS_KEYS:
+        pairs = [
+            (variant, setting_str(values[key]))
+            for variant, values in effective
+            if values.get(key) not in (None, "")
+        ]
+        if len(pairs) >= 2 and len({val for _, val in pairs}) > 1:
+          out.append(f"Round {round_number}: {key} differs: " +
+                     ", ".join(f"{v}={val}" for v, val in pairs))
+    if any(run.get("round_failed") for run in round_runs):
       out.append(f"Round {round_number}: failed, not in the medians")
   return out
+
+
+def render_settings(variant_settings: Mapping[str, Mapping[str, Any]]) -> List[str]:
+  """Markdown table comparing the settings of each variant side by side."""
+  if not variant_settings:
+    return []
+  variants = list(variant_settings)
+  keys = list(dict.fromkeys(k for settings in variant_settings.values() for k in settings))
+  if not keys:
+    return []
+  cell = lambda v, k: (
+      setting_str(variant_settings[v][k])
+      if variant_settings[v].get(k) not in (None, "") else "-"
+  )
+  rows = ([key, *(cell(v, key) for v in variants)] for key in keys)
+  return report.table(["Setting", *variants], rows)
 
 
 def measured(runs: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -347,7 +404,8 @@ def ranked_columns(all_medians: report.Medians, section: str, minimum: float,
 def render(results: Dict[str, Any], saved: Optional[Dict[str, Any]]) -> List[str]:
   all_medians = report.with_saved(results["medians"], saved)
   runs, config = results["runs"], results["config"]
-  metrics = columns(config.get("count_name", "elements"), config.get("counter"))
+  metrics = columns(config.get("count_name", "elements"), config.get("counter")) + \
+      (io_report.columns(config["io"]) if config.get("io") else [])
   current = config.get("current", report.CURRENT)
   compare = lambda section, cols: report.compare_table(all_medians, section, cols, current=current)
   extra = [("CPU platform", lambda r: ", ".join(r.get("platforms", [])) or "?"),
@@ -357,10 +415,12 @@ def render(results: Dict[str, Any], saved: Optional[Dict[str, Any]]) -> List[str
            ("Job", lambda r: r.get("job_id") or "?")]
   warnings = [f"- Round {r['round']} {r['variant']}: {w}" for r in runs for w in r.get("warnings", [])]
   companions = [companion_line(c) for c in results.get("companions", [])]
+  settings_table = render_settings(config.get("variant_settings") or {})
   return [
       f"# {results['task']} ({results['created']})", "",
       config["description"], "",
       "Variants: " + ", ".join(f"{k}={v}" for k, v in config["variants"].items()) + ".", "",
+      *(["## Variant settings", "", *settings_table, ""] if settings_table else []),
       "## Flags", "", *([f"- {f}" for f in results["flags"]] or ["None."]), "",
       "## Medians", "", *compare("metrics", metrics), "",
       "## Runs", "", *report.runs_table(runs, "metrics", metrics, extra), "",
@@ -495,7 +555,8 @@ def launch(args: argparse.Namespace, variant: report.Variant, round_number: int,
       except subprocess.TimeoutExpired:
         pass
   record = {"round": round_number, "variant": label, "job_name": name,
-            "launcher_exit": process.returncode, "platforms": sorted(platforms)}
+            "launcher_exit": process.returncode, "platforms": sorted(platforms),
+            **({"settings": variant["settings"]} if variant.get("settings") else {})}
   with open(f"{base}.log") as f:
     logged_id = job_id_from_log(f.read())
   job = job or (get_job(args.project, args.region, logged_id) if logged_id else None) or lookup()
@@ -509,7 +570,7 @@ def launch(args: argparse.Namespace, variant: report.Variant, round_number: int,
           or known
       return found["job"]
     counter = spec.get("counter", "")
-    namespace = spec.get("namespace")
+    namespace = spec.get("namespace") or io_namespace(args.io)
     waited = job_wait.wait(spec, poll,
                            lambda j: counter_value(args.project, args.region, j["id"], counter,
                                                    namespace),
@@ -529,11 +590,13 @@ def launch(args: argparse.Namespace, variant: report.Variant, round_number: int,
             "metrics": {}}
   details = fetch(args.project, args.region, job_id)
   details["monitoring"] = collect_monitoring(args.project, details, args.counter,
-                                             args.monitoring_wait)
+                                             args.monitoring_wait, io_namespace(args.io))
+  if args.io:
+    details["io"] = collect_io(args, details)
   with open(f"{base}-job.json", "w") as f:
     json.dump(details, f, indent=2)
   errors = [e for e in (waited.get("error"), after(variant, values, base)) if e]
-  return {**record, **summarize(details, args.count_output, args.counter),
+  return {**record, **summarize(details, args.count_output, args.counter, args.io),
           **({"error": "; ".join(errors)} if errors else {})}
 
 
@@ -769,13 +832,15 @@ def run(args: argparse.Namespace) -> None:
     companions += [companion] if companion else []
   if args.dry_run:
     return
+  variant_settings = {v["label"]: v["settings"] for v in variants if v.get("settings")}
   results = {
       "task": args.task,
       "created": datetime.datetime.now().isoformat(timespec="seconds"),
       "config": {"description": args.describe, "runs": args.runs,
                  "count_name": args.count_name, "counter": args.counter,
-                 "current": args.current,
-                 "variants": {v["label"]: v.get("describe", v["cwd"]) for v in variants}},
+                 "current": args.current, "io": args.io,
+                 "variants": {v["label"]: v.get("describe", v["cwd"]) for v in variants},
+                 **({"variant_settings": variant_settings} if variant_settings else {})},
       "runs": runs,
       "companions": companions,
       "medians": report.medians(measured(runs), SECTIONS),
@@ -796,6 +861,7 @@ def main(argv: Sequence[str]) -> None:
     sub.add_argument("--counter", help="A user counter whose rate the report gives.")
     sub.add_argument("--monitoring-wait", type=float, default=360,
                      help="Seconds to wait for Cloud Monitoring data after the job.")
+    sub.add_argument("--io", type=json.loads, help="JSON configuration of io_report.py.")
   run_parser, fetch_parser = commands.choices["run"], commands.choices["fetch"]
   run_parser.add_argument("--task", required=True, help="The benchmark, for names and labels.")
   run_parser.add_argument("--name-prefix", help="The start of the job names. Default: the task.")
@@ -827,8 +893,11 @@ def main(argv: Sequence[str]) -> None:
   records = []
   for job_id in args.jobs:
     details = fetch(args.project, args.region, job_id)
-    details["monitoring"] = collect_monitoring(args.project, details, args.counter, 0)
-    records.append(summarize(details, args.count_output, args.counter))
+    details["monitoring"] = collect_monitoring(args.project, details, args.counter, 0,
+                                               io_namespace(args.io))
+    if args.io:
+      details["io"] = collect_io(args, details)
+    records.append(summarize(details, args.count_output, args.counter, args.io))
   print(json.dumps(records, indent=2))
 
 

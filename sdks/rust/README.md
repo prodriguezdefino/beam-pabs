@@ -212,7 +212,7 @@ Run builds through Gradle. Gradle caches incremental builds, and the rest of the
 ./gradlew :sdks:rust:fmt     # Apply formatting
 ```
 
-[RustLintTasks.groovy](../../buildSrc/src/main/groovy/org/apache/beam/gradle/rust/RustLintTasks.groovy) defines `build`, `check` and `fmt`, and [RustTestTasks.groovy](../../buildSrc/src/main/groovy/org/apache/beam/gradle/rust/RustTestTasks.groovy) defines `test`.
+[RustLintTasks.groovy](../../buildSrc/src/main/groovy/org/apache/beam/gradle/rust/workspace/RustLintTasks.groovy) defines `build`, `check` and `fmt`, and [RustTestTasks.groovy](../../buildSrc/src/main/groovy/org/apache/beam/gradle/rust/workspace/RustTestTasks.groovy) defines `test`.
 
 For the full task reference, coverage and caching, see [docs/build.md](docs/build.md).
 

@@ -25,7 +25,7 @@ drains and checks a submitted job across all SDKs:
   counter "counter" reaches "expected_rows", or after "drain_after_seconds" from launcher
   exit. A batch job must end with "expected_rows" exact rows; a streaming job must end with
   at least "expected_rows" rows. A counter that can not be read is an error, not 0 rows.
-- "namespace": the namespace of "counter". Default: any namespace.
+- "namespace": the namespace of "counter". Default: the namespace of --io.
 - "drain_after_producer_seconds": drains a streaming job this long after the round's
   companion producer job finishes.
 - "kill_worker_after_seconds": deletes one worker VM of a running streaming job at that time,

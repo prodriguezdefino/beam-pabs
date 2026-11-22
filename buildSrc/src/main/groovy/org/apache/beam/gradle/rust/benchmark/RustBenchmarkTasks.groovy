@@ -15,11 +15,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.beam.gradle.rust
+package org.apache.beam.gradle.rust.benchmark
 
 import groovy.json.JsonOutput
 import groovy.transform.CompileStatic
 import java.text.SimpleDateFormat
+import org.apache.beam.gradle.rust.RustConfig
+import org.apache.beam.gradle.rust.RustSdkBuild
+import org.apache.beam.gradle.rust.runner.RustDataflowTasks
 import org.gradle.api.Action
 import org.gradle.api.GradleException
 import org.gradle.api.Project
@@ -50,7 +53,8 @@ class RustBenchmarkTasks {
 
   private static final List<String> HARNESS_BENCHES = [
     'process_bundle', 'data_plane', 'user_state', 'side_input',
-    'chain_throughput', 'window_into', 'row_coder', 'logging', 'combine', 'state_cache',
+    'chain_throughput', 'window_into', 'row_coder', 'logging', 'combine', 'timers',
+    'join', 'async_rpc', 'state_cache',
   ]
 
   final RustDataflowTasks dataflow

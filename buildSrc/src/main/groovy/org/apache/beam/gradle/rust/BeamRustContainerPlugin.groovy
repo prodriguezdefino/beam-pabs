@@ -20,6 +20,7 @@ package org.apache.beam.gradle.rust
 import groovy.transform.CompileStatic
 import org.apache.beam.gradle.BeamDockerPlugin
 import org.apache.beam.gradle.BeamModulePlugin
+import org.apache.beam.gradle.rust.container.RustContainerTasks
 import org.gradle.api.Action
 import org.gradle.api.GradleException
 import org.gradle.api.Plugin

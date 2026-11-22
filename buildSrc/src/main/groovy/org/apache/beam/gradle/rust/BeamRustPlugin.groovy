@@ -19,6 +19,19 @@ package org.apache.beam.gradle.rust
 
 import groovy.transform.CompileStatic
 import org.apache.beam.gradle.BeamModulePlugin
+import org.apache.beam.gradle.rust.benchmark.RustBenchmarkTasks
+import org.apache.beam.gradle.rust.benchmark.RustNexmarkTasks
+import org.apache.beam.gradle.rust.benchmark.RustProfilingTasks
+import org.apache.beam.gradle.rust.benchmark.io.RustIoBenchmarkSupport
+import org.apache.beam.gradle.rust.workspace.RustLintTasks
+import org.apache.beam.gradle.rust.workspace.RustQualityTasks
+import org.apache.beam.gradle.rust.workspace.RustTestTasks
+import org.apache.beam.gradle.rust.container.RustContainerTasks
+import org.apache.beam.gradle.rust.io.RustIoTasks
+import org.apache.beam.gradle.rust.runner.RustDataflowTasks
+import org.apache.beam.gradle.rust.runner.RustPrismTasks
+import org.apache.beam.gradle.rust.runner.RustValidatesRunnerTasks
+import org.apache.beam.gradle.rust.xlang.RustXlangTasks
 import org.gradle.api.Plugin
 import org.gradle.api.Project
 import org.gradle.api.Task
@@ -56,11 +69,13 @@ class BeamRustPlugin implements Plugin<Project> {
     prism.registerLaunchTasks(config)
     RustDataflowTasks dataflow = RustDataflowTasks.register(config)
     RustValidatesRunnerTasks.register(dataflow)
-    RustXlangTasks.register(containers)
+    RustXlangTasks xlang = RustXlangTasks.register(containers)
+    RustIoTasks ioTasks = RustIoTasks.register(xlang)
     RustQualityTasks.register(containers)
     RustProfilingTasks.register(config)
     RustBenchmarkTasks benchmarks = RustBenchmarkTasks.register(dataflow)
     RustNexmarkTasks.register(containers, benchmarks)
+    RustIoBenchmarkSupport.register(benchmarks, xlang, ioTasks)
 
     project.tasks.named('build').configure { Task task -> task.dependsOn('buildWorkspace') }
     project.tasks.named('check').configure { Task task ->

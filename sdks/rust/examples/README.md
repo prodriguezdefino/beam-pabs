@@ -21,7 +21,7 @@
 
 Each example below is a standalone crate under `sdks/rust/examples/`. The Cargo package name matches the directory name. Run each example on the portable Prism runner or submit it to Google Cloud Dataflow. A Dataflow launch needs a worker container image. Set it with `-PsdkContainerImage` or with `sdkContainerImage` in `sdks/rust/.local/sdk.properties`.
 
-The Gradle launch tasks run `cargo run --release -p <example> -- <runner flags> <extraArgs>` (see [`RustPrismTasks.groovy`](../../../buildSrc/src/main/groovy/org/apache/beam/gradle/rust/RustPrismTasks.groovy) and [`RustDataflowTasks.groovy`](../../../buildSrc/src/main/groovy/org/apache/beam/gradle/rust/RustDataflowTasks.groovy)):
+The Gradle launch tasks run `cargo run --release -p <example> -- <runner flags> <extraArgs>` (see [`RustPrismTasks.groovy`](../../../buildSrc/src/main/groovy/org/apache/beam/gradle/rust/runner/RustPrismTasks.groovy) and [`RustDataflowTasks.groovy`](../../../buildSrc/src/main/groovy/org/apache/beam/gradle/rust/runner/RustDataflowTasks.groovy)):
 
 - `-Pexample=<name>` selects the package (default `wordcount`).
 - `-PextraArgs="..."` appends pipeline flags. The task splits the value on spaces.

@@ -26,7 +26,7 @@ Two kinds of measurement:
   2. **Mutation testing**: which tests fail when a tool changes the production code.
 - **Size and complexity**: a scorecard that compares the Rust, Go and Python SDKs by code size, cyclomatic complexity and test volume. Feature counts normalize the sizes (see [Complexity scorecard](#complexity-scorecard)).
 
-Use the Gradle tasks in [`RustQualityTasks.groovy`](../../../../buildSrc/src/main/groovy/org/apache/beam/gradle/rust/RustQualityTasks.groovy). [docs/build.md](../../docs/build.md#code-quality) lists the commands.
+Use the Gradle tasks in [`RustQualityTasks.groovy`](../../../../buildSrc/src/main/groovy/org/apache/beam/gradle/rust/workspace/RustQualityTasks.groovy). [docs/build.md](../../docs/build.md#code-quality) lists the commands.
 
 ## Where things run: collection = container only; analysis = anywhere
 

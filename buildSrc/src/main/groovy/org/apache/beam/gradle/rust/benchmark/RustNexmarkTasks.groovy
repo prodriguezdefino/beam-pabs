@@ -15,9 +15,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.beam.gradle.rust
+package org.apache.beam.gradle.rust.benchmark
 
 import groovy.transform.CompileStatic
+import org.apache.beam.gradle.rust.BeamModuleExtras
+import org.apache.beam.gradle.rust.RustConfig
+import org.apache.beam.gradle.rust.RustSdkBuild
+import org.apache.beam.gradle.rust.container.RustContainerTasks
+import org.apache.beam.gradle.rust.runner.RustDataflowTasks
 import org.gradle.api.Project
 import org.gradle.api.Task
 import org.gradle.api.tasks.Exec

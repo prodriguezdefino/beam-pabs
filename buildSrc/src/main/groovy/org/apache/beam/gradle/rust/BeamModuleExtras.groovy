@@ -20,6 +20,9 @@ package org.apache.beam.gradle.rust
 import groovy.transform.CompileDynamic
 import groovy.transform.CompileStatic
 import org.gradle.api.Project
+import org.gradle.api.file.FileCollection
+import org.gradle.api.tasks.testing.Test
+import org.gradle.api.tasks.testing.junit.JUnitOptions
 
 /** Typed wrappers over the dynamic {@code ext} helpers that {@code BeamModulePlugin} defines. */
 @CompileStatic
@@ -68,9 +71,32 @@ class BeamModuleExtras {
     return project.property('docker_image_default_repo_prefix').toString()
   }
 
+  static String currentJavaVersion(Project project) {
+    return project.extensions.extraProperties.get('currentJavaVersion').toString()
+  }
+
   @CompileDynamic
   static String mapToArgString(Project pythonProject, Map<String, Object> args) {
     return pythonProject.mapToArgString(args).toString()
+  }
+
+  @CompileDynamic
+  static void configureJavaXlangClasspaths(Project project, Test task, String runnerProject) {
+    task.classpath = project.files({
+      project.project(runnerProject).configurations.validatesRunner + project.files(
+          project.project(':sdks:java:core').sourceSets.test.runtimeClasspath,
+          project.project(':sdks:java:extensions:python').sourceSets.test.runtimeClasspath,
+      )
+    }) as FileCollection
+    task.testClassesDirs = project.files({
+      [
+        project.project(':sdks:java:core').sourceSets.test.output.classesDirs,
+        project.project(':sdks:java:extensions:python').sourceSets.test.output.classesDirs,
+      ]
+    }) as FileCollection
+    task.useJUnit { JUnitOptions opts ->
+      opts.includeCategories('org.apache.beam.sdk.testing.UsesJavaExpansionService')
+    }
   }
 
   @CompileDynamic

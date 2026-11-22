@@ -52,7 +52,7 @@ The summary splits the CPU time between the Rust process and Prism. It also give
 
 ## Benchmarks
 
-[RustBenchmarkTasks.groovy](../../../buildSrc/src/main/groovy/org/apache/beam/gradle/rust/RustBenchmarkTasks.groovy) defines the benchmarks. [RustNexmarkTasks.groovy](../../../buildSrc/src/main/groovy/org/apache/beam/gradle/rust/RustNexmarkTasks.groovy) defines the Nexmark tasks. Each benchmark runs some rounds (`-Pruns`, default 3), one after the other. It writes `results.json` and `report.md` to `build/reports/benchmarks/<task>-<timestamp>/`. The report gives each run and the medians. The scripts are in [benchmarks/tools/](tools/).
+[RustBenchmarkTasks.groovy](../../../buildSrc/src/main/groovy/org/apache/beam/gradle/rust/benchmark/RustBenchmarkTasks.groovy) defines the benchmarks. [RustNexmarkTasks.groovy](../../../buildSrc/src/main/groovy/org/apache/beam/gradle/rust/benchmark/RustNexmarkTasks.groovy) defines the Nexmark tasks. Each benchmark runs some rounds (`-Pruns`, default 3), one after the other. It writes `results.json` and `report.md` to `build/reports/benchmarks/<task>-<timestamp>/`. The report gives each run and the medians. The scripts are in [benchmarks/tools/](tools/).
 
 A benchmark runs the current checkout. With `-Pbaseline=<git ref>`, it also runs that ref from a git worktree at `build/benchmarks/baseline` and gives the change against it. The worktree gets a copy of `.local/`. It stays between runs (about 10 GB with its builds), so the next baseline builds only what changed. To get the disk space back, delete it and run `git worktree prune`. `-PcompareTo=<results.json>` also compares with an earlier result. `-PdryRun` prints the commands and runs nothing.
 
