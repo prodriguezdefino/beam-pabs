@@ -112,6 +112,10 @@ pub mod io {
     #[cfg(feature = "json")]
     pub use beam_io_json as json;
 
+    /// Beam schema and `Row` bridge to Protocol Buffers: `beam::io::proto::ProtoSchema`.
+    #[cfg(feature = "proto")]
+    pub use beam_io_proto as proto;
+
     /// Cross-language Kafka I/O: `beam::io::kafka::KafkaRead` and `KafkaWrite`.
     #[cfg(feature = "kafka")]
     pub use beam_io_kafka as kafka;

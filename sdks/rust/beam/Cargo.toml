@@ -62,6 +62,8 @@ avro = ["dep:beam_io_avro", "arrow", "io-file"]
 tfrecord = ["dep:beam_io_tfrecord", "io-file"]
 # Beam schemas and rows to and from JSON. Off by default.
 json = ["dep:beam_io_json"]
+# Beam schemas and rows to and from Protocol Buffers messages. Off by default.
+proto = ["dep:beam_io_proto"]
 # Cross-language Kafka through the Java expansion service. Off by default.
 kafka = ["dep:beam_io_kafka", "external"]
 # Managed I/O (Iceberg, Kafka, BigQuery, JDBC, Delta Lake) through the Java expansion
@@ -102,6 +104,7 @@ beam_io_parquet = { workspace = true, optional = true }
 beam_io_avro = { workspace = true, optional = true }
 beam_io_tfrecord = { workspace = true, optional = true }
 beam_io_json = { workspace = true, optional = true }
+beam_io_proto = { workspace = true, optional = true }
 beam_io_kafka = { workspace = true, optional = true }
 beam_io_managed = { workspace = true, optional = true }
 beam_external = { workspace = true, optional = true }

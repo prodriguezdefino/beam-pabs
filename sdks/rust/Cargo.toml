@@ -98,6 +98,8 @@ semicolon_if_nothing_returned = "warn"
 [workspace.dependencies]
 prost = "0.14"
 prost-types = "0.14"
+# Descriptor pools and dynamic messages of the PROTO format (apache-beam-io-proto).
+prost-reflect = "0.16"
 tonic = { version = "0.14", features = ["tls-native-roots"] }
 tonic-prost = "0.14"
 tonic-prost-build = "0.14"
@@ -163,9 +165,12 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 arrow-array = { version = "58.4.1", default-features = false }
 arrow-buffer = { version = "58.4.1", default-features = false }
 arrow-schema = { version = "58.4.1", default-features = false }
+arrow-cast = { version = "58.4.1", default-features = false }
 arrow-ipc = { version = "58.4.1", default-features = false, features = ["lz4", "zstd"] }
 parquet = { version = "58.4.1", default-features = false, features = ["arrow", "flate2-zlib-rs", "lz4", "snap", "zstd"] }
 arrow-avro = { version = "58.4.1", default-features = false, features = ["deflate", "snappy", "zstd"] }
+# Avro schema parser of the direct datum encoder (apache-beam-io-avro). iceberg uses the same version.
+apache-avro = { version = "0.21.0", default-features = false }
 
 http = "1"
 
@@ -188,6 +193,7 @@ beam_io_arrow = { package = "apache-beam-io-arrow", path = "beam/io/arrow", vers
 beam_io_parquet = { package = "apache-beam-io-parquet", path = "beam/io/parquet", version = "2.79.0-SNAPSHOT" }
 beam_io_avro = { package = "apache-beam-io-avro", path = "beam/io/avro", version = "2.79.0-SNAPSHOT" }
 beam_io_json = { package = "apache-beam-io-json", path = "beam/io/json", version = "2.79.0-SNAPSHOT" }
+beam_io_proto = { package = "apache-beam-io-proto", path = "beam/io/proto", version = "2.79.0-SNAPSHOT" }
 beam_io_tfrecord = { package = "apache-beam-io-tfrecord", path = "beam/io/tfrecord", version = "2.79.0-SNAPSHOT" }
 beam_runner_prism = { package = "apache-beam-runner-prism", path = "beam/runners/prism", version = "2.79.0-SNAPSHOT" }
 beam_runner_dataflow = { package = "apache-beam-runner-dataflow", path = "beam/runners/dataflow", version = "2.79.0-SNAPSHOT" }

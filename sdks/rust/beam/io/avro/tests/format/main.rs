@@ -29,6 +29,7 @@
 
 mod block_scan;
 mod common;
+mod datum;
 mod golden;
 mod header_reads;
 mod sink_and_reader;
