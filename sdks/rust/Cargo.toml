@@ -32,6 +32,7 @@ members = [
     "beam/io/gcp/core",
     "beam/io/gcp/expansion-service",
     "beam/io/gcp/googleapis",
+    "beam/io/iceberg/expansion-service",
     "beam/io/kafka/expansion-service",
     "beam/runner-tests",
     "beam/test-utils",
@@ -177,6 +178,8 @@ apache-avro = { version = "0.21.0", default-features = false }
 rdkafka = { version = "0.39", default-features = false, features = ["libz-static", "zstd", "ssl-vendored", "tokio"] }
 iceberg = "0.11.0"
 iceberg-catalog-rest = "0.11.0"
+# The SQL `filter` of the Iceberg read.
+sqlparser = "0.55"
 # The trait objects of the `iceberg` storage API need `typetag`, and its credentials need `http`.
 typetag = "0.2"
 http = "1"
@@ -199,6 +202,7 @@ beam_io_gcp = { package = "apache-beam-io-gcp", path = "beam/io/gcp", version = 
 beam_io_kafka = { package = "apache-beam-io-kafka", path = "beam/io/kafka", version = "2.79.0-SNAPSHOT" }
 beam_io_kafka_expansion = { package = "apache-beam-io-kafka-expansion-service", path = "beam/io/kafka/expansion-service", version = "2.79.0-SNAPSHOT" }
 beam_io_iceberg = { package = "apache-beam-io-iceberg", path = "beam/io/iceberg", version = "2.79.0-SNAPSHOT" }
+beam_io_iceberg_expansion = { package = "apache-beam-io-iceberg-expansion-service", path = "beam/io/iceberg/expansion-service", version = "2.79.0-SNAPSHOT" }
 beam_io_managed = { package = "apache-beam-io-managed", path = "beam/io/managed", version = "2.79.0-SNAPSHOT" }
 beam_io_arrow = { package = "apache-beam-io-arrow", path = "beam/io/arrow", version = "2.79.0-SNAPSHOT" }
 beam_io_parquet = { package = "apache-beam-io-parquet", path = "beam/io/parquet", version = "2.79.0-SNAPSHOT" }
