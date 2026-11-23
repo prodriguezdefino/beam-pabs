@@ -38,6 +38,7 @@ beam_io_managed = { workspace = true }
 rdkafka = { workspace = true }
 serde_json = { workspace = true }
 base64 = { workspace = true }
+tracing = { workspace = true }
 # The JSON format: JSON Schemas to Beam schemas, and rows to and from JSON objects.
 beam_io_json = { workspace = true }
 # The Application Default Credentials of Google Cloud Managed Service for Apache Kafka.

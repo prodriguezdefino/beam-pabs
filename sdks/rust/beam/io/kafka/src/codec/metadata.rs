@@ -91,9 +91,11 @@ impl<K, V> KafkaRecord<K, V> {
 ///
 /// ```no_run
 /// use beam_io_kafka::codec::{Raw, Utf8, WithMetadata};
+/// use beam_io_kafka::{Read, ReadOptions};
 ///
 /// // KafkaRecord<String, Vec<u8>>: UTF-8 keys and raw values.
-/// let decoder = WithMetadata::new(Raw).with_key(Utf8);
+/// let read = Read::new(ReadOptions::new("broker:9092", "events"))
+///     .with_decoder(WithMetadata::new(Raw).with_key(Utf8));
 /// ```
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WithMetadata<V, K = Raw> {
