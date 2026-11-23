@@ -180,6 +180,8 @@ iceberg-catalog-rest = "0.11.0"
 # The trait objects of the `iceberg` storage API need `typetag`, and its credentials need `http`.
 typetag = "0.2"
 http = "1"
+# The hash of the object storage layout of Iceberg tables.
+murmur3 = "0.5"
 
 # Internal workspace crates
 beam = { package = "apache-beam", path = "beam", version = "2.79.0-SNAPSHOT" }

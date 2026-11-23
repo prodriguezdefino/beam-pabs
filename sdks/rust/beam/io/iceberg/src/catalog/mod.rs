@@ -26,6 +26,8 @@ mod rest;
 use std::collections::BTreeMap;
 use std::fmt;
 
+use iceberg::TableIdent;
+
 pub use file_io::{TOKEN_EXPIRES_AT, TableFileIo, file_io};
 pub use rest::{
     ACCESS_DELEGATION, CatalogClient, Connection, SERVICE, StorageCredential, catalog_decision,
@@ -155,5 +157,31 @@ impl Catalog {
     pub fn with_metrics_reporting(mut self) -> Self {
         self.metrics_reporting = true;
         self
+    }
+
+    /// Returns the lineage segments of `ident` in this catalog.
+    pub(crate) fn lineage_segments<'a>(&'a self, ident: &'a TableIdent) -> Vec<&'a str> {
+        let root = self
+            .warehouse
+            .as_deref()
+            .filter(|w| !w.is_empty())
+            .or_else(|| (!self.uri.is_empty()).then_some(self.uri.as_str()));
+        root.into_iter()
+            .chain(ident.namespace().as_ref().iter().map(String::as_str))
+            .chain([ident.name()])
+            .collect()
+    }
+}
+
+/// The identifier of `table`: `namespace.name`, or `a.b.name` for a nested namespace.
+pub(crate) fn table_ident(table: &str) -> beam::Result<TableIdent> {
+    let parts: Vec<&str> = table.split('.').collect();
+    match parts.as_slice() {
+        [_, _, ..] if parts.iter().all(|part| !part.is_empty()) => {
+            Ok(TableIdent::from_strs(parts)?)
+        }
+        _ => Err(beam::Error::msg(format!(
+            "The table '{table}' is not of the form 'namespace.name'"
+        ))),
     }
 }

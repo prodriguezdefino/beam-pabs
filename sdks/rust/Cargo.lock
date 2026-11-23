@@ -526,6 +526,7 @@ version = "2.79.0-SNAPSHOT"
 dependencies = [
  "apache-beam-core",
  "apache-beam-gcp-core",
+ "apache-beam-io-arrow",
  "apache-beam-io-file",
  "apache-beam-io-gcp",
  "apache-beam-test-utils",
@@ -539,13 +540,17 @@ dependencies = [
  "iceberg",
  "iceberg-catalog-rest",
  "moka",
+ "murmur3",
+ "parquet",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
  "tokio",
  "tracing",
  "typetag",
+ "uuid",
 ]
 
 [[package]]
