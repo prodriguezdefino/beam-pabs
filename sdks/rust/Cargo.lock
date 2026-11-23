@@ -257,6 +257,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "apache-beam-benchmark-iceberg"
+version = "2.79.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "apache-beam-benchmark-io",
+ "apache-beam-expansion",
+ "apache-beam-io-iceberg-expansion-service",
+ "apache-beam-io-kafka-expansion-service",
+ "chrono",
+ "clap",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tonic",
+]
+
+[[package]]
 name = "apache-beam-benchmark-io"
 version = "2.79.0-SNAPSHOT"
 dependencies = [
@@ -795,6 +812,7 @@ dependencies = [
  "google-cloud-bigquery",
  "google-cloud-bigquery-v2",
  "google-cloud-gax",
+ "iceberg",
  "inventory",
  "prost",
  "rust_decimal",
