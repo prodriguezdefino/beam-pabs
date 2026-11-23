@@ -59,6 +59,20 @@ serde_json = { workspace = true }
 beam_test_utils = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
+# For benches/copy_throughput.rs: the Prism runner, worker logging and pipeline options. The
+# facade does not enable its `kafka` feature, so it does not build a second copy of this crate.
+beam_sdk = { package = "apache-beam", path = "../..", default-features = false, features = ["prism", "fluent"] }
+clap = { workspace = true }
+serde = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "copy_throughput"
+harness = false
+
+[[bench]]
+name = "typed_encode"
+harness = false
 
 [lints]
 workspace = true

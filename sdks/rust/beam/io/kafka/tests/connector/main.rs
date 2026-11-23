@@ -17,13 +17,15 @@
  * under the License.
  */
 
-//! Connector tests (one binary): the connection, offset commits, the time limits of a read
-//! call, the parked assignments of the read, the delivery results of the producer and the
-//! expansion of the read. No test connects to a broker.
+//! Connector tests (one binary): the connection, Google authentication, offset commits, the
+//! time limits of a read call, the parked assignments of the read, the delivery results of the
+//! write and the expansion of the read and the write. No test connects to a broker.
 
+mod auth;
 mod call;
 mod client;
 mod commits;
 mod delivery;
 mod parking;
 mod read;
+mod write;

@@ -445,6 +445,7 @@ dependencies = [
 name = "apache-beam-io-kafka"
 version = "2.79.0-SNAPSHOT"
 dependencies = [
+ "apache-beam",
  "apache-beam-core",
  "apache-beam-external",
  "apache-beam-gcp-core",
@@ -456,10 +457,13 @@ dependencies = [
  "apache-beam-test-utils",
  "arc-swap",
  "base64 0.23.1",
+ "clap",
+ "criterion",
  "foldhash 0.2.0",
  "prost",
  "prost-types",
  "rdkafka",
+ "serde",
  "serde_json",
  "tokio",
  "tokio-stream",

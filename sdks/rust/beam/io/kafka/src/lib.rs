@@ -19,10 +19,11 @@
 
 //! The Apache Kafka I/O connector of the Apache Beam Rust SDK, on librdkafka.
 //!
-//! The connector reads Kafka in the Rust worker. [`read`] reads the records of a topic.
-//! [`codec`] maps record values to elements and back. [`client`] holds the connection to a
-//! cluster, and [`auth`] the Google authentication of Google Cloud Managed Service for Apache
-//! Kafka. [`xlang`] has the cross-language Kafka transforms.
+//! The connector reads and writes Kafka in the Rust worker. [`Read`] reads the records of a
+//! topic, and [`Write`] writes elements to a topic. [`codec`] maps record values to elements
+//! and back. [`client`] holds the connection to a cluster, and [`auth`] the Google
+//! authentication of Google Cloud Managed Service for Apache Kafka. [`xlang`] has the
+//! cross-language Kafka transforms.
 //!
 //! Pipelines use the crate as `beam::io::kafka` with the facade feature `kafka`. For a feature
 //! that the connector does not have, use the Kafka transforms of the Managed API
@@ -52,6 +53,18 @@
 //!     .with_decoder(Utf8),
 //! );
 //! ```
+//!
+//! # Writing to Kafka
+//! ```no_run
+//! use beam::prelude::*;
+//! use beam_io_kafka::{Write, WriteOptions};
+//!
+//! # let p = Pipeline::new();
+//! let written = p
+//!     .apply("Create", Create::new(vec![b"hello".to_vec()]))
+//!     .apply("WriteToKafka", Write::new(WriteOptions::new("broker-1:9092", "events")));
+//! // `written.failures` holds the elements that do not convert or that Kafka rejects.
+//! ```
 
 use beam::schema::{FieldType, Schema};
 
@@ -69,6 +82,7 @@ pub use read::{
     ConsumerPool, PartitionStart, PoolSize, Read, ReadOptions, ReadWithFailures, Redistribute,
     StartOffset,
 };
+pub use write::{Compression, Write, WriteOptions, WriteResult};
 
 /// The schema of the failure output of a read: the record value (empty for a record with no
 /// value) and the reason.
