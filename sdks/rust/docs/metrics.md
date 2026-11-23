@@ -59,19 +59,39 @@ ProcessBundleResponse / ProcessBundleProgressResponse
 - Bounded tries: `beam:metric:user:bounded_trie:v1` (`Metrics::bounded_trie(namespace, name).add(segments)`).
 - Histograms: `beam:metric:user:histogram_int64:v1` (`Metrics::histogram(namespace, name, buckets).update(value)`). `HistogramBuckets::linear` and `HistogramBuckets::exponential` make the buckets.
 - **Dataflow**: the job results have string sets only if the job sets `--experiments=enable_lineage`. Dataflow does not return gauges or bounded tries.
-- **Prism**: the job results have no bounded tries.
+- **Prism**: the job results have no bounded tries or histograms.
 - These types are in `beam::metrics`. On the worker thread, the harness sets a current `MetricsContainer` and a current transform (`MetricsScope`). Both types are in `beam::internals`. A metric records into the current container. Outside a scope, it records nothing. At the end of the bundle, the container drains into `ProcessBundleResponse.monitoring_data`. Progress responses also carry its values.
+- **Caching metric handles on a `DoFn`**: `Counter`, `Distribution`, `Gauge` and `Histogram` cache the cell index of the bundle and transform that they last updated. Keep the handle in a `DoFn` field. Then updates in the same bundle and transform skip the cell lookup.
+
+  ```rust
+  #[derive(Clone)]
+  struct CountWords {
+      words: Counter,
+  }
+
+  impl DoFn for CountWords {
+      type In = String;
+      type Out = String;
+
+      fn process_element(&mut self, word: String, ctx: &mut ProcessContext<'_, String>) -> beam::Result {
+          self.words.inc();
+          ctx.emit(word)
+      }
+  }
+  ```
+
 - **Post-Execution Query API** (**Implemented**): call `result.metrics()` on the `PipelineResult`. It returns `Option<&MetricResults>`, because a runner can report no metrics. Aggregated queries are `metrics.counter("ns", "name")`, `metrics.distribution(...)`, `metrics.gauge(...)`, `metrics.bounded_trie(...)` and `metrics.histogram(...)`. Each has a `*_for_transform` variant. Filter queries take a [`MetricFilter`](../beam/core/src/metrics/query.rs): `query_counters`, `query_distributions`, `query_gauges`, `query_bounded_tries` and `query_histograms`.
 
-```rust
-let result = pipeline.run().await?;
-if let Some(metrics) = result.metrics() {
-    let words = metrics.counter("wordcount", "words");
-}
-```
+  ```rust
+  let result = pipeline.run().await?;
+  if let Some(metrics) = result.metrics() {
+      let words = metrics.counter("wordcount", "words");
+  }
+  ```
 
 - **Live Query API** (**Implemented**): `pipeline.submit()` returns a `JobHandle`. While the job runs, `JobHandle::metrics()` returns the `MetricResults` that the runner has. Prism and Dataflow give attempted and committed values.
 
 **I/O and service metrics.**
 
-- `beam:metric:io:api_request_count:v1` and `beam:metric:io:api_request_latencies:v1` (*Planned*): standard connector metrics for Cloud Storage, BigQuery and HTTP services. The SDK defines the URNs, but no connector emits them.
+- Lineage: `beam::metrics::Lineage::sources()` and `Lineage::sinks()` record the resources that a connector reads and writes. They are string sets with the namespace `lineage` and the names `sources` and `sinks`. Each entry is `{system}:{segments}`. The BigQuery, Bigtable, Kafka and Iceberg connectors record lineage.
+- `beam:metric:io:api_request_count:v1` and `beam:metric:io:api_request_latencies:v1` (**Implemented**): the calls of a connector to an external service. `Metrics::api_request(service, method, resource)` gives an `ApiRequest`, and `.record(status, latency)` counts one call by status and adds its latency in milliseconds to a histogram (20 ms buckets up to 60 s). `.time(call, status)` waits for a future and records it. `grpc_status` and `http_status` give the canonical status names. The model marks both metrics as process metrics, so they record into the process-wide container and runners read them with `HarnessMonitoringInfosRequest`. The handle keeps the transform that runs when it is made, as the `PTRANSFORM` label, so a task that the transform spawns can record with it. `MetricResults` does not hold them. The I/O connectors report them for each call to an external service.

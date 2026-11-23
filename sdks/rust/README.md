@@ -67,8 +67,8 @@ For a pipeline with its own flags, use `beam::options::parse::<MyArgs>()`. It re
 | `fluent` | yes | Method-style transforms (`map`, `filter`, `group_by_key`, `inner_join`, …) |
 | `io-file` | yes | `beam::io`: local filesystem, `textio`, `fileio`, `WriteFiles` |
 | `gcp-gcs` | no | `gs://` filesystem (`beam::io::gcp::gcs`); implies `io-file` |
-| `gcp-bigquery` | no | BigQuery I/O (`beam::io::gcp::bigquery`); implies `external` |
-| `gcp-bigtable` | no | Bigtable I/O (`beam::io::gcp::bigtable`); implies `external` |
+| `gcp-bigquery` | no | BigQuery Storage Read and Storage Write (`beam::io::gcp::bigquery`) |
+| `gcp-bigtable` | no | Bigtable read and write (`beam::io::gcp::bigtable`) |
 | `gcp-pubsub` | no | Pub/Sub I/O (`beam::io::gcp::pubsub`); implies `external` |
 | `derive` | yes | `#[derive(BeamRow)]` / `#[derive(BeamEnum)]` schema support |
 | `external` | no | `beam::external`: cross-language expansion client, which starts Java expansion services on demand |
@@ -81,7 +81,11 @@ For a pipeline with its own flags, use `beam::options::parse::<MyArgs>()`. It re
 | `arrow` | no | `beam::io::arrow`: Beam schema/`Row` ⇄ Arrow `RecordBatch` bridge |
 | `parquet` | no | `beam::io::parquet::parquetio` (splittable Parquet read, sharded write); implies `arrow` |
 | `avro` | no | `beam::io::avro::avroio` (splittable Avro OCF read, sharded write); implies `arrow` |
-| `kafka` | no | `beam::io::kafka`: cross-language Kafka read/write through the Java expansion service |
+| `kafka` | no | `beam::io::kafka`: Kafka read and write on librdkafka; implies `avro`, `json` and `proto` |
+| `iceberg` | no | `beam::io::iceberg`: Iceberg batch read and write on a REST catalog |
+| `json` | no | `beam::io::json`: Beam schema/`Row` ⇄ JSON |
+| `proto` | no | `beam::io::proto`: Beam schema/`Row` ⇄ Protocol Buffers |
+| `tfrecord` | no | `beam::io::tfrecord::tfrecordio` (TFRecord read and write); implies `io-file` |
 | `managed` | no | `beam::io::managed`: Managed I/O (Iceberg, Kafka, BigQuery, JDBC, Delta Lake), cross-language |
 | `ml` | no | `beam::ml`: `RunInference`, `ModelHandler`, micro-batching |
 | `ml-candle` | no | Hugging Face Candle transformer and embedding inference (pure Rust, CPU) |
@@ -113,6 +117,8 @@ apache-beam = { path = "../beam/sdks/rust/beam", features = ["dataflow", "gcp-gc
 | [ValidatesRunner conformance](docs/validates-runner.md) | Conformance test architecture, registry, and Prism / Dataflow Runner V2 results |
 | [SDK parity](docs/sdk-parity.md) | Feature-by-feature comparison against the other Beam SDKs |
 | [Metrics and telemetry](docs/metrics.md) | Fn API monitoring protocol and supported metrics |
+| [Native I/O connectors](docs/native-connectors.md) | Reading and writing with BigQuery, Bigtable, Kafka, Iceberg, GCS and file formats |
+| [Native I/O architecture and providers](docs/rust-native-io-providers.md) | Connector internals, library choices, benchmarks and cross-language `SchemaTransform` providers |
 | [Static registration](docs/static-registration.md) | How workers find user code: registered functions in the pipeline graph, closures by a pipeline rebuild |
 | [Contributing](docs/contributing.md) | Rules for public API, code style, tests and documentation |
 | [Building and testing](docs/build.md) | Gradle tasks, testing, linting, coverage, mutation testing, complexity scorecard |
@@ -126,10 +132,10 @@ This table is a summary of [docs/sdk-parity.md](docs/sdk-parity.md). ✅ support
 
 | Area | Rust | Notes |
 |---|:--:|---|
-| Core transforms (ParDo, GBK, CoGBK, Combine, Flatten, Partition) | ✅ | 🔜 `Redistribute`, `WithTimestamps`, `Deduplicate` |
-| Side inputs (singleton, iterable, multimap) | ✅ | 🔜 `as_map` that rejects duplicate keys; ❌ multimap keys side input |
+| Core transforms (ParDo, GBK, CoGBK, Combine, Flatten, Partition) | ✅ | Includes `Redistribute` and `WithTimestamps`; 🔜 `Deduplicate` |
+| Side inputs (singleton, iterable, multimap, map, list) | ✅ | Includes `as_map` and multimap keys |
 | Windowing, triggers, allowed lateness | ✅ | Custom `WindowFn` limited to the two standard window encodings |
-| State (Value, Bag, Combining, Map, Multimap, Set, OrderedList) and timers | ✅ | Includes `on_window_expiration` and dynamic timer families; 🔜 timer `align` / `offset` |
+| State (Value, Bag, Combining, Map, Multimap, Set, OrderedList) and timers | ✅ | Includes `on_window_expiration`, dynamic timer families, and timer `align` / `offset` |
 | Splittable DoFn + watermark estimators | ✅ | |
 | Schemas, Row coder, logical types | ✅ | `#[derive(BeamRow)]` infers schemas from native types |
 | Metrics, worker status, structured logging | ✅ | |
@@ -137,14 +143,15 @@ This table is a summary of [docs/sdk-parity.md](docs/sdk-parity.md). ✅ support
 | Prism and Dataflow runners | ✅ | Flink/Spark are not tested; they can work through portability |
 | Cross-language: consume *and* provide | ✅ | Ships a bidirectional expansion service |
 | I/O: TextIO, FileIO, Parquet, Avro, TFRecord, local FS, GCS | ✅ | Sharded, rolling writes; `ReadMatches`; splittable columnar reads; ❌ dynamic destinations |
-| I/O through cross-language: Pub/Sub, BigQuery, Bigtable, Kafka | ✅ | Java SchemaTransforms through the auto-started expansion service |
-| Managed I/O: Iceberg, JDBC, Delta Lake, Kafka, BigQuery | ✅ | `ManagedRead` and `ManagedWrite`; the Kafka and BigQuery transforms expand through them |
+| I/O in Rust: BigQuery, Bigtable, Kafka, Iceberg | ✅ | BigQuery Storage Read/Write, Bigtable data API, Kafka on librdkafka, Iceberg REST batch read and write ([guide](docs/native-connectors.md)) |
+| I/O through cross-language: Pub/Sub | ✅ | Java SchemaTransforms through the auto-started expansion service |
+| Managed I/O: Iceberg, JDBC, Delta Lake, Kafka, BigQuery | ✅ | `ManagedRead` and `ManagedWrite` |
 | In-graph assertions (`beam::testing::passert`) | ✅ | `testing` feature |
 | `TestStream` | ✅ | Runner-executed; supported on Prism |
 | `TestPipeline` | ✅ | Options from `BEAM_TEST_PIPELINE_OPTIONS`; verifies assertions ran |
 | Resource hints (`beam:resources:*`) | ✅ | Pipeline and transform level |
 | ML & Hardware Acceleration (Candle, ONNX, Remote LLMs, Arrow) | ✅ | CUDA, Metal, CoreML, Vertex AI Gemini, RunInference ([guide](docs/accelerated-workloads.md)) |
-| Lineage reporting | ❌ | |
+| Lineage reporting | ✅ | `beam::metrics::Lineage` on native connectors |
 | Published to crates.io | ❌ | Build from this repo |
 
 ## Crate Layout
@@ -160,15 +167,23 @@ The SDK is a Cargo workspace with its root at `sdks/rust`:
 | `apache-beam-derive` | `beam/derive/` | `#[derive(BeamRow)]`, `#[derive(BeamEnum)]`, `#[derive(Outputs)]`, `#[derive(State)]`, `#[derive(Timers)]`, and `#[derive(Register)]` proc-macros. `apache-beam-core` re-exports them. Do not depend on this crate directly. |
 | `apache-beam-harness` | `beam/harness/` | Worker harness: Fn API control/data/state/logging dispatch and bundle execution. |
 | `apache-beam-io-file` | `beam/io/file/` | Generic file-based sources and sinks (`FileBasedSource`, `WriteFiles`, `FileSink`, `TextIO`, `FileIO`). |
-| `apache-beam-io-gcp` | `beam/io/gcp/` | GCS filesystem, GCP authentication, and cross-language Pub/Sub, BigQuery and Bigtable. |
+| `apache-beam-gcp-core` | `beam/io/gcp/core/` | Shared Google Cloud Application Default Credentials, async client runtime, gRPC transport and transient-error classification. |
+| `apache-beam-io-gcp-googleapis` | `beam/io/gcp/googleapis/` | Generated gRPC bindings for the vendored Google Cloud Bigtable and BigQuery Storage protos. |
+| `apache-beam-io-gcp` | `beam/io/gcp/` | GCS filesystem, Secret Manager, BigQuery (Storage Read and Storage Write APIs) and Bigtable connectors, and cross-language Pub/Sub. The `gcp-*` features expose it as `beam::io::gcp`. |
+| `apache-beam-io-gcp-expansion-service` | `beam/io/gcp/expansion-service/` | `beam-gcp-expansion-service` binary: serves the GCP connectors (BigQuery Storage Read and Write, Bigtable) to other SDKs as SchemaTransforms. |
 | `apache-beam-io-arrow` | `beam/io/arrow/` | Beam schema/`Row` ⇄ Arrow `Schema`/`RecordBatch` conversion and the `RowCodec` abstraction shared by columnar I/O. |
 | `apache-beam-io-parquet` | `beam/io/parquet/` | `parquetio`: row-group-splittable Parquet reads and sharded Parquet writes on arrow-rs. |
-| `apache-beam-io-avro` | `beam/io/avro/` | `avroio`: block-splittable Avro OCF reads and sharded Avro writes on `arrow-avro`. |
-| `apache-beam-io-json` | `beam/io/json/` | Beam schema/`Row` ⇄ JSON: Beam schemas from JSON Schemas, a reader that decodes each object straight into a row, and a writer. Exposed as `beam::io::json` by the `json` feature. |
-| `apache-beam-io-kafka` | `beam/io/kafka/` | Cross-language `KafkaRead` and `KafkaWrite` over the Java `kafka_read`/`kafka_write` SchemaTransforms, expanded through Managed. Exposed as `beam::io::kafka` by the `kafka` feature. |
-| `apache-beam-io-managed` | `beam/io/managed/` | Managed I/O: `ManagedRead` and `ManagedWrite` over Java's `beam:transform:managed:v1`, plus the `Row`-to-config bridge typed connectors use. Exposed as `beam::io::managed` by the `managed` feature. |
-| `apache-beam-ml` | `beam/ml/` | Machine learning inference framework (`RunInference`, `ModelHandler`, micro-batching, DLQ) and acceleration backends (Candle, ONNX Runtime, Vertex AI remote LLMs). Exposed as `beam::ml` by the `ml` feature. |
-| `apache-beam-external` | `beam/external/` | Cross-language expansion *client* and automated Java expansion service management (`expansionx`). |
+| `apache-beam-io-tfrecord` | `beam/io/tfrecord/` | `tfrecordio`: TFRecord reads and writes. The `tfrecord` feature exposes it as `beam::io::tfrecord`. |
+| `apache-beam-io-avro` | `beam/io/avro/` | `avroio`: block-splittable Avro OCF reads, sharded Avro writes and single-record datum codecs on `arrow-avro`. |
+| `apache-beam-io-json` | `beam/io/json/` | Beam schema/`Row` ⇄ JSON: Beam schemas from JSON Schemas, a reader that decodes each object straight into a row, and a writer. The `json` feature exposes it as `beam::io::json`. |
+| `apache-beam-io-proto` | `beam/io/proto/` | Beam schema/`Row` ⇄ Protocol Buffers: Beam schemas from message descriptors, and rows straight to and from the wire format. The `proto` feature exposes it as `beam::io::proto`. |
+| `apache-beam-io-kafka` | `beam/io/kafka/` | The native Kafka connector on librdkafka: read, write and the RAW, UTF-8, JSON, Avro (with a Confluent schema registry) and PROTO formats. The `kafka` feature exposes it as `beam::io::kafka`. For a Kafka feature that it does not have, use Managed Kafka (`apache-beam-io-managed`). |
+| `apache-beam-io-kafka-expansion-service` | `beam/io/kafka/expansion-service/` | `beam-kafka-expansion-service` binary: serves the Kafka connector to other SDKs as SchemaTransforms. |
+| `apache-beam-io-iceberg` | `beam/io/iceberg/` | Native Apache Iceberg connector (REST catalog, batch snapshot reads, partitioned Parquet writes, snapshot commits). The `iceberg` feature exposes it as `beam::io::iceberg`. |
+| `apache-beam-io-iceberg-expansion-service` | `beam/io/iceberg/expansion-service/` | `beam-iceberg-expansion-service` binary: serves the Iceberg read and write connectors to other SDKs as SchemaTransforms (also under Managed URNs). |
+| `apache-beam-io-managed` | `beam/io/managed/` | Managed I/O: `ManagedRead` and `ManagedWrite` over Java's `beam:transform:managed:v1`, plus the `Row`-to-config bridge typed connectors use. The `managed` feature exposes it as `beam::io::managed`. |
+| `apache-beam-ml` | `beam/ml/` | Machine learning inference framework (`RunInference`, `ModelHandler`, micro-batching, DLQ) and acceleration backends (Candle, ONNX Runtime, Vertex AI remote LLMs). The `ml` feature exposes it as `beam::ml`. |
+| `apache-beam-external` | `beam/external/` | Cross-language expansion *client* and automated Java expansion service management. |
 | `apache-beam-expansion` | `beam/expansion/` | Cross-language expansion *server*, so other SDKs can call Rust transforms. |
 | `apache-beam-runner-prism` | `beam/runners/prism/` | Portable runner backed by the Prism job service. |
 | `apache-beam-runner-dataflow` | `beam/runners/dataflow/` | Google Cloud Dataflow runner. |
@@ -186,15 +201,23 @@ Dependencies go in one direction only. The diagram shows the normal dependencies
 apache-beam-derive (proc-macro, optional) ─┐
 apache-beam-model ─────────────────────────┴─> apache-beam-core
 apache-beam-core ─> apache-beam-fluent, apache-beam-harness, apache-beam-io-file,
-                    apache-beam-io-arrow, apache-beam-io-json, apache-beam-external,
-                    apache-beam-expansion, apache-beam-ml, apache-beam-testing
+                    apache-beam-gcp-core, apache-beam-io-arrow, apache-beam-io-json,
+                    apache-beam-io-proto, apache-beam-external, apache-beam-expansion,
+                    apache-beam-testing
+apache-beam-gcp-core                      ─> apache-beam-ml (remote)
 apache-beam-harness                       ─> apache-beam-runner-prism, apache-beam-expansion,
                                              apache-beam-testing (optional, with prism)
-apache-beam-external                      ─> apache-beam-io-managed ─> apache-beam-io-kafka
-apache-beam-io-file + external + managed  ─> apache-beam-io-gcp
-apache-beam-io-file + io-gcp              ─> apache-beam-runner-dataflow
+apache-beam-external                      ─> apache-beam-io-managed
 apache-beam-io-file + io-arrow            ─> apache-beam-io-parquet, apache-beam-io-avro
+apache-beam-io-file                       ─> apache-beam-io-tfrecord
+apache-beam-io-json + io-avro + io-proto + gcp-core ─> apache-beam-io-kafka
+apache-beam-io-file + external + gcp-core + googleapis ─> apache-beam-io-gcp
+apache-beam-io-file + io-arrow + io-gcp   ─> apache-beam-io-iceberg
+apache-beam-io-file + io-gcp + gcp-core + testing ─> apache-beam-runner-dataflow
 all of the above (optional features)      ─> apache-beam (facade) ─> apache-beam-runner-tests
+apache-beam (facade) + expansion          ─> apache-beam-io-gcp-expansion-service,
+                                             apache-beam-io-kafka-expansion-service,
+                                             apache-beam-io-iceberg-expansion-service
 ```
 
 `apache-beam-core` and `apache-beam-fluent` do not depend on a runner or an I/O implementation. Runners and filesystems register themselves with the registries in `apache-beam-core` through the `inventory` crate. A runner or a filesystem is available when the binary *links* its crate.

@@ -167,6 +167,30 @@ docker run -p 8097:8097 --entrypoint /opt/apache/beam/worker_binary \
 
 A runner starts the same image with its default entrypoint, `boot`. A job from a driver of another SDK has no Rust options snapshot. In that case, `boot` starts the binary without `--options_file`.
 
+### Connector expansion services
+
+The native I/O connectors each ship a container image built with the same properties (`*DataflowImage` builds and pushes `linux/amd64` for Dataflow):
+
+| Task | Image name | Connectors |
+|---|---|---|
+| `gcpExpansionServiceImage` | `beam_rust_gcp_expansion_service` | BigQuery Storage Read and Write, Bigtable ([`beam/io/gcp/expansion-service`](../beam/io/gcp/expansion-service)) |
+| `kafkaExpansionServiceImage` | `beam_rust_kafka_expansion_service` | Kafka read and write ([`beam/io/kafka/expansion-service`](../beam/io/kafka/expansion-service)) |
+| `icebergExpansionServiceImage` | `beam_rust_iceberg_expansion_service` | Iceberg batch read and write ([`beam/io/iceberg/expansion-service`](../beam/io/iceberg/expansion-service)) |
+| `icebergBenchmarkExpansionServiceDataflowImage` | `beam_rust_iceberg_benchmark_expansion_service` | Combined Kafka and Iceberg expansion service for `icebergBenchmark` |
+
+The BigQuery and Iceberg providers read table schemas during expansion, so they need Google Cloud credentials:
+
+```bash
+ADC=$HOME/.config/gcloud/application_default_credentials.json
+docker run -p 8097:8097 -v $ADC:/creds.json:ro \
+  -e GOOGLE_APPLICATION_CREDENTIALS=/creds.json \
+  --entrypoint /opt/apache/beam/worker_binary \
+  apache/beam_rust_gcp_expansion_service:<sdk version> \
+  --port 8097 --docker-image apache/beam_rust_gcp_expansion_service:<sdk version>
+```
+
+Workers on Dataflow use the credentials of the worker service account. Prism mounts the file in `GOOGLE_APPLICATION_CREDENTIALS` into the containers that it starts.
+
 ## Classic templates
 
 `--template_location` stages the pipeline and writes the Dataflow job description to a `gs://` path or a local path. It does not start a job:

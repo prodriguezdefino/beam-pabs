@@ -998,6 +998,7 @@ pub struct Customer {
     pub balance: Decimal,          // beam:logical_type:decimal:v1
     pub signup: NaiveDate,         // beam:logical_type:date:v1
     pub last_login: DateTime<Utc>, // beam:logical_type:micros_instant:v1
+    pub seen: Instant,             // beam:logical_type:millis_instant:v1
     pub tags: Vec<String>,
     pub phone: Option<String>,     // nullable
 }
@@ -1198,6 +1199,18 @@ examples.apply("WriteExamples", tfrecordio::Write::new("/out/examples").with_suf
 
 `tfrecordio::ReadFiles` reads the files in a `PCollection<String>` of paths.
 
+## Native connectors
+
+The SDK has Rust connectors for BigQuery Storage (`gcp-bigquery`), Bigtable (`gcp-bigtable`), Kafka (`kafka`) and Iceberg (`iceberg`). BigQuery, Bigtable and Iceberg offer `Read<T>`, `ReadRows`, `Write<T>` and `WriteRows`. Kafka `Read` and `Write` take codecs from `beam::io::kafka::codec`, and `Typed::new(codec)` adapts any row codec (`Json`, `Avro`, `Proto`, `BeamRow`, `Payload` or a codec of your own) to `T`. Each service write returns a `WriteResult` with a `failures` field.
+
+Configure a row codec before you wrap it in `Typed::new`:
+
+```rust
+let codec: Typed<Avro, Event> = Typed::new(Avro::schema(avro_schema)?.with_registry(registry));
+```
+
+The rustdoc of `beam::io::gcp::{bigquery, bigtable}`, `beam::io::kafka` and `beam::io::iceberg` gives the API. [rust-native-io-providers.md](rust-native-io-providers.md) gives the status, libraries and runtime design of each connector.
+
 ## Cross-language
 
 ### Calling transforms of other SDKs (`beam::external`)
@@ -1227,7 +1240,10 @@ Other SDKs can expand Rust transforms over gRPC:
 
 - [`ExpansionServiceServer`](../beam/expansion/src/lib.rs) implements `discover_schema_transform` and `expand`.
 - `register_schema_transform!` collects [`SchemaTransformProvider`](../beam/expansion/src/lib.rs) implementations across crates at link time.
-- The `beam-expansion-service` binary ([main.rs](../beam/expansion/src/main.rs)) serves them over TCP (default port `8097`) or in a worker pool.
+- The `beam-expansion-service` binary ([main.rs](../beam/expansion/src/main.rs)) serves them over TCP (`--port`, default `8097`; `--host`; `--docker_image`). When a container boot program starts it with `--worker`, the same binary runs as the SDK worker for the transforms that it expanded.
+- `beam-gcp-expansion-service` (crate `apache-beam-io-gcp-expansion-service`) serves the GCP connectors (BigQuery Storage Read and Write, Bigtable). See [beam/io/gcp/expansion-service](../beam/io/gcp/expansion-service/src/lib.rs).
+- `beam-kafka-expansion-service` (crate `apache-beam-io-kafka-expansion-service`) serves the Kafka read and write connectors. See [beam/io/kafka/expansion-service](../beam/io/kafka/expansion-service/src/lib.rs).
+- `beam-iceberg-expansion-service` (crate `apache-beam-io-iceberg-expansion-service`) serves the Iceberg read and write connectors. See [beam/io/iceberg/expansion-service](../beam/io/iceberg/expansion-service/src/lib.rs).
 
 ### Managed I/O (`beam::io::managed`)
 
@@ -1247,16 +1263,17 @@ let rows: PCollection<Row> = p.try_apply("Managed Read(ICEBERG)", ManagedRead::n
 rows.try_apply("Managed Write(POSTGRES)", ManagedWrite::new(managed::POSTGRES).with_config_url("gs://b/postgres.yaml"))?;
 ```
 
-- **Config**: `with_config` takes any `Serialize` map (struct, `BTreeMap`, `serde_json::Value`). `with_config_entry` sets one key. `with_yaml_config` and `with_config_url` pass YAML through without change. The SDK sends structured config as JSON, so Java's YAML 1.1 loader never coerces strings such as `off` or `0123`.
+- **Config**: `with_config` takes any `Serialize` map (struct, `BTreeMap`, `serde_json::Value`). `with_config_entry` sets one key. `with_yaml_config` and `with_config_url` pass YAML through without change. The SDK sends structured config as JSON, so Java's YAML 1.1 loader never coerces strings such as `off` or `0123`. `managed::row_to_config` converts a SchemaTransform config `Row` into Managed config.
 - **Expansion service**: the SDK selects it per connector. Iceberg, Kafka and Delta use the Java I/O service. BigQuery and JDBC use the GCP service. To override, call `with_expansion_service`.
-- **Typed connectors**: `KafkaRead` / `KafkaWrite` (`beam::io::kafka`) and the BigQuery transforms keep typed builders. They expand through Managed with `to_managed()`. `BigQueryWrite::to_managed()` returns `None` for write methods that have no Managed equivalent (only `Auto` and `StorageApiAtLeastOnce` map). `managed::row_to_config` converts a SchemaTransform config `Row` into Managed config.
-- **Extra outputs and errors**: `ManagedRead::with_all_outputs()` and `ManagedWrite::with_outputs()` return all outputs as `beam::external::ExternalOutputs` (`get` / `try_get` / `tags`). An Iceberg write emits `managed::SNAPSHOTS`. `with_error_handling("errors")` sends failed records to an `errors` output. `KafkaRead`, `KafkaWrite` and `BigQueryWrite` also have this method. Output tags are declared at construction, because workers rebuild the pipeline without an expansion service. Expansion fails if Java does not produce a declared tag.
+- **BigQuery**: the connectors in `beam::io::gcp::bigquery` (feature `gcp-bigquery`) read and write through the Storage APIs. For `WRITE_TRUNCATE`, load jobs, CDC writes or dynamic destinations, use `ManagedWrite::new(managed::BIGQUERY)`.
+- **Kafka**: the connectors in `beam::io::kafka` (feature `kafka`) read and write through librdkafka, with codecs in `beam::io::kafka::codec`. For dynamic topic writes or inline `.proto` schema text, use `ManagedRead::new(managed::KAFKA)` or `ManagedWrite::new(managed::KAFKA)`.
+- **Extra outputs and errors**: `ManagedRead::with_all_outputs()` and `ManagedWrite::with_all_outputs()` return all outputs as `beam::external::ExternalOutputs` (`get` / `try_get` / `tags`). An Iceberg write emits `managed::SNAPSHOTS`. `with_error_handling("errors")` sends failed records to an `errors` output. Declare the output tags at construction, because workers rebuild the pipeline without an expansion service. Expansion fails if Java does not produce a declared tag.
 
 ```rust
-let written = rows.try_apply("Managed Write(ICEBERG)", ManagedWrite::new(managed::ICEBERG).with_config(cfg).with_outputs())?;
+let written = rows.try_apply("Managed Write(ICEBERG)", ManagedWrite::new(managed::ICEBERG).with_config(cfg).with_all_outputs())?;
 let snapshots = written.try_get(managed::SNAPSHOTS)?;
 
-let read = p.try_apply("ReadEvents", KafkaRead::new("broker:9092", "t").with_error_handling("errors").to_managed()?.with_all_outputs())?;
+let read = p.try_apply("ReadEvents", ManagedRead::new(managed::KAFKA).with_config(kafka_cfg).with_error_handling("errors").with_all_outputs())?;
 let (records, errors) = (read.try_get(managed::OUTPUT)?, read.try_get("errors")?);
 ```
 
@@ -1367,11 +1384,12 @@ The prelude contains the items that a usual pipeline uses. Each other item has o
 | `beam::transforms::display_data` | `DisplayDataBuilder`, `HasDisplayData` |
 | `beam::pipeline` | `ResourceHints`, `URN_RESOURCE_*` |
 | `beam::metrics` | Metrics query API (`MetricResults`, `MetricFilter`, `MetricResult`), `Lineage`, `THROTTLE_TIME_*` |
+| `beam::retry` | Exponential backoff with jitter (`Backoff`, `Decision`, `with_retries`, `with_throttled_retries`) |
 | `beam::coders` | Coders, `WindowedHeader`, `PaneInfo`, `ShardedKey` |
 | `beam::runners` | `JobHandle`, runner registry |
 | `beam::options` | `parse`, `parse_from`, `try_parse_from`, option groups, `Secret` |
 | `beam::logging` | `init_logging` (feature `harness`) |
-| `beam::io::*` | `beam::io::file::textio`, `beam::io::file::fileio`, `beam::io::file::WriteFiles`, `beam::io::parquet::parquetio`, `beam::io::avro::avroio`, `beam::io::tfrecord::tfrecordio`, `beam::io::kafka`, `beam::io::managed` |
+| `beam::io::*` | `beam::io::file::{textio, fileio, WriteFiles}`, `beam::io::parquet::parquetio`, `beam::io::avro::{avroio, datum}`, `beam::io::tfrecord::tfrecordio`, `beam::io::json`, `beam::io::proto`, `beam::io::gcp::{bigquery, bigtable, pubsub}`, `beam::io::kafka`, `beam::io::iceberg`, `beam::io::managed` |
 | `beam::ml` | `RunInference`, `ModelHandler`, ONNX / Candle / remote handlers ([guide](accelerated-workloads.md)) |
 | `beam::external` | `ExternalTransform`, `ExternalSource`, `ExternalSink`, `ExternalOutputs`, expansion service targets |
 | `beam::testing` | `passert`, `TestPipeline`, `TestStream` |

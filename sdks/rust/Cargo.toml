@@ -197,8 +197,8 @@ beam_external = { package = "apache-beam-external", path = "beam/external", vers
 beam_expansion = { package = "apache-beam-expansion", path = "beam/expansion", version = "2.79.0-SNAPSHOT" }
 beam_io_file = { package = "apache-beam-io-file", path = "beam/io/file", version = "2.79.0-SNAPSHOT" }
 beam_gcp_core = { package = "apache-beam-gcp-core", path = "beam/io/gcp/core", version = "2.79.0-SNAPSHOT" }
-beam_io_gcp_googleapis = { package = "apache-beam-io-gcp-googleapis", path = "beam/io/gcp/googleapis", version = "2.79.0-SNAPSHOT" }
 beam_io_gcp = { package = "apache-beam-io-gcp", path = "beam/io/gcp", version = "2.79.0-SNAPSHOT", default-features = false }
+beam_io_gcp_googleapis = { package = "apache-beam-io-gcp-googleapis", path = "beam/io/gcp/googleapis", version = "2.79.0-SNAPSHOT" }
 beam_io_kafka = { package = "apache-beam-io-kafka", path = "beam/io/kafka", version = "2.79.0-SNAPSHOT" }
 beam_io_kafka_expansion = { package = "apache-beam-io-kafka-expansion-service", path = "beam/io/kafka/expansion-service", version = "2.79.0-SNAPSHOT" }
 beam_io_iceberg = { package = "apache-beam-io-iceberg", path = "beam/io/iceberg", version = "2.79.0-SNAPSHOT" }
