@@ -120,7 +120,7 @@ pub mod io {
     #[cfg(feature = "kafka")]
     pub use beam_io_kafka as kafka;
 
-    /// The native Iceberg write: `beam::io::iceberg::Write` and `WriteRows`.
+    /// The native Iceberg read and write: `beam::io::iceberg::{Read, ReadRows, Write, WriteRows}`.
     #[cfg(feature = "iceberg")]
     pub use beam_io_iceberg as iceberg;
 

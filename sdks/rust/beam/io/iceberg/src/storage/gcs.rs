@@ -34,7 +34,7 @@ use iceberg::io::{FileMetadata, FileRead, FileWrite};
 use iceberg::{Error, ErrorKind};
 use moka::sync::Cache;
 
-use super::io_error;
+use super::{io_error, tail_cache};
 
 /// The count of vended tokens that keep a cached GCS client.
 const MAX_CACHED_GCS_TOKENS: u64 = 16;
@@ -124,6 +124,7 @@ impl FileWrite for GcsFileWrite {
             .close()
             .await
             .map_err(|e| io_error(&self.path, e))?;
+        tail_cache::invalidate(&self.path);
         Ok(FileMetadata { size })
     }
 }

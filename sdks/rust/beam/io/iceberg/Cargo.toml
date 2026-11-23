@@ -66,5 +66,10 @@ http = { workspace = true, optional = true }
 
 [dev-dependencies]
 beam_test_utils = { workspace = true }
+criterion = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+
+[[bench]]
+name = "read"
+harness = false

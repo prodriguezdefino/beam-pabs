@@ -26,6 +26,7 @@
 
 #[cfg(feature = "gcp")]
 mod gcs;
+pub(crate) mod tail_cache;
 
 use std::io::{self, Read, Write};
 use std::ops::Range;
@@ -43,6 +44,8 @@ use iceberg::io::{
 };
 use iceberg::{Error, ErrorKind};
 use serde::{Deserialize, Serialize};
+
+pub use tail_cache::CachedTailRead;
 
 /// The prop of a vended GCS access token.
 pub const GCS_TOKEN: &str = "gcs.oauth2.token";
@@ -173,10 +176,12 @@ impl Storage for FileSystemStorage {
         #[cfg(feature = "gcp")]
         if let Some(gcs) = self.gcs_for(path) {
             let size = gcs.size_async(path).await.map_err(|e| io_error(path, e))?;
+            tail_cache::invalidate_if_size_differs(path, size);
             return Ok(FileMetadata { size });
         }
         let (fs, owned) = (self.file_system(path)?, path.to_string());
         let size = blocking(path, move || fs.size(&owned)).await?;
+        tail_cache::invalidate_if_size_differs(path, size);
         Ok(FileMetadata { size })
     }
 
@@ -192,32 +197,44 @@ impl Storage for FileSystemStorage {
     async fn reader(&self, path: &str) -> iceberg::Result<Box<dyn FileRead>> {
         #[cfg(feature = "gcp")]
         if let Some(gcs) = self.gcs_for(path) {
-            return Ok(Box::new(gcs::GcsFileRead {
-                gcs,
-                path: path.to_string(),
-            }));
+            return Ok(Box::new(CachedTailRead::new(
+                path,
+                gcs::GcsFileRead {
+                    gcs,
+                    path: path.to_string(),
+                },
+            )));
         }
-        Ok(Box::new(FileSystemRead {
-            fs: self.file_system(path)?,
-            path: path.to_string(),
-        }))
+        Ok(Box::new(CachedTailRead::new(
+            path,
+            FileSystemRead {
+                fs: self.file_system(path)?,
+                path: path.to_string(),
+            },
+        )))
     }
 
     async fn write(&self, path: &str, bs: Bytes) -> iceberg::Result<()> {
+        tail_cache::invalidate(path);
         #[cfg(feature = "gcp")]
         if let Some(gcs) = self.gcs_for(path) {
-            return gcs.write(path, bs).await.map_err(|e| io_error(path, e));
+            let result = gcs.write(path, bs).await.map_err(|e| io_error(path, e));
+            tail_cache::invalidate(path);
+            return result;
         }
         let (fs, owned) = (self.file_system(path)?, path.to_string());
-        blocking(path, move || {
+        let result = blocking(path, move || {
             let mut writer = fs.open_write(&owned)?;
             writer.write_all(&bs)?;
             writer.flush()
         })
-        .await
+        .await;
+        tail_cache::invalidate(path);
+        result
     }
 
     async fn writer(&self, path: &str) -> iceberg::Result<Box<dyn FileWrite>> {
+        tail_cache::invalidate(path);
         #[cfg(feature = "gcp")]
         if let Some(gcs) = self.gcs_for(path) {
             let writer = gcs.writer(path).await.map_err(|e| io_error(path, e))?;
@@ -236,6 +253,7 @@ impl Storage for FileSystemStorage {
     }
 
     async fn delete(&self, path: &str) -> iceberg::Result<()> {
+        tail_cache::invalidate(path);
         #[cfg(feature = "gcp")]
         if let Some(gcs) = self.gcs_for(path) {
             return gcs.remove_async(path).await.map_err(|e| io_error(path, e));
@@ -245,6 +263,7 @@ impl Storage for FileSystemStorage {
     }
 
     async fn delete_prefix(&self, path: &str) -> iceberg::Result<()> {
+        tail_cache::invalidate_prefix(path);
         let pattern = if path.ends_with('/') {
             format!("{path}**")
         } else {
@@ -348,6 +367,7 @@ impl FileWrite for FileSystemWrite {
     async fn close(&mut self) -> iceberg::Result<FileMetadata> {
         let mut writer = self.take()?;
         blocking(&self.path, move || writer.flush()).await?;
+        tail_cache::invalidate(&self.path);
         Ok(FileMetadata { size: self.written })
     }
 }

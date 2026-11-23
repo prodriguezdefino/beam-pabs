@@ -19,12 +19,13 @@
 
 //! Apache Iceberg connector for the Apache Beam Rust SDK.
 //!
-//! The connector appends rows to Iceberg tables of a REST catalog. The workers write Parquet
-//! data files through the SDK file systems and commit snapshots to the catalog.
+//! The connector reads snapshots of Iceberg tables of a REST catalog, and appends rows to them.
+//! The workers read and write Parquet data files through the SDK file systems and commit
+//! snapshots to the catalog.
 //!
-//! [`Write`] takes a `#[derive(BeamRow)]` struct and [`WriteRows`] takes rows with a row
-//! schema. A bounded input commits one snapshot at the end. An unbounded input commits one
-//! snapshot for each table and triggering period.
+//! [`Read`] and [`Write`] take a `#[derive(BeamRow)]` struct. [`ReadRows`] and [`WriteRows`]
+//! take rows with a row schema. A bounded write commits one snapshot at the end. An unbounded
+//! write commits one snapshot for each table and triggering period.
 //!
 //! ```no_run
 //! # use beam::pipeline::Pipeline;
@@ -59,11 +60,16 @@ pub mod arrow;
 #[doc(hidden)]
 pub mod catalog;
 #[doc(hidden)]
+pub mod read;
+#[doc(hidden)]
 pub mod storage;
 #[doc(hidden)]
 pub mod write;
 
 pub use catalog::Catalog;
+pub use read::options::{DEFAULT_READ_BATCH_SIZE, ReadOptions};
+pub use read::reader::read_failure_schema;
+pub use read::{Read, ReadRows, ReadRowsWithFailures, ReadWithFailures};
 pub use write::commit::SnapshotInfo;
 pub use write::encode::write_failure_schema;
 pub use write::options::{PartitionField, PartitionTransform, WriteOptions};

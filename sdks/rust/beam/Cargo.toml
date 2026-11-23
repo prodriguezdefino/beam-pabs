@@ -67,7 +67,7 @@ proto = ["dep:beam_io_proto"]
 # The Kafka connector on librdkafka, in `beam::io::kafka`. Off by default: it builds
 # librdkafka and OpenSSL from source.
 kafka = ["dep:beam_io_kafka", "avro", "json", "proto"]
-# The native Iceberg write, in `beam::io::iceberg`. Off by default: it pulls in the `iceberg`
+# The native Iceberg read and write, in `beam::io::iceberg`. Off by default: it pulls in the `iceberg`
 # crates.
 iceberg = ["dep:beam_io_iceberg"]
 # Managed I/O (Iceberg, Kafka, BigQuery, JDBC, Delta Lake) through the Java expansion
