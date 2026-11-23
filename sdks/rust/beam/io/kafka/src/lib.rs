@@ -22,8 +22,8 @@
 //! The connector reads and writes Kafka in the Rust worker. [`Read`] reads the records of a
 //! topic, and [`Write`] writes elements to a topic. [`codec`] maps record values to elements
 //! and back. [`client`] holds the connection to a cluster, and [`auth`] the Google
-//! authentication of Google Cloud Managed Service for Apache Kafka. [`xlang`] has the
-//! cross-language Kafka transforms.
+//! authentication of Google Cloud Managed Service for Apache Kafka. The Kafka expansion
+//! service serves the connector to Python, Java and Go pipelines.
 //!
 //! Pipelines use the crate as `beam::io::kafka` with the facade feature `kafka`. For a feature
 //! that the connector does not have, use the Kafka transforms of the Managed API
@@ -76,7 +76,6 @@ pub mod context;
 pub mod read;
 #[doc(hidden)]
 pub mod write;
-pub mod xlang;
 
 pub use read::{
     ConsumerPool, PartitionStart, PoolSize, Read, ReadOptions, ReadWithFailures, Redistribute,

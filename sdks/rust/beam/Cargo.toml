@@ -64,8 +64,9 @@ tfrecord = ["dep:beam_io_tfrecord", "io-file"]
 json = ["dep:beam_io_json"]
 # Beam schemas and rows to and from Protocol Buffers messages. Off by default.
 proto = ["dep:beam_io_proto"]
-# Cross-language Kafka through the Java expansion service. Off by default.
-kafka = ["dep:beam_io_kafka", "external"]
+# The Kafka connector on librdkafka, in `beam::io::kafka`. Off by default: it builds
+# librdkafka and OpenSSL from source.
+kafka = ["dep:beam_io_kafka", "avro", "json", "proto"]
 # Managed I/O (Iceberg, Kafka, BigQuery, JDBC, Delta Lake) through the Java expansion
 # service.
 managed = ["dep:beam_io_managed", "external"]

@@ -45,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let pipeline = Pipeline::create(&options);
 
     let incoming = match args.transport {
-        Transport::Kafka => kafka::read(&pipeline, &args)?,
+        Transport::Kafka => kafka::read(&pipeline, &args).map_err(String::from)?,
         Transport::Pubsub => pubsub::read(&pipeline, &args)?,
     };
     let outgoing = incoming.apply(
@@ -56,7 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         },
     );
     match args.transport {
-        Transport::Kafka => kafka::write(&outgoing, &args)?,
+        Transport::Kafka => kafka::write(&outgoing, &args).map_err(String::from)?,
         Transport::Pubsub => pubsub::write(&outgoing, &args)?,
     }
 

@@ -34,7 +34,7 @@ doctest = false
 [dependencies]
 # Unifies the `beam` feature set across all four I/O benchmark crates so `build/cross-target`
 # compiles `beam`, `beam_harness`, `beam_io_gcp` and Arrow once instead of per benchmark.
-beam = { workspace = true, features = ["prism", "dataflow", "gcp-bigquery", "gcp-bigtable", "gcp-gcs"] }
+beam = { workspace = true, features = ["prism", "dataflow", "gcp-bigquery", "gcp-bigtable", "gcp-gcs", "kafka"] }
 clap = { workspace = true }
 serde = { workspace = true }
 

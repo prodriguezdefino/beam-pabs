@@ -17,10 +17,12 @@
  * under the License.
  */
 
-//! Kafka xlang wrapper tests (one binary): config rows vs the Java schemas, the Managed
-//! payloads, and remote expansion against a strict recording mock.
+//! Expansion service with the Kafka connector of the Rust SDK. It is also the worker of the
+//! transforms that it expands.
 
-mod config;
-mod fixtures;
-mod managed;
-mod pipeline;
+use beam_io_kafka_expansion as _;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    beam_expansion::run().await
+}

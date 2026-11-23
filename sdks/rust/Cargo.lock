@@ -188,6 +188,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "apache-beam-benchmark-kafka"
+version = "2.79.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "apache-beam-benchmark-io",
+ "clap",
+ "serde",
+ "tokio",
+]
+
+[[package]]
 name = "apache-beam-core"
 version = "2.79.0-SNAPSHOT"
 dependencies = [
@@ -447,11 +458,9 @@ version = "2.79.0-SNAPSHOT"
 dependencies = [
  "apache-beam",
  "apache-beam-core",
- "apache-beam-external",
  "apache-beam-gcp-core",
  "apache-beam-io-avro",
  "apache-beam-io-json",
- "apache-beam-io-managed",
  "apache-beam-io-proto",
  "apache-beam-model",
  "apache-beam-test-utils",
@@ -469,6 +478,18 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "ureq",
+]
+
+[[package]]
+name = "apache-beam-io-kafka-expansion-service"
+version = "2.79.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "apache-beam-expansion",
+ "apache-beam-test-utils",
+ "prost",
+ "prost-types",
+ "tokio",
 ]
 
 [[package]]
