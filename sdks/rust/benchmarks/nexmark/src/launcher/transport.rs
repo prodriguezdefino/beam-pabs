@@ -31,7 +31,7 @@ use beam::coders::{Coder, CoderError, Context, DefaultCoder};
 use beam::io::gcp::pubsub::{
     self, PubsubFormat, PubsubRead, PubsubSource, PubsubWrite, PubsubWriteFormat,
 };
-use beam::io::kafka::{self, KafkaRead, KafkaWrite, OffsetReset};
+use beam::io::kafka::xlang::{self as kafka, KafkaRead, KafkaWrite, OffsetReset};
 use beam::metrics::Metrics;
 use beam::prelude::*;
 use beam::transforms::WithTimestamps;

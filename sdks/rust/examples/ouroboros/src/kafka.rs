@@ -24,7 +24,7 @@
 //! counts these records as `kafka_read_errors` and `kafka_write_errors`.
 
 use beam::external::ExpansionError;
-use beam::io::kafka::{
+use beam::io::kafka::xlang::{
     KafkaRead, KafkaWrite, OffsetReset, payload_bytes, raw_bytes_row, raw_bytes_schema,
 };
 use beam::io::managed;

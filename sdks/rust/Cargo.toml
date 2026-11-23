@@ -111,7 +111,7 @@ criterion = { version = "0.8", default-features = false, features = ["cargo_benc
 bytes = "1.7"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["float_roundtrip"] }
-base64 = "0.22"
+base64 = "0.23"
 sha2 = "0.11"
 tracing = "0.1"
 tracing-subscriber = "0.3"
@@ -122,7 +122,7 @@ inventory = "0.3"
 globset = "0.4"
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 snap = "1.1"
-zstd = { version = "0.14", default-features = false }
+zstd = { version = "0.13", default-features = false }
 # Masked CRC32C of TFRecord framing.
 crc32c = "0.6"
 regex = "1.13"
@@ -171,6 +171,9 @@ parquet = { version = "58.4.1", default-features = false, features = ["arrow", "
 arrow-avro = { version = "58.4.1", default-features = false, features = ["deflate", "snappy", "zstd"] }
 # Avro schema parser of the direct datum encoder (apache-beam-io-avro). iceberg uses the same version.
 apache-avro = { version = "0.21.0", default-features = false }
+# Static librdkafka, OpenSSL, zlib and zstd: the worker binary links only libc, libm and libgcc_s,
+# which the distroless runtime image has. See docs/rust-native-io-providers.md, Kafka dependencies.
+rdkafka = { version = "0.39", default-features = false, features = ["libz-static", "zstd", "ssl-vendored", "tokio"] }
 
 http = "1"
 

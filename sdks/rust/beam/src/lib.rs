@@ -116,7 +116,7 @@ pub mod io {
     #[cfg(feature = "proto")]
     pub use beam_io_proto as proto;
 
-    /// Cross-language Kafka I/O: `beam::io::kafka::KafkaRead` and `KafkaWrite`.
+    /// Kafka I/O: `beam::io::kafka`, and the cross-language `beam::io::kafka::xlang::KafkaRead`.
     #[cfg(feature = "kafka")]
     pub use beam_io_kafka as kafka;
 

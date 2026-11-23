@@ -22,7 +22,7 @@
 use beam::pipeline::URN_EXPANSION_SCHEMA_TRANSFORM;
 use beam::prelude::*;
 use beam_external::ExpansionError;
-use beam_io_kafka::{
+use beam_io_kafka::xlang::{
     KafkaFormat, KafkaRead, KafkaWrite, OffsetReset, URN_KAFKA_READ, URN_KAFKA_WRITE,
 };
 use beam_io_managed::URN_MANAGED;

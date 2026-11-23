@@ -23,7 +23,7 @@
 //! is ignored by default: `cargo test -p apache-beam-io-kafka --test discovery -- --ignored`.
 
 use beam_external::ExpansionClient;
-use beam_io_kafka::{
+use beam_io_kafka::xlang::{
     DEFAULT_EXPANSION_SERVICE, KafkaRead, KafkaWrite, URN_KAFKA_READ, URN_KAFKA_WRITE,
 };
 use beam_model::pipeline::FieldType as ProtoFieldType;

@@ -21,7 +21,7 @@
 //! service.
 
 use beam::io::gcp::pubsub::{URN_PUBSUB_READ, URN_PUBSUB_WRITE};
-use beam::io::kafka::{URN_KAFKA_READ, URN_KAFKA_WRITE};
+use beam::io::kafka::xlang::{URN_KAFKA_READ, URN_KAFKA_WRITE};
 use beam::options::PipelineOptions;
 use beam::pipeline::URN_EXPANSION_SCHEMA_TRANSFORM;
 use beam::prelude::*;

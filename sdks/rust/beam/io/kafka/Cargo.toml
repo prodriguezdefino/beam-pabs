@@ -22,22 +22,42 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Cross-language Apache Kafka I/O connector for the Apache Beam Rust SDK"
+description = "The Apache Kafka I/O connector (librdkafka) of the Apache Beam Rust SDK"
 
 [lib]
 name = "beam_io_kafka"
 test = false
 
+# The connector builds librdkafka and OpenSSL from source.
 [dependencies]
 beam = { package = "apache-beam-core", path = "../../core", version = "2.79.0-SNAPSHOT" }
+arc-swap = { workspace = true }
+foldhash = { workspace = true }
 beam_external = { workspace = true }
 beam_io_managed = { workspace = true }
+rdkafka = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+# The JSON format: JSON Schemas to Beam schemas, and rows to and from JSON objects.
+beam_io_json = { workspace = true }
+# The Application Default Credentials of Google Cloud Managed Service for Apache Kafka.
+beam_gcp_core = { workspace = true }
+# The AVRO format: Avro schemas to Beam schemas, and rows to and from Avro datums.
+beam_io_avro = { workspace = true }
+# The PROTO format: Protocol Buffers messages to and from rows.
+beam_io_proto = { workspace = true }
+# The HTTP client of the schema registry. The decoder calls it from the sync reader.
+ureq = { workspace = true }
 
 [dev-dependencies]
 beam_model = { workspace = true }
+# The file descriptor sets and the messages of the PROTO tests, and the payloads of the model.
+prost = { workspace = true }
+prost-types = { workspace = true }
 serde_json = { workspace = true }
 beam_test_utils = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { workspace = true }
 
 [lints]
 workspace = true

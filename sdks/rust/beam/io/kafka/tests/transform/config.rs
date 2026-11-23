@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 use beam::prelude::*;
 use beam::schema::{Field, FieldType, FieldValue};
 use beam_external::ExpansionError;
-use beam_io_kafka::{
+use beam_io_kafka::xlang::{
     KafkaFormat, KafkaRead, KafkaWrite, OffsetReset, google_managed_kafka_auth_config,
     payload_bytes, raw_bytes_row, raw_bytes_schema, raw_string_schema,
 };
@@ -244,7 +244,7 @@ fn test_write_config_row() {
         .with_format(KafkaFormat::Avro {
             schema: "{}".into(),
         })
-        .with_compression(beam_io_kafka::Compression::Zstd)
+        .with_compression(beam_io_kafka::xlang::Compression::Zstd)
         .with_error_handling("bad")
         .with_gcp_adc(true)
         .build_config_row()
