@@ -93,7 +93,7 @@ def logs(project: str, token: str, job_id: str) -> List[Dict[str, Any]]:
 
 def collect(project: str, token: str, details: Dict[str, Any], cfg: Config,
             fetch: Callable[[Dict[str, str]], monitoring.Series]) -> Dict[str, Any]:
-  """The logs and Monitoring series of a job from dataflow_job.fetch. A failed request gives
+  """The logs and Monitoring series of a job from dataflow_api.fetch. A failed request gives
   no data."""
   job = details["job"]
   out: Dict[str, Any] = {}

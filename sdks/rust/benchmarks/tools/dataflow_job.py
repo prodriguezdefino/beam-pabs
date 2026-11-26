@@ -56,29 +56,15 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
+import dataflow_api
 import io_report
 import job_wait
 import monitoring
 import report
 
-API = "https://dataflow.googleapis.com/v1b3/projects/{project}/locations/{region}/jobs"
-JOB_ID = re.compile(
-    r"(?:^JOB_ID=(\S+)|Dataflow Console: \S+/dataflow/jobs/[^/\s]+/([^?\s/]+))",
-    re.MULTILINE,
-)
-WORKERS = re.compile(r"Starting (\d+) workers|number of workers to (\d+)|"
-                     r"worker pool from \d+ to (\d+)")
-STOCKOUT = re.compile(r"(?i)stockout|resource.pool.exhausted|does not have enough resources")
-QUOTA = re.compile(r"(?i)quota")
-NOTABLE = ("JOB_MESSAGE_WARNING", "JOB_MESSAGE_ERROR")
 POLL_SECONDS = 30
-UNKNOWN_PLATFORM = "Unknown CPU Platform"
-# A job found by name must start at most this long before its launch command, for clock skew.
-LAUNCH_SLACK = datetime.timedelta(seconds=60)
 SECTIONS = ["metrics", "steps", "memory"]
 # The jobs of a round share the conditions of the region only if they start together.
 MAX_START_SPREAD_SECONDS = 60
@@ -115,57 +101,6 @@ def columns(count_name: str, counter: Optional[str]) -> List[report.Column]:
   ]
 
 
-def access_token() -> str:
-  return subprocess.run(["gcloud", "auth", "print-access-token"], check=True,
-                        capture_output=True, text=True).stdout.strip()
-
-
-def get(url: str, token: str) -> Dict[str, Any]:
-  request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-  with urllib.request.urlopen(request) as response:
-    return json.load(response)
-
-
-def list_jobs(project: str, region: str, name: str) -> List[Dict[str, Any]]:
-  """The jobs of the region with this name. An API error gives no job."""
-  try:
-    reply = get(f"{API.format(project=project, region=region)}?filter=ALL&name={name}"
-                "&pageSize=50", access_token())
-  except (urllib.error.URLError, OSError, subprocess.CalledProcessError):
-    return []
-  return reply.get("jobs", [])
-
-
-def find_job(jobs: Iterable[Dict[str, Any]], name: str,
-             launched: datetime.datetime) -> Optional[Dict[str, Any]]:
-  """The newest job with this name that started after the launch and was not cancelled."""
-  matches = [
-      job for job in jobs
-      if job.get("name") == name and job.get("currentState") != "JOB_STATE_CANCELLED"
-      and monitoring.parse_time(job["createTime"]) >= launched - LAUNCH_SLACK
-  ]
-  return max(matches, key=lambda job: job["createTime"], default=None)
-
-
-def fetch(project: str, region: str, job_id: str) -> Dict[str, Any]:
-  """The job (with its worker pools), its metrics and all pages of its messages."""
-  token = access_token()
-  base = f"{API.format(project=project, region=region)}/{job_id}"
-  messages, page = [], ""
-  while True:
-    reply = get(f"{base}/messages?minimumImportance=JOB_MESSAGE_DETAILED&pageSize=500"
-                + (f"&pageToken={page}" if page else ""), token)
-    messages += reply.get("jobMessages", [])
-    page = reply.get("nextPageToken")
-    if not page:
-      break
-  return {
-      "job": get(f"{base}?view=JOB_VIEW_DESCRIPTION", token),
-      "metrics": get(f"{base}/metrics", token).get("metrics", []),
-      "messages": messages,
-  }
-
-
 def io_namespace(io: Optional[io_report.Config]) -> Optional[str]:
   """The namespace of the user metrics of an I/O benchmark, or None."""
   return io.get("namespace") if io else None
@@ -174,124 +109,31 @@ def io_namespace(io: Optional[io_report.Config]) -> Optional[str]:
 def collect_monitoring(project: str, details: Dict[str, Any], counter: Optional[str],
                        wait_seconds: float, namespace: Optional[str] = None
                        ) -> Dict[str, monitoring.Series]:
-  """The Monitoring series of a job from `fetch`. The counter total from the Dataflow API
-  tells when the counter series is complete."""
-  job, token = details["job"], access_token()
-  expected = parse_metrics(details["metrics"], "", counter,
-                           namespace)["metrics"].get("counter_total")
+  """The Monitoring series of a job from `dataflow_api.fetch`. The counter total from the Dataflow
+  API tells when the counter series is complete."""
+  job, token = details["job"], dataflow_api.access_token()
+  expected = dataflow_api.parse_metrics(details["metrics"], "", counter,
+                                        namespace)["metrics"].get("counter_total")
   return monitoring.collect(lambda query: monitoring.time_series(project, token, query),
                             job["id"], job["createTime"], job["currentStateTime"], counter,
                             wait_seconds, expected)
 
 
 def collect_io(args: argparse.Namespace, details: Dict[str, Any]) -> Dict[str, Any]:
-  """The logs and Monitoring series of io_report.py for a job from `fetch`."""
-  token = access_token()
+  """The logs and Monitoring series of io_report.py for a job from `dataflow_api.fetch`."""
+  token = dataflow_api.access_token()
   return io_report.collect(args.project, token, details, args.io,
                            lambda query: monitoring.time_series(args.project, token, query))
 
 
-def platform_command(project: str, job_name: str) -> List[str]:
-  return ["gcloud", "compute", "instances", "list", f"--project={project}",
-          f"--filter=labels.dataflow_job_name~^{job_name}", "--format=value(cpuPlatform)"]
-
-
-def cpu_platforms(project: str, job_name: str) -> Set[str]:
-  """The CPU platforms of the running worker VMs of a job. Empty when none runs.
-
-  A VM that is still staging reports an unknown platform, so that value is skipped.
-  """
-  out = subprocess.run(platform_command(project, job_name), capture_output=True, text=True)
-  return known_platforms(out.stdout.splitlines())
-
-
-def known_platforms(lines: Iterable[str]) -> Set[str]:
-  return {line.strip() for line in lines if line.strip() and line.strip() != UNKNOWN_PLATFORM}
-
-
-def job_id_from_log(text: str) -> Optional[str]:
-  match = JOB_ID.search(text)
-  return (match.group(1) or match.group(2)) if match else None
-
-
-def parse_metrics(metrics: Iterable[Dict[str, Any]], count_output: str,
-                  counter: Optional[str] = None,
-                  namespace: Optional[str] = None) -> Dict[str, Any]:
-  """The job totals, the counted elements and the ProcessElement seconds of each step.
-
-  The counted elements are the elements of the first output whose name holds `count_output`.
-  The total of the user counter `counter` adds the values of all steps. With `namespace`, it
-  adds only the counters of that namespace.
-  """
-  totals: Dict[str, float] = {}
-  steps: Dict[str, float] = {}
-  elements = 0.0
-  counter_total = 0.0
-  for metric in metrics:
-    name, context = metric["name"]["name"], metric["name"].get("context", {})
-    scalar = metric.get("scalar")
-    if context.get("tentative") == "true" or not isinstance(scalar, (int, float)):
-      continue
-    if name.startswith("Total") and "step" not in context:
-      totals[name] = float(scalar)
-    elif name == "ExecutionTime_ProcessElement" and "step" in context:
-      step = context["step"]
-      steps[step] = steps.get(step, 0.0) + scalar / 1000.0
-    elif (count_output and name == "ElementCount"
-          and count_output in context.get("output_user_name", "")):
-      elements = max(elements, float(scalar))
-    elif (counter and metric["name"].get("origin") == "user" and name == counter
-          and (not namespace or context.get("namespace") == namespace)):
-      counter_total += float(scalar)
-  vcpu, step_wall = totals.get("TotalVcpuTime"), sum(steps.values())
-  values = {
-      "total_vcpu_s": vcpu,
-      "elements": elements or None,
-      "elements_per_vcpu_s": elements / vcpu if vcpu and elements else None,
-      "memory_gb_s": totals["TotalMemoryUsage"] / 1024 if "TotalMemoryUsage" in totals else None,
-      "pd_gb_s": totals.get("TotalPdUsage"),
-      # The service reports the shuffle data in GB.
-      "shuffle_gb": totals.get("TotalShuffleDataProcessed"),
-      "step_wall_s": step_wall,
-      "step_wall_s_per_1m_elements": step_wall / (elements / 1e6) if elements else None,
-      "counter_total": counter_total or None,
-  }
-  return {"metrics": {k: v for k, v in values.items() if v is not None}, "steps": steps}
-
-
-def parse_messages(messages: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
-  """The peak worker count, the warnings and errors, and the stockout and quota flags."""
-  ordered = sorted(messages, key=lambda m: m.get("time", ""))
-  sizes = [
-      int(next(g for g in match.groups() if g)) for m in ordered
-      for match in WORKERS.finditer(m.get("messageText", ""))
-  ]
-  warnings = [
-      f"{m.get('time', '')[11:19]} {m['messageImportance'][12:]}: {m.get('messageText', '')[:200]}"
-      for m in ordered if m.get("messageImportance") in NOTABLE
-  ]
-  return {
-      "peak_workers": max(sizes, default=None),
-      "warnings": warnings,
-      "stockout": any(STOCKOUT.search(w) for w in warnings),
-      # One startup message names both causes; it counts as a stockout.
-      "quota": any(QUOTA.search(w) and not STOCKOUT.search(w) for w in warnings),
-  }
-
-
-def machine_type(job: Dict[str, Any]) -> Optional[str]:
-  pools = job.get("environment", {}).get("workerPools", [])
-  return next((p["machineType"] for p in pools if p.get("machineType")), None)
-
-
 def summarize(details: Dict[str, Any], count_output: str, counter: Optional[str] = None,
               io: Optional[io_report.Config] = None) -> Dict[str, Any]:
-  """The record of one job from the reply of `fetch` and its "monitoring" series, if any.
+  """The record of one job from `dataflow_api.fetch` and its "monitoring" series, if any.
   With `io`, the record also has the metrics of io_report.py."""
   job = details["job"]
-  parsed = parse_metrics(details["metrics"], count_output, counter, io_namespace(io))
-  events = parse_messages(details["messages"])
-  watched = monitoring.summarize(details.get("monitoring", {}), machine_type(job),
+  parsed = dataflow_api.parse_metrics(details["metrics"], count_output, counter, io_namespace(io))
+  events = dataflow_api.parse_messages(details["messages"])
+  watched = monitoring.summarize(details.get("monitoring", {}), dataflow_api.machine_type(job),
                                  parsed["metrics"].get("total_vcpu_s"),
                                  parsed["metrics"].get("counter_total"))
   extra = io_report.summarize(details, io, parsed["metrics"].get("total_vcpu_s")) if io \
@@ -481,44 +323,6 @@ def values_of(args: argparse.Namespace, variant: report.Variant, round_number: i
                        variant.get("labels"), args.name_prefix), "out_dir": args.out_dir}
 
 
-def get_job(project: str, region: str, job_id: str) -> Optional[Dict[str, Any]]:
-  try:
-    return get(f"{API.format(project=project, region=region)}/{job_id}", access_token())
-  except (urllib.error.URLError, OSError, subprocess.CalledProcessError):
-    return None
-
-
-def counter_value(project: str, region: str, job_id: str, counter: str,
-                  namespace: Optional[str] = None) -> Optional[float]:
-  """The total of a user counter: None on an API error, 0 when the job has no such counter."""
-  try:
-    reply = get(f"{API.format(project=project, region=region)}/{job_id}/metrics", access_token())
-  except (urllib.error.URLError, OSError, subprocess.CalledProcessError, ValueError):
-    return None
-  return parse_metrics(reply.get("metrics", []), "", counter,
-                       namespace)["metrics"].get("counter_total", 0.0)
-
-
-def drain(project: str, region: str, job_id: str) -> None:
-  subprocess.run(["gcloud", "dataflow", "jobs", "drain", job_id, f"--project={project}",
-                  f"--region={region}"], check=False)
-
-
-def kill_worker(project: str, job_id: str) -> None:
-  """Deletes one worker VM of the job, for a fault test. Dataflow replaces it."""
-  listed = subprocess.run(
-      ["gcloud", "compute", "instances", "list", f"--project={project}",
-       f"--filter=labels.dataflow_job_id={job_id}", "--format=value(name,zone.basename())"],
-      check=False, capture_output=True, text=True).stdout.split()
-  if len(listed) < 2:
-    print(f"No worker VM of job {job_id} to delete", flush=True)
-    return
-  name, zone = listed[0], listed[1]
-  print(f"Delete worker VM {name} in {zone}", flush=True)
-  subprocess.run(["gcloud", "compute", "instances", "delete", name, f"--project={project}",
-                  f"--zone={zone}", "--quiet"], check=False)
-
-
 def after(variant: report.Variant, values: Dict[str, Any], base: str) -> Optional[str]:
   """Runs the "after" command of a variant, for example a check of the output. An error, or
   None."""
@@ -531,6 +335,25 @@ def after(variant: report.Variant, values: Dict[str, Any], base: str) -> Optiona
   return f"the after command failed, see {base}-after.log" if code else None
 
 
+def poll_running_drain(state: Dict[str, Any], job: Optional[Dict[str, Any]],
+                       drain_running: Optional[float], name: str,
+                       on_running: Callable[[], None],
+                       drain_fn: Callable[[str], None],
+                       now: float) -> None:
+  """Drains a job whose launcher blocks, once it has been RUNNING for `drain_running` s."""
+  if drain_running is None or state["drained"] or not job:
+    return
+  if job.get("currentState") != "JOB_STATE_RUNNING":
+    return
+  if state["running_since"] is None:
+    state["running_since"] = now
+    on_running()
+  if now - state["running_since"] >= float(drain_running):
+    print(f"Drain {name} after {now - state['running_since']:.0f} s RUNNING", flush=True)
+    drain_fn(job["id"])
+    state["drained"] = True
+
+
 def launch(args: argparse.Namespace, variant: report.Variant, round_number: int,
            run_id: int, on_running: Callable[[], None] = lambda: None,
            producer_done_at: Callable[[], Optional[float]] = lambda: None) -> Dict[str, Any]:
@@ -541,15 +364,21 @@ def launch(args: argparse.Namespace, variant: report.Variant, round_number: int,
   base = os.path.join(args.out_dir, f"{label}-r{round_number}")
   platforms: Set[str] = set()
   job = None
+  drain_state: Dict[str, Any] = {"running_since": None, "drained": False}
+  drain_running = (spec or {}).get("drain_running_after_seconds")
   launched = datetime.datetime.now(datetime.timezone.utc)
-  lookup = lambda: find_job(list_jobs(args.project, args.region, name), name, launched)
+  lookup = lambda: dataflow_api.find_job(dataflow_api.list_jobs(args.project, args.region, name),
+                                         name, launched)
   with open(f"{base}.log", "w") as out:
     process = subprocess.Popen(report.expand(variant, values), cwd=variant["cwd"],
                                env=report.environment(variant), stdout=out,
                                stderr=subprocess.STDOUT)
     while process.poll() is None:
-      platforms |= cpu_platforms(args.project, name)
-      job = job or lookup()
+      platforms |= dataflow_api.cpu_platforms(args.project, name)
+      job = (dataflow_api.get_job(args.project, args.region, job["id"]) if job else lookup()) or job
+      poll_running_drain(drain_state, job, drain_running, name, on_running,
+                         lambda jid: dataflow_api.drain(args.project, args.region, jid),
+                         time.monotonic())
       try:
         process.wait(timeout=POLL_SECONDS)
       except subprocess.TimeoutExpired:
@@ -558,29 +387,33 @@ def launch(args: argparse.Namespace, variant: report.Variant, round_number: int,
             "launcher_exit": process.returncode, "platforms": sorted(platforms),
             **({"settings": variant["settings"]} if variant.get("settings") else {})}
   with open(f"{base}.log") as f:
-    logged_id = job_id_from_log(f.read())
-  job = job or (get_job(args.project, args.region, logged_id) if logged_id else None) or lookup()
+    logged_id = dataflow_api.job_id_from_log(f.read())
+  job = (job or (dataflow_api.get_job(args.project, args.region, logged_id) if logged_id else None)
+         or lookup())
   waited: Dict[str, Any] = {}
-  if spec is not None and not spec.get("detach") and process.returncode == 0:
+  if (spec is not None and not spec.get("detach") and not drain_state["drained"]
+      and process.returncode == 0):
     found = {"job": job}
     def poll() -> Optional[Dict[str, Any]]:
-      platforms.update(cpu_platforms(args.project, name))
+      platforms.update(dataflow_api.cpu_platforms(args.project, name))
       known = found["job"]
-      found["job"] = (get_job(args.project, args.region, known["id"]) if known else lookup()) \
-          or known
+      found["job"] = (
+          dataflow_api.get_job(args.project, args.region, known["id"]) if known else lookup()
+      ) or known
       return found["job"]
     counter = spec.get("counter", "")
     namespace = spec.get("namespace") or io_namespace(args.io)
-    waited = job_wait.wait(spec, poll,
-                           lambda j: counter_value(args.project, args.region, j["id"], counter,
-                                                   namespace),
-                           lambda j: drain(args.project, args.region, j["id"]),
-                           on_running=on_running,
-                           producer_done_at=producer_done_at,
-                           kill=lambda j: kill_worker(args.project, j["id"]))
+    waited = job_wait.wait(
+        spec, poll,
+        lambda j: dataflow_api.counter_value(args.project, args.region, j["id"], counter,
+                                             namespace),
+        lambda j: dataflow_api.drain(args.project, args.region, j["id"]),
+        on_running=on_running if drain_state["running_since"] is None else lambda: None,
+        producer_done_at=producer_done_at,
+        kill=lambda j: dataflow_api.kill_worker(args.project, j["id"]))
     job = waited["job"] or job
     record["platforms"] = sorted(platforms)
-  else:
+  elif drain_state["running_since"] is None:
     on_running()
   job_id = job["id"] if job else logged_id
   if not job_id:
@@ -588,7 +421,7 @@ def launch(args: argparse.Namespace, variant: report.Variant, round_number: int,
   if spec is not None and spec.get("detach"):
     return {**record, "job_id": job_id, "state": "RUNNING", "error": "detached, no metrics",
             "metrics": {}}
-  details = fetch(args.project, args.region, job_id)
+  details = dataflow_api.fetch(args.project, args.region, job_id)
   details["monitoring"] = collect_monitoring(args.project, details, args.counter,
                                              args.monitoring_wait, io_namespace(args.io))
   if args.io:
@@ -613,7 +446,8 @@ def launch_companion(args: argparse.Namespace, producer: report.Variant, round_n
   record: Dict[str, Any] = {"round": round_number, "variant": label, "job_name": name}
   base = os.path.join(args.out_dir, f"{label}-r{round_number}")
   launched = datetime.datetime.now(datetime.timezone.utc)
-  lookup = lambda: find_job(list_jobs(args.project, args.region, name), name, launched)
+  lookup = lambda: dataflow_api.find_job(dataflow_api.list_jobs(args.project, args.region, name),
+                                         name, launched)
   with open(f"{base}.log", "w") as out:
     code = subprocess.run(report.expand(producer, values), cwd=producer["cwd"],
                           env=report.environment(producer), stdout=out,
@@ -622,26 +456,32 @@ def launch_companion(args: argparse.Namespace, producer: report.Variant, round_n
     return {**record, "ended": time.time(),
             "error": f"companion {label} failed to launch, see {base}.log"}
   with open(f"{base}.log") as f:
-    logged_id = job_id_from_log(f.read())
-  found = {"job": (get_job(args.project, args.region, logged_id) if logged_id else None) or lookup()}
+    logged_id = dataflow_api.job_id_from_log(f.read())
+  found = {
+      "job": (dataflow_api.get_job(args.project, args.region, logged_id) if logged_id else None)
+             or lookup()
+  }
   spec = producer.get("wait") or {}
   counter, namespace = spec.get("counter", ""), spec.get("namespace")
 
   def poll() -> Optional[Dict[str, Any]]:
     known = found["job"]
-    found["job"] = (get_job(args.project, args.region, known["id"]) if known else lookup()) or known
+    found["job"] = (
+        dataflow_api.get_job(args.project, args.region, known["id"]) if known else lookup()
+    ) or known
     return found["job"]
 
-  waited = job_wait.wait(spec, poll,
-                         lambda j: counter_value(args.project, args.region, j["id"], counter,
-                                                 namespace),
-                         lambda j: drain(args.project, args.region, j["id"]))
+  waited = job_wait.wait(
+      spec, poll,
+      lambda j: dataflow_api.counter_value(args.project, args.region, j["id"], counter, namespace),
+      lambda j: dataflow_api.drain(args.project, args.region, j["id"]))
   job = waited["job"] or found["job"]
   if job:
-    record.update(job_id=job.get("id"), state=job.get("currentState", "").replace("JOB_STATE_", ""),
-                  start=job.get("startTime") or job.get("createTime"),
-                  end=job.get("currentStateTime"),
-                  rows=counter_value(args.project, args.region, job["id"], counter, namespace))
+    record.update(
+        job_id=job.get("id"), state=job.get("currentState", "").replace("JOB_STATE_", ""),
+        start=job.get("startTime") or job.get("createTime"),
+        end=job.get("currentStateTime"),
+        rows=dataflow_api.counter_value(args.project, args.region, job["id"], counter, namespace))
   return {**record, "ended": time.time(),
           **({"error": f"companion {label}: {waited['error']}"} if waited.get("error") else {})}
 
@@ -813,7 +653,7 @@ def run(args: argparse.Namespace) -> None:
           if variant.get("after") else None
       print(f"Round {round_number}, {variant['label']}: "
             f"{report.show(command, variant['cwd'], variant.get('env'))}\n"
-            f"  while it runs: {' '.join(platform_command(args.project, values['job_name']))}" +
+            f"  while it runs: {' '.join(dataflow_api.platform_command(args.project, values['job_name']))}" +
             (f"\n  wait: {json.dumps(variant['wait'])}" if variant.get("wait") is not None else "") +
             (f"\n  after: {report.show(after_command, variant['cwd'])}" if after_command else ""),
             flush=True)
@@ -892,7 +732,7 @@ def main(argv: Sequence[str]) -> None:
     return
   records = []
   for job_id in args.jobs:
-    details = fetch(args.project, args.region, job_id)
+    details = dataflow_api.fetch(args.project, args.region, job_id)
     details["monitoring"] = collect_monitoring(args.project, details, args.counter, 0,
                                                io_namespace(args.io))
     if args.io:

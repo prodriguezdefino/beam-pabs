@@ -851,6 +851,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "apache-beam-watermark-latency"
+version = "2.79.0-SNAPSHOT"
+dependencies = [
+ "apache-beam",
+ "clap",
+ "serde",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "ar_archive_writer"
 version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

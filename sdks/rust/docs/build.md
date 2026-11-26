@@ -51,6 +51,7 @@ Run builds and tests through Gradle. The rest of the Beam repository uses it too
 ./gradlew :sdks:rust:buildWorker               # Linux worker binary for an example (-Pexample=wordcount)
 ./gradlew :sdks:rust:buildRunnerTestsWorker    # Linux worker binary for ValidatesRunner on Dataflow
 ./gradlew :sdks:rust:buildNexmarkWorker        # Linux worker binary for Nexmark
+./gradlew :sdks:rust:buildWatermarkLatencyWorker  # Linux worker binary for WatermarkLatency
 ./gradlew :sdks:rust:expansionServiceImage     # Expansion service image; the binary is also the worker
 ./gradlew :sdks:rust:validatesRunnerPrism      # ValidatesRunner conformance suite on Prism
 ./gradlew :sdks:rust:validatesRunnerPrismStreaming     # The same suite on Prism in streaming mode

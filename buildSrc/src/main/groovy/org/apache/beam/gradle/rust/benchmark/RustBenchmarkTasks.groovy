@@ -266,6 +266,7 @@ class RustBenchmarkTasks {
       label   : checkout.label,
       describe: checkout.describe,
       cwd     : checkout.root,
+      env     : [JAVA_HOME: System.getProperty('java.home')],
       prepare : taskCmd.call(["--dataflow_job_file={out_dir}/${checkout.label}-prepare-job.json".toString()]),
       argv    : taskCmd.call(['--job_name={job_name}', '--labels={labels}']),
     ] as Map<String, Object>

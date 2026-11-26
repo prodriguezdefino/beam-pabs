@@ -22,6 +22,7 @@ import org.apache.beam.gradle.BeamModulePlugin
 import org.apache.beam.gradle.rust.benchmark.RustBenchmarkTasks
 import org.apache.beam.gradle.rust.benchmark.RustNexmarkTasks
 import org.apache.beam.gradle.rust.benchmark.RustProfilingTasks
+import org.apache.beam.gradle.rust.benchmark.RustWatermarkLatencyTasks
 import org.apache.beam.gradle.rust.benchmark.io.RustIoBenchmarkSupport
 import org.apache.beam.gradle.rust.workspace.RustLintTasks
 import org.apache.beam.gradle.rust.workspace.RustQualityTasks
@@ -75,7 +76,8 @@ class BeamRustPlugin implements Plugin<Project> {
     RustProfilingTasks.register(config)
     RustBenchmarkTasks benchmarks = RustBenchmarkTasks.register(dataflow)
     RustNexmarkTasks.register(containers, benchmarks)
-    RustIoBenchmarkSupport.register(benchmarks, xlang, ioTasks)
+    RustIoBenchmarkSupport ioBenchmarks = RustIoBenchmarkSupport.register(benchmarks, xlang, ioTasks)
+    RustWatermarkLatencyTasks.register(containers, benchmarks, ioBenchmarks.javaBenchmark)
 
     project.tasks.named('build').configure { Task task -> task.dependsOn('buildWorkspace') }
     project.tasks.named('check').configure { Task task ->

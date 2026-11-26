@@ -17,27 +17,33 @@
 
 import argparse
 import contextlib
-import datetime
 import io
 import json
 import os
 import tempfile
 import unittest
+from unittest import mock
+
+import dataflow_api
 import dataflow_job
 import monitoring
 import report
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "testdata", "wordcount_job.json")
 
+
 def load_fixture():
   with open(FIXTURE) as f:
     return json.load(f)
 
+
 def metric(name, scalar, **context):
   return {"name": {"origin": "dataflow/v1b3", "name": name, "context": context}, "scalar": scalar}
 
+
 def user_metric(name, scalar, **context):
   return {"name": {"origin": "user", "name": name, "context": context}, "scalar": scalar}
+
 
 METRICS = [
   metric("TotalVcpuTime", 1500, original_name="Service-cpu_num_seconds"),
@@ -67,49 +73,13 @@ MESSAGES = [
    "messageText": "A worker was unable to start up. Error: ZONE_RESOURCE_POOL_EXHAUSTED."},
 ]
 
+
 def run(round_number, variant, platforms, peak=1.0, **fields):
   return {"round": round_number, "variant": variant, "platforms": platforms, "state": "DONE",
           "metrics": {"peak_workers": peak}, **fields}
 
+
 class TestDataflowJob(unittest.TestCase):
-  def test_job_id_from_log(self):
-    log = ("INFO dataflow::runner: Dataflow Console: https://console.cloud.google.com/dataflow/"
-           "jobs/us-central1/2026-10-27_16_20_31-14502306326069792411?project=p\n")
-    self.assertEqual(dataflow_job.job_id_from_log(log), "2026-10-27_16_20_31-14502306326069792411")
-    self.assertIsNone(dataflow_job.job_id_from_log("BUILD FAILED"))
-
-  def test_parse_metrics(self):
-    parsed = dataflow_job.parse_metrics(METRICS, "ExtractWords")
-    self.assertEqual(parsed["steps"], {"CountWords/ExtractWords": 510.0, "ReadLines/Read": 190.0})
-    values = parsed["metrics"]
-    self.assertEqual(values["total_vcpu_s"], 1500)
-    self.assertEqual(values["elements"], 1e9)
-    self.assertAlmostEqual(values["elements_per_vcpu_s"], 1e9 / 1500)
-    self.assertEqual(values["memory_gb_s"], 6000)
-    self.assertEqual(values["pd_gb_s"], 37500)
-    self.assertEqual(values["shuffle_gb"], 2.5)
-    self.assertEqual(values["step_wall_s"], 700.0)
-    self.assertAlmostEqual(values["step_wall_s_per_1m_elements"], 0.7)
-
-  def test_parse_metrics_adds_the_counter_of_each_step(self):
-    self.assertEqual(dataflow_job.parse_metrics(METRICS, "", "line_count")["metrics"]["counter_total"], 42)
-    self.assertNotIn("counter_total", dataflow_job.parse_metrics(METRICS, "")["metrics"])
-
-  def test_parse_metrics_without_count_output_has_no_ratios(self):
-    for count_output in ("NoSuchStep", ""):
-      values = dataflow_job.parse_metrics(METRICS, count_output)["metrics"]
-      self.assertNotIn("elements", values)
-      self.assertNotIn("step_wall_s_per_1m_elements", values)
-
-  def test_parse_messages(self):
-    events = dataflow_job.parse_messages(MESSAGES)
-    self.assertEqual(events["peak_workers"], 4)
-    self.assertTrue(events["stockout"])
-    self.assertFalse(events["quota"])
-    self.assertEqual(events["warnings"],
-                     ["23:20:50 WARNING: A worker was unable to start up. "
-                      "Error: ZONE_RESOURCE_POOL_EXHAUSTED."])
-
   def test_summarize(self):
     job = {"id": "j1", "name": "n1", "currentState": "JOB_STATE_DONE",
            "createTime": "2026-10-27T23:20:31.990549Z", "startTime": "2026-10-27T23:20:31.990549Z",
@@ -133,23 +103,17 @@ class TestDataflowJob(unittest.TestCase):
     self.assertEqual(values["peak_vcpus"], 4)
     self.assertEqual(values["counter_total"], 62762451)
 
-  def test_find_job_by_name(self):
-    jobs = load_fixture()["jobs_list"]["jobs"]
-    name = jobs[0]["name"]
-    launched = monitoring.parse_time(jobs[0]["createTime"])
-    self.assertEqual(dataflow_job.find_job(jobs, name, launched)["id"], jobs[0]["id"])
-    self.assertIsNone(dataflow_job.find_job(jobs, "other", launched))
-    later = launched + datetime.timedelta(minutes=5)
-    self.assertIsNone(dataflow_job.find_job(jobs, name, later))
-    cancelled = [{**jobs[0], "currentState": "JOB_STATE_CANCELLED"}]
-    self.assertIsNone(dataflow_job.find_job(cancelled, name, launched))
-
-  def test_find_job_takes_the_newest(self):
-    old = {"name": "n", "id": "a", "currentState": "JOB_STATE_FAILED",
-           "createTime": "2026-10-28T00:29:36Z"}
-    new = {**old, "id": "b", "currentState": "JOB_STATE_RUNNING", "createTime": "2026-10-28T00:30:00Z"}
-    launched = monitoring.parse_time("2026-10-28T00:29:40Z")
-    self.assertEqual(dataflow_job.find_job([old, new], "n", launched)["id"], "b")
+  def test_collect_monitoring_passes_counter_total_from_api(self):
+    details = {
+        "job": {"id": "j1", "createTime": "t0", "currentStateTime": "t1"},
+        "metrics": METRICS,
+    }
+    with mock.patch.object(dataflow_api, "access_token", return_value="tok"), \
+        mock.patch.object(monitoring, "collect", return_value={"cpu": []}) as collect_fn:
+      self.assertEqual(
+          dataflow_job.collect_monitoring("p", details, "line_count", 60, "wordcount"),
+          {"cpu": []})
+      self.assertEqual(collect_fn.call_args[0][1:], ("j1", "t0", "t1", "line_count", 60, 40.0))
 
   def test_flags(self):
     runs = [
@@ -246,13 +210,13 @@ class TestDataflowJob(unittest.TestCase):
   def test_summarize_with_io(self):
     job = {"id": "j1", "currentState": "JOB_STATE_DONE", "createTime": "2026-10-27T23:20:31Z",
            "currentStateTime": "2026-10-27T23:30:31Z"}
-    io = {"pipeline": "python", "namespace": "wordcount", "rows": "line_count"}
+    io_cfg = {"pipeline": "python", "namespace": "wordcount", "rows": "line_count"}
     record = dataflow_job.summarize({"job": job, "metrics": METRICS, "messages": MESSAGES},
-                                    "", None, io)
+                                    "", None, io_cfg)
     self.assertAlmostEqual(record["metrics"]["rows_per_vcpu_s"], 40 / 1500)
 
   def test_render(self):
-    runs = [{**run(1, "current", ["A"]), **dataflow_job.parse_metrics(METRICS, "ExtractWords"),
+    runs = [{**run(1, "current", ["A"]), **dataflow_api.parse_metrics(METRICS, "ExtractWords"),
              "memory": {"sdk-0-0": 900.0}, "job_id": "j1"}]
     results = {"task": "wordcountBenchmark", "created": "now",
                "config": {"description": "100 shards", "count_name": "words",
@@ -339,58 +303,6 @@ class TestDataflowJob(unittest.TestCase):
         "Round 1: scaling differs: java=fixed, rust=autoscaling",
     ])
 
-class PlatformAndCapacityTest(unittest.TestCase):
-
-  def test_unknown_platform_is_skipped(self):
-    self.assertEqual(
-        dataflow_job.known_platforms(["Intel Cascade Lake", "Unknown CPU Platform", ""]),
-        {"Intel Cascade Lake"})
-
-  def test_startup_failure_counts_as_stockout_only(self):
-    events = dataflow_job.parse_messages([{
-        "time": "2026-10-28T00:30:00Z",
-        "messageImportance": "JOB_MESSAGE_ERROR",
-        "messageText": "Startup of the worker pool failed. This is likely a quota issue or a "
-                       "Compute Engine stockout.",
-    }])
-    self.assertTrue(events["stockout"])
-    self.assertFalse(events["quota"])
-
-  def test_job_id_from_log_accepts_job_id_line(self):
-    self.assertEqual(dataflow_job.job_id_from_log("info\nJOB_ID=2026-11-11_00_01\n"),
-                     "2026-11-11_00_01")
-
-  def test_run_round_starts_producer_once_variants_run(self):
-    events = []
-    original_launch = dataflow_job.launch
-    original_companion = dataflow_job.launch_companion
-    try:
-      def fake_launch(args, variant, round_number, run_id, on_running=lambda: None,
-                      producer_done_at=lambda: None):
-        events.append(("start", variant["label"]))
-        on_running()
-        while producer_done_at() is None:
-          dataflow_job.time.sleep(0.005)
-        events.append(("after_producer", variant["label"]))
-        return {"round": round_number, "variant": variant["label"]}
-
-      def fake_companion(args, producer, round_number, run_id):
-        events.append(("producer", producer["label"]))
-        return {"round": round_number, "variant": producer["label"], "job_id": "p1",
-                "rows": 10.0, "ended": dataflow_job.time.time()}
-
-      dataflow_job.launch = fake_launch
-      dataflow_job.launch_companion = fake_companion
-      records, companion = dataflow_job.run_round(argparse.Namespace(), [{"label": "rust"}],
-                                                  {"label": "produce"}, 1, 99)
-      self.assertEqual(events, [("start", "rust"), ("producer", "produce"),
-                                ("after_producer", "rust")])
-      self.assertEqual(records, [{"round": 1, "variant": "rust"}])
-      self.assertEqual(companion["job_id"], "p1")
-    finally:
-      dataflow_job.launch = original_launch
-      dataflow_job.launch_companion = original_companion
-
 
 class CompanionTest(unittest.TestCase):
   """The companion producer of a round: errors, failed rounds and the shared mode."""
@@ -412,6 +324,32 @@ class CompanionTest(unittest.TestCase):
         dataflow_job.time.sleep(0.005)
       return {"round": round_number, "variant": variant["label"]}
     return fake_launch
+
+  def test_run_round_starts_producer_once_variants_run(self):
+    events = []
+
+    def fake_launch(args, variant, round_number, run_id, on_running=lambda: None,
+                    producer_done_at=lambda: None):
+      events.append(("start", variant["label"]))
+      on_running()
+      while producer_done_at() is None:
+        dataflow_job.time.sleep(0.005)
+      events.append(("after_producer", variant["label"]))
+      return {"round": round_number, "variant": variant["label"]}
+
+    def fake_companion(args, producer, round_number, run_id):
+      events.append(("producer", producer["label"]))
+      return {"round": round_number, "variant": producer["label"], "job_id": "p1",
+              "rows": 10.0, "ended": dataflow_job.time.time()}
+
+    dataflow_job.launch = fake_launch
+    dataflow_job.launch_companion = fake_companion
+    records, companion = dataflow_job.run_round(argparse.Namespace(), [{"label": "rust"}],
+                                                {"label": "produce"}, 1, 99)
+    self.assertEqual(events, [("start", "rust"), ("producer", "produce"),
+                              ("after_producer", "rust")])
+    self.assertEqual(records, [{"round": 1, "variant": "rust"}])
+    self.assertEqual(companion["job_id"], "p1")
 
   def test_a_failed_companion_fails_the_round(self):
     dataflow_job.launch = self.running_launch()
@@ -510,23 +448,44 @@ class CompanionTest(unittest.TestCase):
                   "2026-11-11T10:00:00 to 2026-11-11T10:30:00", text)
 
 
-class NamespaceTest(unittest.TestCase):
-  def test_counter_total_counts_one_namespace(self):
-    metrics = [user_metric("rows", 10, step="a", namespace="e2e"),
-               user_metric("rows", 7, step="b", namespace="bigquery")]
-    self.assertEqual(dataflow_job.parse_metrics(metrics, "", "rows", "e2e")["metrics"]
-                     ["counter_total"], 10)
-    self.assertEqual(dataflow_job.parse_metrics(metrics, "", "rows")["metrics"]
-                     ["counter_total"], 17)
-
+class NamespaceAndDrainTest(unittest.TestCase):
   def test_summarize_takes_the_namespace_of_io(self):
     job = {"id": "j1", "currentState": "JOB_STATE_DONE", "createTime": "2026-10-27T23:20:31Z",
            "currentStateTime": "2026-10-27T23:30:31Z"}
     metrics = METRICS + [user_metric("line_count", 1000, step="c", namespace="other")]
-    io = {"pipeline": "python", "namespace": "wordcount", "rows": "line_count"}
+    io_cfg = {"pipeline": "python", "namespace": "wordcount", "rows": "line_count"}
     record = dataflow_job.summarize({"job": job, "metrics": metrics, "messages": []},
-                                    "", "line_count", io)
+                                    "", "line_count", io_cfg)
     self.assertEqual(record["metrics"]["counter_total"], 40)
+
+  def test_poll_running_drain_waits_for_running_window_once(self):
+    state = {"running_since": None, "drained": False}
+    notified, drained = [], []
+    pending = {"id": "j1", "currentState": "JOB_STATE_PENDING"}
+    running = {"id": "j1", "currentState": "JOB_STATE_RUNNING"}
+
+    dataflow_job.poll_running_drain(state, pending, 240, "n1", lambda: notified.append(1),
+                                    drained.append, 100.0)
+    self.assertIsNone(state["running_since"])
+    self.assertEqual((notified, drained), ([], []))
+
+    dataflow_job.poll_running_drain(state, running, 240, "n1", lambda: notified.append(1),
+                                    drained.append, 120.0)
+    self.assertEqual(state["running_since"], 120.0)
+    self.assertEqual((notified, drained), ([1], []))
+
+    dataflow_job.poll_running_drain(state, running, 240, "n1", lambda: notified.append(1),
+                                    drained.append, 359.0)
+    self.assertEqual(drained, [])
+
+    dataflow_job.poll_running_drain(state, running, 240, "n1", lambda: notified.append(1),
+                                    drained.append, 360.0)
+    self.assertTrue(state["drained"])
+    self.assertEqual((notified, drained), ([1], ["j1"]))
+
+    dataflow_job.poll_running_drain(state, running, 240, "n1", lambda: notified.append(1),
+                                    drained.append, 400.0)
+    self.assertEqual(drained, ["j1"])
 
 
 if __name__ == "__main__":

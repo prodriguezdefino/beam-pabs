@@ -39,6 +39,7 @@ members = [
     "beam/testing",
     "examples/*",
     "benchmarks/nexmark",
+    "benchmarks/watermark_latency",
     "benchmarks/io/support",
     "benchmarks/io/*/rust",
 ]
